@@ -65,9 +65,9 @@ A startup stub `backend_detect` (reads `/etc/os-release`, probes for `netplan`) 
 | `prep_iface` | Set iface up + promisc on, wait for carrier up to `CARRIER_WAIT_SECONDS` |
 | `detect_sniff` | Passive 802.1Q capture (`tcpdump`, minimal snaplen, no disk) → VLAN IDs per iface |
 | `detect_lldp` | `lldpctl` advertised VLANs per iface |
-| `detect_union` | Union of enabled methods; pick trunk (most tags, hysteresis) |
+| `detect_union` | Union of enabled methods; pick trunk (most tags, hysteresis). Selection factored into a pure helper `select_trunk(candidates,previous)` for unit testing (tests 1e) |
 | `compute_candidates` | `detected ∩ [MIN,MAX] − VLAN_IGNORE − backend_list_managed_vlans − backend_owned_vlans` |
-| `reconcile_boot` | Two-pass: additions single-pass, removals need absence in both passes; zero-detection guard |
+| `reconcile_boot` | Two-pass: additions single-pass, removals need absence in both passes; zero-detection guard. Removal-set combination factored into a pure helper `boot_removals(owned,pass1,pass2)` for unit testing (tests 1d) |
 | `reconcile_rescan` | Add-only; skip VLANs with an active lease |
 | `apply_change` | Orchestrate the safety sequence (§7): generate → validate → apply_with_revert → deletes → restarts |
 | `snapshot_default_route` | Capture iface/gw/metric of lowest-metric default route (health-check reference) |
@@ -85,7 +85,7 @@ A startup stub `backend_detect` (reads `/etc/os-release`, probes for `netplan`) 
 
 **`--rescan`** (FR-21): preconditions → discover/prep → detect (single pass) → additions only (add-only) → if change: `apply_change`.
 
-**`--dry-run`** (FR-34): detect + compute diff + `backend_validate` against a throwaway tree → print intended add/remove; **never apply, never restart**.
+**`--dry-run`** (FR-34): detect + compute diff + `backend_validate` against a throwaway tree → print intended add/remove; **never apply, never restart**. The throwaway tree is a copy of the real `/etc/netplan/` (base files included) with the candidate `90-dynavlan.yaml` overlaid, so `netplan generate` sees base files too and dry-run surfaces an FR-17 base-file-freeze (R-5) rather than hiding it.
 
 **`--status`** (FR-35): print detected vs owned vs excluded/ignored, selected trunk, last-run result.
 
@@ -123,7 +123,7 @@ Every failure path lands on "no net change, uplink intact, logged." A death anyw
 ## 8. Health check (FR-18)
 
 - `snapshot_default_route`: `ip route show default` → lowest-metric route's `dev`, `via`, `metric`. May be empty.
-- Post-apply PASS iff: a default route exists AND its `dev` equals the snapshot `dev`. **Empty-snapshot rule (AC-12):** if the snapshot was empty, PASS iff post-apply is also empty or the change added no default route (guaranteed by FR-14 `use-routes: false`) — never revert solely because the box independently had no uplink.
+- Post-apply PASS iff: a default route exists AND the **lowest-metric** default route's `dev` equals the snapshot `dev`. Comparison is on `dev` (interface) only, never metric or gateway (a metric or gateway change on the same iface is a normal DHCP event and must not revert). If a spurious lower-metric default appears on a *different* iface post-apply, the lowest-metric default has moved off the base uplink → FAIL/revert. **Empty-snapshot rule (AC-12):** if the snapshot was empty, PASS iff post-apply is also empty or the only new default is one the change did not add (VLANs add none, per FR-14) — never revert solely because the box independently had no uplink.
 - ARP reachability of the gateway is optional, secondary, **strictly non-fatal**: a silent gateway must not fail the check. Never ICMP.
 - Dependency: valid only because FR-14 gives generated VLANs no default route, so snapshot/post-apply reflect the base uplink alone. A change to FR-14 isolation keys must revisit this.
 
