@@ -4,27 +4,26 @@ Owns: open tasks and their status. Does NOT hold permanent facts or decisions (t
 Maintain: update whenever a task is added, changes state, or completes.
 Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 
-- [x] Plan dynavlan design (naming, detection, config schema, boot/rescan behavior) (done 2026-07-14) - see context/decisions.md
-- [x] Add logging + operational hardening to dynavlan design (done 2026-07-14) - see context/decisions.md
-- [x] Write dynavlan PRD (done 2026-07-14) - docs/dynavlan-PRD.md
-- [x] Architect review of dynavlan PRD (done 2026-07-14) - see below; severities re-ranked after user review
-- [x] User review of architect findings (done 2026-07-14) - corrections: C2 downgraded CRITICAL->HIGH (dynavlan only owns 90-dynavlan.yaml; zero-detection wipe removes only added VLANs, base uplink untouched, no stranding; cost is monitoring gap + restart churn on bad boot, fix via no-carrier/zero-tag reconcile guard). C3 downgraded CRITICAL->mostly dropped (use-default-routes:false already handles default routes as designed; base config's ascending metrics were for default-route ordering which we eliminated; route-metric only matters under overlapping subnets, unusual+not fully solvable; per-VLAN MAC kept as MEDIUM cheap insurance). C1 stays (health check needed) but `netplan try` likely becomes its revert mechanism. C4 (Intel rxvlan offload strips tags -> sniff sees nothing) remains genuinely CRITICAL + unverified.
-- [x] Revise dynavlan PRD to v2 (done 2026-07-14) - docs/dynavlan-PRD.md; adds severity+impact scales, base-config deltas, edge-case behavior, all C1/C4/isolation/removal hardware findings, VLAN_IGNORE, filename-agnostic model. Superseded content list below.
-- [ ] (superseded, see above) Revise dynavlan PRD to v2. Content changes: CRITICAL = C1 (health-check-gated rollback, likely via netplan try) + C4 (rxvlan offload / aux-data capture). HIGH = C2 zero-detection reconcile guard, two-pass boot removal, carrier-wait, atomic write, durable journald, bounded DHCP settle. MEDIUM = per-VLAN MAC, --dry-run, --status, trunk hysteresis. LOW = VLAN_MIN=2 default. Structural changes (APPROVED 2026-07-14): (1) add impact/blast-radius tag to each requirement+risk (recoverability vs monitoring-continuity vs edge-determinism axis); (2) add "deltas from base deployment and why" section (no route-metrics, DHCP-only, single-file ownership); (3) specify edge/boundary behavior explicitly (FR-18 zero-detection, first-run rollback target = remove/empty file, no-carrier); (4) state the severity scale in the doc. (awaiting go-ahead on timing vs hardware testing)
-- [x] Verify C1/C4 + netplan behaviors on a real Protectli lab box (done 2026-07-14) - see decisions.md. C4 closed (offload off, promisc bypasses rx-vlan-filter, sniff discovered unconfigured VLAN 18). C1 closed (netplan try accept+revert both work headless). Discovered: full isolation needs use-routes/use-dns/use-ntp/use-domains all false; VLAN removal needs explicit `ip link delete` (netplan apply leaves orphans).
-- [ ] PRD v2 must add: isolation stanza (4 use-* keys), explicit `ip link delete` on VLAN removal, promisc-on before sniff, netplan try + health-gated accept as the apply/rollback mechanism
-- [x] Architect review of dynavlan PRD v2 (done 2026-07-14) - well-calibrated this round (no severity-inflation to strip, unlike v1); all findings are paper-closable sequencing/spec gaps in the apply/rollback/removal path, none reopen the design.
-- [x] PRD v3 + v3.1 written and reviewed (done 2026-07-14) - docs/dynavlan-PRD.md. Third architect review returned GO / implementation-ready: all 4 CRITICAL blockers closed, H-1/H-3 consistent, re-tags correct, no new contradictions, every failure path fails toward no-change/reachable/logged. v3.1 folded the 4 non-blocking clarifications (non-mutating FR-0 probe, FR-18 empty-snapshot handling + FR-14 dependency, ARP strictly non-fatal, AC-12).
-- [ ] (done, see above) PRD v3: close 4 CRITICAL blockers + H-1/H-3, then implementation-ready:
-      C-1 (FR-18): health check = snapshot pre-apply default route (iface+gw+metric) as reference; default-route-via-base-uplink is mandatory revert gate; gateway reachability ARP/L2 not ICMP + non-fatal; invariant try_timeout > health_check_max + margin; VLAN lease failures never revert.
-      C-2 (FR-30): flock via held fd (kernel-released on death), never manual lockfile; re-tag CRITICAL until specified.
-      C-3 (FR-24+FR-18): `ip link delete` for removed VLANs ONLY after netplan try ACCEPT, never before, never on revert (else validated orphan behavior silently loses monitoring on a revert).
-      IR-1 (NFR-3): pin min netplan version + capability-probe netplan try; refuse if unavailable; NO silent fallback to netplan apply.
-      H-1 (FR-22/23): add=single-pass, remove=two-pass within same --boot invocation (sniff, settle, sniff); rescan stays add-only; add inter-pass settle knob.
-      H-3 (FR-27): reverted apply -> no lease-settle, no restarts.
-      Plus: FR-10 re-tag HIGH/RECOVERABILITY->HIGH/CONTINUITY; refuse-to-run if sniff requested but tcpdump absent; mandatory (not OR) log persistence + deployment-guide journald step; minimal snaplen + no on-disk capture (confidentiality-sensitive); define per-VLAN MAC fn; PER_VLAN_MAC default OFF (shared MAC validated working); promisc left on deliberately (state it); chain carrier-wait expiry into FR-22 abort; distinct err "our YAML bad" vs "base bad" (broken base freezes dynavlan updates); promote fifo/coproc try-accept to FR w/ SIGPIPE+wall-clock guard; AC that enp2s0 (untagged 2nd NIC) never selected as trunk.
-- [x] Write dynavlan technical/design doc (done 2026-07-14) - dev/features/dynavlan.md. Settles: language=bash, timer via config-synced drop-in, two-pass removal in-process, backend seam (6 ops, netplan-only impl) for future-distro portability. Includes apply/rollback state machine, health-check + empty-snapshot, fifo-drive primitive, module decomposition, systemd/install layout.
-- [ ] Write dynavlan-tests.md test plan (dev/features/) before coding
-- [ ] Build dynavlan (script, config, systemd units) (blocked: awaiting PRD v2 + explicit go-ahead; do not start coding until told)
-- [x] Write dynavlan-tests.md test plan (done 2026-07-14) - dev/features/dynavlan-tests.md; lean 3-layer (unit asserts, --dry-run, manual VM checklist), no framework/mock/CI.
-- [x] Architect review of test plan + fold in (done 2026-07-14) - stayed within right-sizing. Added: L3-11 flock-death-release (FR-30), L3-12 atomic-write-kill (FR-16), L3-13 no-netplan-try-refuse (FR-0/AC-5 fix), L3-14 empty-snapshot accept (AC-12), L3-6 EPIPE clause, AC-2 concurrent exactly-once; unit 1d (two-pass removal math, pure helper boot_removals), 1e (trunk hysteresis, pure helper select_trunk), 1c metric/gw/multi-default rows, 1b precedence+empty rows, 1a boundary. Design clarifications folded to dynavlan.md: dry-run tree includes base files; health_check compares lowest-metric default by iface only; reconcile_boot/detect_union expose pure helpers. PRD FR-18 step 3 clarified (lowest-metric, iface-only).
+## Planning phase - COMPLETE (2026-07-14)
+
+- [x] dynavlan design planned, locked, hardware-validated on a real Protectli/igb lab box - see context/decisions.md, context/open_questions.md
+- [x] PRD written, revised to v3.1, three architect reviews (final verdict GO / implementation-ready) - docs/dynavlan-PRD.md
+- [x] Technical design doc - dev/features/dynavlan.md (architecture, backend seam, apply/rollback state machine, module decomposition, systemd/install layout)
+- [x] Test plan written + architect-reviewed + hardened - dev/features/dynavlan-tests.md (lean 3-layer: unit asserts, --dry-run, VM checklist)
+- [x] Project genericized (no company-specific refs) and pushed to github.com/pereljon/dynavlan (private). NOTE: two later local commits (design doc, test plan) are NOT yet pushed.
+
+## NEXT: Build dynavlan
+
+Read first (fresh session): docs/dynavlan-PRD.md (v3.1, authoritative behavior), dev/features/dynavlan.md (how to build it), dev/features/dynavlan-tests.md (tests to write).
+Approach agreed: single cohesive bash implementation (NOT subagent fan-out - the apply/rollback state machine is too coupled). TDD the pure helpers; build outward; review with subagents at the end.
+
+- [ ] Step 1 - TDD the 5 pure helpers under `superpowers:test-driven-development`. Write `tests/unit.sh` first (assert script, no framework), RED then GREEN, for: `parse_vlan_ignore` (tests 1a), `compute_candidates` (1b), `health_check` evaluator (1c), `boot_removals` (1d), `select_trunk` (1e). Cases are enumerated in dynavlan-tests.md.
+- [ ] Step 2 - Build the core script `/usr/local/sbin/dynavlan` cohesively: config load/validate, interface discovery, promisc+carrier-wait, sniff/lldp detection, detect_union, exclusion, reconcile_boot (two-pass) / reconcile_rescan (add-only), the apply/rollback state machine (design §7), backend seam (6 `backend_*` fns, netplan impl), fifo-drive accept (§9), flock (fd-held), logging, the `--boot/--rescan/--dry-run/--status/--reconfigure` entrypoints.
+- [ ] Step 3 - Config template `/etc/dynavlan.conf`, systemd `dynavlan.service` + `dynavlan.timer`, `install.sh`, add tcpdump to deployment-guide packages.
+- [ ] Step 4 - Review pass: `code-reviewer` + `security-reviewer` subagents over the finished script; optionally a fork stress-testing the apply/rollback failure branches vs the PRD. Fold in CRITICAL/HIGH.
+- [ ] Step 5 - Run the VM integration checklist (dynavlan-tests.md Layer 3) on a console-accessible VM. Codify the already-hand-validated cases.
+- [ ] Update dev/CODEMAP.md and dev/SKELETON.md (currently describe the base deployment) to cover dynavlan once code lands.
+
+## Open items (off critical path - see context/open_questions.md)
+- [ ] IR-1: exact minimum netplan version (pinned conservatively at 0.106; possible later relaxation).
+- [ ] G-4: per-VLAN MAC derivation function (only if PER_VLAN_MAC enabled; default off).
