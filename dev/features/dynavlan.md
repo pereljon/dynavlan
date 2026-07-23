@@ -62,7 +62,8 @@ A startup stub `backend_detect` (reads `/etc/os-release`, probes for `netplan`) 
 | `parse_vlan_ignore` | Expand `VLAN_IGNORE` comma/space list with `low-high` ranges into a set |
 | `check_preconditions` | FR-0: root, netplan>=min + `netplan try` capability probe (non-mutating), deps for method |
 | `discover_phys_ifaces` | Live physical NICs from `/sys/class/net` (device symlink, type==1, exclude lo/wifi/vlan) |
-| `prep_iface` | Set iface up + promisc on, wait for carrier up to `CARRIER_WAIT_SECONDS` |
+| `prep_iface` / `has_carrier` | Set iface up + promisc on (all NICs first); then ONE shared carrier deadline (`CARRIER_WAIT_SECONDS` total, not per port). Detection runs ONLY on carrier-up ifaces, and the per-iface sniffs run CONCURRENTLY (one `SNIFF_SECONDS` window total) so detection cost does not scale with port count |
+| `vlan_guard` / `limit_fill` / `gate_vlan_count` | FR-12/FR-36 count gate: pure `vlan_guard(n,warn,limit)` → OK/WARN/OVER and `limit_fill(adds,slots)` → lowest-N subset (tests 1f); `gate_vlan_count` orchestrates warn / refuse / fill per `VLAN_LIMIT_MODE` |
 | `detect_sniff` | Passive 802.1Q capture (`tcpdump`, minimal snaplen, no disk) → VLAN IDs per iface |
 | `detect_lldp` | `lldpctl` advertised VLANs per iface |
 | `detect_union` | Union of enabled methods; pick trunk (most tags, hysteresis). Selection factored into a pure helper `select_trunk(candidates,previous)` for unit testing (tests 1e) |
@@ -81,7 +82,7 @@ A startup stub `backend_detect` (reads `/etc/os-release`, probes for `netplan`) 
 
 ## 6. Control flow per mode
 
-**`--boot`** (FR-22/23): preconditions → discover/prep iface → detect pass 1 → **guard: if no carrier / no tags / zero detected, ABORT, change nothing** → sleep `BOOT_SETTLE_SECONDS` → detect pass 2 → additions = new in pass 1; removals = owned VLANs absent from BOTH passes → if change: `apply_change` → done.
+**`--boot`** (FR-22/23): preconditions → discover/prep iface → detect pass 1 → **guard: if no carrier / no tags / zero detected, ABORT, change nothing** → **pin to the owned parent** (when VLANs are owned, both passes AND the generate use `owned_parent()` as the reference iface, mirroring `--rescan`; boot never relocates a live parent, so a second tagged NIC winning trunk selection in either pass cannot make the two passes describe different wires) → sleep `BOOT_SETTLE_SECONDS` → detect pass 2, reading tags for the SAME reference iface → **pass 2 counts for removals only if the reference iface has carrier at pass-2 time** (an empty read off a dead link is not evidence of absence; otherwise skip removals this boot, warn) → **RELOCATION branch (AC-3)**: if the owned parent carries no tags in BOTH passes while a different iface was independently selected, with tags, in BOTH passes (two-pass evidence the trunk physically moved), reconcile in one pass - all owned VLANs become removals (deleted from the old parent, post-accept) and the new trunk's filtered set becomes the target on the new parent; without this branch the pinning would strand the box on a dead parent forever → otherwise: additions = new in pass 1; removals = owned VLANs absent from BOTH passes → count gate (`gate_vlan_count`: FR-12 warn / FR-36 refuse-or-fill) → if change: `apply_change` → done.
 
 **`--rescan`** (FR-21): preconditions → discover/prep → detect (single pass) → additions only (add-only) → if change: `apply_change`.
 
@@ -129,13 +130,16 @@ Every failure path lands on "no net change, uplink intact, logged." A death anyw
 
 ## 9. `netplan try` accept/revert primitive (netplan `apply_with_revert`)
 
-The concurrency-sensitive part (IR-2). `netplan try --timeout N` reads confirmation from stdin; we drive it via a fifo/coproc:
-- Start `netplan try` with stdin connected to a fifo we hold open for writing.
-- Run `health_check` (bounded; `N > max_health_check + margin`).
-- PASS → write `\n` to the fifo (accept). FAIL → write nothing; the timer reverts.
-- The accept-write **must tolerate `netplan try` having already reverted and closed the pipe** (handle `SIGPIPE`/`EPIPE` without crashing).
-- An independent **wall-clock guard** bounds the whole interaction regardless of `netplan try`'s own timer.
-- `N` is set explicitly from a config-derived value, never left to netplan's 120s default.
+The concurrency-sensitive part (IR-2), hardened after the round-2 review found the fifo-ACCEPT race. TIMING MODEL: `netplan try --timeout N` APPLIES the config first and only then reads stdin; its revert timer starts after the apply. A newline written early sits in the pipe buffer and is consumed unconditionally post-apply - accepting a change the health check never saw applied. The primitive therefore runs a poll loop:
+
+- Start `netplan try` with stdin from a fifo we hold open for writing (the write-open unblocks its read-open).
+- Poll every `POLL_INTERVAL` seconds, bounded by an independent wall-clock guard (`TRY_TIMEOUT * 3`), gating the ACCEPT on all three of:
+  1. **Apply evidence**: the probe interface (first added VLAN's `<iface>.<id>`) exists - it can only exist once the apply has run. Removal-only changes fall back to an `APPLY_FALLBACK_SETTLE` floor.
+  2. **Liveness**: `netplan try` still alive, re-checked at the accept instant. Dead try = reverted or failed = never accept (a false accept would run FR-24 deletes + restarts for a change never applied - e.g. "another netplan process is running" exits early with routing untouched and health trivially PASSing).
+  3. **Health**: `HEALTH_CONSEC` consecutive PASS samples.
+- PASS(all) → write `\n`, close, reap. FAIL → **write nothing and keep the fifo write-end OPEN until `netplan try` exits**, so revert rides netplan's own validated timeout path; stdin-EOF on early close is NOT hardware-validated behavior and is deliberately never exercised. Bounded wait, then log-and-proceed if wedged (flock releases on our exit).
+- The accept-write tolerates `netplan try` having already exited (`SIGPIPE`/`EPIPE` ignored).
+- `N` (`TRY_TIMEOUT`) is set explicitly, never left to netplan's 120s default.
 
 ## 10. Data representation
 
@@ -149,10 +153,12 @@ The concurrency-sensitive part (IR-2). `netplan try --timeout N` reads confirmat
 - `/usr/local/sbin/dynavlan` (0755), the script.
 - `/etc/dynavlan.conf` (commented defaults).
 - `/etc/netplan/90-dynavlan.yaml` (0600, generated).
-- `dynavlan.service`: `Type=oneshot`, `After=systemd-networkd.service`, NOT `Wants/After=network-online.target`, `ExecStart=/usr/local/sbin/dynavlan --boot`.
-- `dynavlan.timer`: `OnBootSec`/`OnUnitActiveSec` (monotonic), interval via `.d/interval.conf` from `RESCAN_MINUTES`.
-- Persistent journald guaranteed at install (`/var/log/journal` + `Storage=persistent`) OR `/var/log/dynavlan.log` default-on (FR-31).
-- `install.sh`: place files, add `tcpdump` dependency, run `--reconfigure`, enable service+timer.
+- `dynavlan.service`: `Type=oneshot`, `After=systemd-networkd.service`, NOT `Wants/After=network-online.target`, `ExecStart=/usr/local/sbin/dynavlan --boot`, `WantedBy=multi-user.target`, `TimeoutStartSec=600` (boot can take CARRIER_WAIT + 2*SNIFF + BOOT_SETTLE + lease settle).
+- `dynavlan-rescan.service`: `Type=oneshot`, `ExecStart=/usr/local/sbin/dynavlan --rescan`, no `[Install]` (activated only by the timer). SEPARATE from dynavlan.service because a `.timer` activates a service with a fixed `ExecStart` mode, and boot (reconcile, with removals) vs rescan (add-only) are different modes. This is one more unit than the original "two units" wording.
+- `dynavlan.timer`: `OnBootSec`/`OnUnitActiveSec` (monotonic), `Unit=dynavlan-rescan.service`, `WantedBy=timers.target`; interval via `.d/interval.conf` from `RESCAN_MINUTES` (rendered by `--reconfigure`).
+- Persistent journald guaranteed at install (`/var/log/journal` + `Storage=persistent` drop-in). dynavlan logs to the journal via stderr (identifier `dynavlan`); the optional `/var/log/dynavlan.log` file branch was not built - the install guarantees the journald branch instead (FR-31 requires one branch, not both).
+- `install.sh`: require root; install script (0755) + config (0644, never clobber existing) + all three units; ensure `tcpdump` and `lldpd` present; write the journald persistence drop-in; `--reconfigure`; `enable dynavlan.service` + `enable dynavlan.timer` (both armed for NEXT boot - deliberately NOT `--now`: a monotonic timer whose `OnBootSec` is already past fires immediately, which would run a rescan apply before the operator's `--dry-run` preview). Install never triggers any network change; first apply is the operator's `--boot` or the next reboot (which also starts the timer).
+- Known limitation (FR-11): if an external netplan file reuses dynavlan's exact stanza key (`<iface>.<id>`), `netplan get` merges the two entries into one and the overlap warning cannot fire (detecting it would require reading base files by name, which crosses the never-read-base-config line). Accepted; different-key/same-id overlaps are detected and warned.
 
 ## 12. Portability plan (what to build now vs later)
 

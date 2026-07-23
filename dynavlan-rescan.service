@@ -1,0 +1,12 @@
+[Unit]
+Description=dynavlan timer rescan (add-only VLAN discovery)
+Documentation=file:/usr/local/sbin/dynavlan
+After=systemd-networkd.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/dynavlan --rescan
+SyslogIdentifier=dynavlan
+TimeoutStartSec=300
+
+# No [Install]: this service is activated only by dynavlan.timer, never enabled directly.

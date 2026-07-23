@@ -1,0 +1,14 @@
+[Unit]
+Description=Periodic dynavlan rescan (add-only VLAN discovery)
+Documentation=file:/usr/local/sbin/dynavlan
+
+[Timer]
+# Monotonic (OnBootSec/OnUnitActiveSec) so it survives RTC/NTP drift on headless boxes.
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=dynavlan-rescan.service
+# OnUnitActiveSec is overridden by /etc/systemd/system/dynavlan.timer.d/interval.conf,
+# rendered from RESCAN_MINUTES by `dynavlan --reconfigure` (run at install and on change).
+
+[Install]
+WantedBy=timers.target

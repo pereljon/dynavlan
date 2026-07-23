@@ -6,7 +6,7 @@ Read these live-state files first on every session, in order:
 3. context/decisions.md - decisions already made (do not re-litigate)
 
 Then, before building dynavlan, read the design in order:
-4. docs/dynavlan-PRD.md - v3.1, authoritative requirements (FR/NFR/AC)
+4. docs/dynavlan-PRD.md - v3.2, authoritative requirements (FR/NFR/AC)
 5. dev/features/dynavlan.md - technical design: architecture, backend seam, apply/rollback state machine, module decomposition
 6. dev/features/dynavlan-tests.md - test plan and unit cases to write first
 

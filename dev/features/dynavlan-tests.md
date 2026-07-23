@@ -6,7 +6,7 @@ Companion to `dev/features/dynavlan.md`. Scope is deliberately right-sized for a
 
 - Test the pure logic where silent bugs hide and are trivial to isolate.
 - Use the tool's own `--dry-run` as the primary decision-path verification on real inputs.
-- Exercise the apply/rollback safety cases by hand on a recoverable VM, since they cannot be safely triggered over SSH and are not worth simulating.
+- Exercise the apply/rollback safety cases by hand on the actual appliance with console access, since they cannot be safely triggered over SSH (a bad apply drops the uplink) and are not worth simulating; the real Meraki trunk is what exercises detection.
 - Add heavier machinery (mock backend, namespace trunk, CI) only if dynavlan grows more maintainers or broader use. The §4 backend seam in the design doc makes that a later, contained addition.
 
 ## Layer 1 - Unit assert script (pure functions)
@@ -71,7 +71,25 @@ Trunk selection stability underwrites AC-7/NFR-2; a flapping choice causes repea
 | {enp1s0:2, enp2s0:5} / enp1s0 | enp2s0 (clear supersede) |
 | {enp1s0:3, enp2s0:4} / enp1s0 | enp1s0 (marginal lead does not flip; hysteresis margin) |
 
-Note: 1d/1e require `reconcile_boot` and `detect_union` to expose these as pure helpers. This is a deliberate testability constraint on the implementation (see design §5).
+### 1f. `vlan_guard` + `limit_fill` (FR-12/FR-36 count gate)
+| n / warn / limit | Expected |
+|---|---|
+| 10 / 32 / 64 | OK |
+| 32 / 32 / 64 | OK (at warn, not above) |
+| 40 / 32 / 64 | WARN |
+| 64 / 32 / 64 | WARN (at limit, not over) |
+| 70 / 32 / 64 | OVER |
+| 70 / 32 / 0 | WARN (0 = unlimited, never OVER) |
+| 20 / 32 / 10 | OVER (limit below warn still fires) |
+
+| limit_fill: additions / slots | Expected |
+|---|---|
+| "1 5 9 20" / 2 | {1,5} (lowest-N, deterministic) |
+| "9 1 5" / 2 | {1,5} (sorts before cutting) |
+| "1 5 9" / 0 | {} |
+| "1 5" / 10 | {1,5} |
+
+Note: 1d/1e require `reconcile_boot` and `detect_union` to expose these as pure helpers. This is a deliberate testability constraint on the implementation (see design §5). 1f's helpers feed `gate_vlan_count` (refuse vs fill per `VLAN_LIMIT_MODE`).
 
 ## Layer 2 - `--dry-run` decision-path verification (real inputs)
 
@@ -83,9 +101,9 @@ Note: 1d/1e require `reconcile_boot` and `detect_union` to expose these as pure 
 
 Verifies on real inputs: interface discovery, trunk selection, sniff+lldp detection, range/ignore/exclusion filtering, and that the generated config validates. The dry-run validation tree includes the real base netplan files (see design §6), so it DOES surface an FR-17 base-file-freeze condition. Does NOT cover the apply/rollback path (by design) — that is Layer 3.
 
-## Layer 3 - Manual VM checklist (apply/rollback safety)
+## Layer 3 - Manual hardware checklist (apply/rollback safety)
 
-Run on a **VM with console access** (not the SSH-only lab box) so a failed revert loses nothing. A virtual trunk is simplest via a second VM or a bridge carrying a few tagged VLANs; for the uplink-break test, console access is the only hard requirement.
+Run on the **actual Protectli/Ubuntu appliance plugged into the live Meraki trunk**, with **console access** (keyboard+monitor or serial) so a failed revert never strands the box. Testing on real hardware is deliberate: the Meraki trunk supplies real tagged frames, so sniff/LLDP detection is exercised for real rather than approximated by a synthetic bridge, and the igb NIC / netplan behaviors (promisc, rx-vlan-filter, try/revert) are the ones already hardware-validated. Console access is the one hard requirement: it is the recovery path independent of the box's own uplink. `netplan try` still auto-reverts on timeout, so most cases self-heal even with no intervention; the console is the backstop for the residual cases where the safety net itself is under test.
 
 | # | Case | Steps | Expected | AC |
 |---|------|-------|----------|----|
@@ -96,13 +114,18 @@ Run on a **VM with console access** (not the SSH-only lab box) so a failed rever
 | L3-5 | Validate failure | Inject a bad generated stanza (test hook); apply | `netplan generate` fails, no apply, prior file preserved, err logged | AC-5, AC-6 |
 | L3-6 | Health-check revert | Force a config that drops the uplink default route; apply | `netplan try` reverts on timeout, uplink restored, no deletes, no restarts, err logged. Also: the accept-write lands after the pipe closed (EPIPE) without crashing, and the apply-revert err line is still logged cleanly | AC-6, AC-11 |
 | L3-7 | Removal after accept | Remove a VLAN via `--boot` two-pass; confirm | Stanza gone AND `ip link delete` ran (interface gone), only after accept | AC-3 |
-| L3-8 | Relocation | Move VM to a trunk with a different VLAN set; `--boot` | Old VLANs removed, new ones added, single reconcile | AC-3 |
+| L3-8 | Relocation | Move the box to a trunk with a different VLAN set (replug to a different Meraki port profile, or change the port's allowed VLANs); `--boot` | Old VLANs removed, new ones added, single reconcile | AC-3 |
 | L3-9 | Second untagged NIC | Ensure a second carrier-up untagged NIC exists | Never selected as trunk, gets no VLANs | AC-10 |
-| L3-10 | Log durability | Reboot the VM | Prior run's journal entries survive | AC-9 |
+| L3-10 | Log durability | Reboot the box | Prior run's journal entries survive | AC-9 |
 | L3-11 | flock death-release (FR-30) | While a `--boot` run holds the lock inside the `netplan try` window, `kill -9` it from the console | Kernel releases the fd-flock; `netplan try` reverts on timeout; uplink intact; a subsequent `--rescan` acquires the lock and runs (NOT permanently "skipped, run in progress") | AC-6 |
 | L3-12 | Atomic write kill (FR-16) | `kill -9` during config generation (repeatedly, or via a temp/rename test hook) | `90-dynavlan.yaml` is always either the old complete file or the new complete file, never truncated; next run proceeds | AC-6 |
 | L3-13 | No usable `netplan try` → refuse (FR-0) | Stub/mask `netplan try` capability or report an old netplan version | Refuse to run, `err` logged, NO fallback to bare `netplan apply`, no change | AC-5 |
 | L3-14 | Empty-snapshot accept (AC-12) | Boot with trunk up but uplink DHCP delayed (no default route at snapshot); apply an isolated-VLAN add | Change is ACCEPTED (not reverted); isolated VLANs come up; box is not left a no-op | AC-12 |
+| L3-15 | Slow-apply accept race (§9) | Add many VLANs at once (slow apply) with a change that breaks the uplink route (test hook), so health would PASS pre-apply and FAIL post-apply | ACCEPT is NOT written before the apply completes (probe-iface evidence); health samples post-apply state; change REVERTS. Verify in the journal that the accept loop waited for the probe | AC-6 |
+| L3-16 | FAIL path rides netplan's own revert | Force a health FAIL; observe the fifo/write-end lifecycle and netplan try's exit | dynavlan writes nothing and holds the fifo open until netplan try exits on its own timer; revert occurs; no stdin-EOF early-close is exercised; clean err log | AC-6, AC-11 |
+| L3-17 | Dead-try false-accept guard | Kill netplan try (or trigger "another netplan process running") after launch, before accept | dynavlan does NOT accept, does NOT delete interfaces, does NOT restart the agent; err logged | AC-6, AC-11 |
+| L3-18 | Cross-NIC relocation (AC-3) | With owned VLANs on NIC A, move the trunk cable to NIC B; reboot | Both boot passes see A tagless and B tagged; relocation branch fires: A's VLANs removed (post-accept), B's set provisioned, single reconcile. Also verify the conservative case: single-pass-only evidence on B does NOT relocate | AC-3 |
+| L3-19 | VLAN_LIMIT refuse and fill (FR-36/AC-13) | Set VLAN_LIMIT below the trunk's VLAN count; run --boot in refuse mode, then VLAN_LIMIT_MODE=fill | refuse: nothing new applied, owned set untouched, err names count/limit/remedies. fill: exactly VLAN_LIMIT VLANs (lowest ids), skipped ids named in the journal | AC-13 |
 
 Several of these (netplan-try accept/revert, promisc sniff of an unconfigured VLAN, isolation stanza, explicit `ip link delete`) were already validated once by hand on the lab box; this codifies them as repeatable.
 
@@ -122,6 +145,7 @@ Several of these (netplan-try accept/revert, promisc sniff of an unconfigured VL
 | AC-10 | L3-9 |
 | AC-11 | L3-6 |
 | AC-12 | Layer 1 1c (evaluator) + **L3-14 (real empty-snapshot accept)** |
+| AC-13 | Layer 1 1f (guard/fill math) + L3-19 (real refuse + fill) |
 
 Note: FR-23 removal-set math is covered by Layer 1 1d; FR-4 hysteresis by 1e; FR-16/FR-30 by L3-11/L3-12.
 
@@ -129,5 +153,5 @@ Note: FR-23 removal-set math is covered by Layer 1 1d; FR-4 hysteresis by 1e; FR
 
 - A test framework (bats): the assert script suffices.
 - A mock backend + state-machine suite: the manual checklist + `netplan try` safety net cover the branches at this scale.
-- A namespace-based virtual trunk / CI: revisit if CI or multi-maintainer development starts.
+- A synthetic/namespace virtual trunk or CI: not needed while testing runs on the real appliance plus live Meraki trunk; revisit if CI or multi-maintainer development starts.
 - Coverage targets: not meaningful for a thin orchestration script.

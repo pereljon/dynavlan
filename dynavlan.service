@@ -1,0 +1,18 @@
+[Unit]
+Description=dynavlan boot reconcile (discover VLANs, apply, restart monitoring)
+Documentation=file:/usr/local/sbin/dynavlan
+After=systemd-networkd.service
+Wants=systemd-networkd.service
+# Deliberately NOT ordered after network-online.target (FR-29): the sniff needs
+# link carrier, not an IP, and dynavlan brings links up itself. Blocking on
+# network-online.target would stall a no-uplink boot.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/dynavlan --boot
+SyslogIdentifier=dynavlan
+# Boot can take CARRIER_WAIT + 2*SNIFF_SECONDS + BOOT_SETTLE_SECONDS + lease settle.
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

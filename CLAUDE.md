@@ -41,6 +41,7 @@ Infrastructure, not a framework. Never surprise the operator; never strand the b
 - Lead with the answer or result, then supporting detail. Reference code as `file_path:line_number`.
 - Write like a developer. No LLM-stereotype language ("delve", "leverage", "streamline", "excited to"). No em dashes; use regular dashes (-) everywhere: code, comments, docs, commit messages.
 - Default to no code comments; add one only when the reason behind the code is non-obvious (a constraint, invariant, or workaround). Match the conventions already in the file. Handle errors at boundaries; prefer immutable operations and small, focused functions.
+- `dynavlan` is intentionally a single self-contained file (design §1); file-size caps from global rules (e.g. an 800-line limit) do NOT apply here. Optimize for clarity, never compress logic or drop comments to hit a line count. Expanded multi-line guards are preferred over dense one-liners.
 
 ## Documentation Roles
 
@@ -55,8 +56,8 @@ Infrastructure, not a framework. Never surprise the operator; never strand the b
 | `dev/SKELETON.md` | How it works: logic flow and key invariants |
 | `dev/IMPLEMENTATION-SPEC.md` | Architecture of the base manual deployment (netplan, VLANs, hardening) |
 | `dev/features/dynavlan.md` | dynavlan technical design: architecture, backend seam, apply/rollback state machine, module decomposition, systemd/install layout |
-| `dev/features/dynavlan-tests.md` | dynavlan test plan: unit assert cases (1a-1e), `--dry-run` verification, VM integration checklist |
-| `docs/dynavlan-PRD.md` | dynavlan product requirements (v3.1): authoritative FR/NFR/AC with severity+impact tags |
+| `dev/features/dynavlan-tests.md` | dynavlan test plan: unit assert cases (1a-1f), `--dry-run` verification, hardware integration checklist |
+| `docs/dynavlan-PRD.md` | dynavlan product requirements (v3.2): authoritative FR/NFR/AC with severity+impact tags |
 | `docs/deployment-guide.md` | The manual Domotz-on-Ubuntu provisioning runbook dynavlan builds on |
 | `README.md` | Landing page: what the project is and where the docs are |
 | `CHANGELOG.md` | What changed per release |
@@ -87,7 +88,7 @@ Runs as root on a headless appliance at client sites with no remote console. The
 
 ## Development Workflow
 
-dynavlan is not yet implemented. The build sequence is in `context/todo.md` under "NEXT: Build dynavlan": (1) TDD the pure helpers (`tests/unit.sh`) under `superpowers:test-driven-development`; (2) build the core script cohesively (the apply/rollback state machine is too coupled for subagent fan-out); (3) config template, systemd `dynavlan.service`/`dynavlan.timer`, `install.sh`; (4) `code-reviewer` + `security-reviewer` subagent pass; (5) run the VM integration checklist. There is no hot-reload: it installs as a systemd service + timer; exercise it on a console-accessible VM, never only over SSH (a bad apply drops the connection).
+dynavlan is not yet implemented. The build sequence is in `context/todo.md` under "NEXT: Build dynavlan": (1) TDD the pure helpers (`tests/unit.sh`) under `superpowers:test-driven-development`; (2) build the core script cohesively (the apply/rollback state machine is too coupled for subagent fan-out); (3) config template, systemd `dynavlan.service`/`dynavlan.timer`, `install.sh`; (4) `code-reviewer` + `security-reviewer` subagent pass; (5) run the hardware integration checklist. There is no hot-reload: it installs as a systemd service + timer; exercise it on the actual Protectli appliance on the live Meraki trunk with console access, never only over SSH (a bad apply drops the connection). No VM: real hardware on the real trunk is the test bed.
 
 Before coding any change once code exists: read `dev/features/dynavlan.md` (and `dev/CODEMAP.md`/`dev/SKELETON.md` once populated) to identify the blast radius, then locate the specific functions. Don't start editing until you know what's affected.
 
@@ -133,6 +134,6 @@ After any code change, check whether these need updating:
 - `CLAUDE.md` (if key behaviors changed)
 - `CHANGELOG.md` (new features, fixes, removals per release)
 - version in the `dynavlan` script (`ver=` variable) bump if needed (semver: patch/minor/major)
-- systemd units (`dynavlan.service`/`dynavlan.timer`) and `install.sh` if artifacts change
+- systemd units (`dynavlan.service`/`dynavlan-rescan.service`/`dynavlan.timer`) and `install.sh` if artifacts change
 
 When making multiple changes, consider logical ordering: some changes should come before others (e.g. move code before updating references to it; validate inputs before using them).

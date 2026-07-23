@@ -1,0 +1,1242 @@
+#!/usr/bin/env bash
+#
+# dynavlan - self-configuring VLAN provisioning for headless Linux monitoring appliances.
+#
+# Discovers active tagged VLANs on the trunk and brings each up with isolated DHCP,
+# then restarts the monitoring agent. Runs at boot and on a timer. No SSH, no hand-edited YAML.
+#
+# This file is sourceable: sourcing it defines the functions without running main,
+# so tests/unit.sh can exercise the pure helpers directly.
+#
+# See docs/dynavlan-PRD.md (behavior), dev/features/dynavlan.md (design).
+
+set -o pipefail
+
+ver="0.1.0"
+
+# --- constants (the ONLY hardcoded paths; everything else is discovered) ---
+CONF_FILE="/etc/dynavlan.conf"
+NETPLAN_FILE="/etc/netplan/90-dynavlan.yaml"   # FR-13: the one file we own
+LOCK_FILE="/run/dynavlan.lock"                 # FR-30: fd-held flock
+BACKUP_DIR="/var/backups/dynavlan"             # FR-19: audit/history backups (outside /etc/netplan)
+MIN_NETPLAN="0.106"                            # FR-0: pinned minimum (Ubuntu 22.04 baseline)
+TRY_TIMEOUT=30                                 # FR-18: netplan try confirmation window (starts AFTER its apply)
+POLL_INTERVAL=2                                # accept-loop sampling interval (§9)
+APPLY_FALLBACK_SETTLE=10                       # min settle before health sampling when no probe iface exists
+HEALTH_CONSEC=2                                # consecutive health PASSes required to accept
+
+# Default log level so log() works before load_config; overwritten by config.
+LOG_LEVEL="${LOG_LEVEL:-info}"
+
+# Mutable globals set during a run.
+IGNORE_SET=""        # parsed VLAN_IGNORE set
+TRUNK_IFACE=""       # selected trunk this run
+DETECTED_VLANS=""    # VLAN ids on the selected trunk
+OLD_TRUNK=""         # parent iface of our currently-owned VLANs (previous trunk)
+LAST_BACKUP=""       # path of the most recent pre-change backup
+VALIDATE_ERRSRC=""   # "ours" | "base" after a failed backend_validate
+VALIDATE_ERRMSG=""
+
+# ---------------------------------------------------------------------------
+# Pure helpers (side-effect-free, unit-tested in tests/unit.sh)
+# ---------------------------------------------------------------------------
+
+# emit_set IDS...
+#   Print the given ids as a sorted, de-duplicated, space-separated set (no trailing
+#   space). Empty input prints nothing. Shared by the set-producing helpers below.
+emit_set() {
+	[ -z "$*" ] && return 0
+	printf '%s\n' "$@" | sort -n -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+# parse_vlan_ignore RAW
+#   Expand a VLAN_IGNORE string (comma and/or whitespace separated, with inclusive
+#   low-high ranges) into a sorted, de-duplicated, space-separated set on stdout.
+#   Empty input yields the empty set. Any malformed token, out-of-range id
+#   (valid 1-4094; 0 and 4095 are reserved), or inverted range returns non-zero
+#   and prints nothing (refuse-to-run at the call site).
+parse_vlan_ignore() {
+	local raw="$1"
+	local -a fields parts
+	local f p lo hi i out=""
+	read -ra fields <<<"$raw"
+	for f in "${fields[@]}"; do
+		IFS=',' read -ra parts <<<"$f"
+		for p in "${parts[@]}"; do
+			if [[ "$p" == *-* ]]; then
+				lo="${p%%-*}"
+				hi="${p#*-}"
+				[[ "$lo" =~ ^[0-9]+$ && "$hi" =~ ^[0-9]+$ ]] || return 1
+				((lo <= hi)) || return 1
+				((lo >= 1 && hi <= 4094)) || return 1
+				for ((i = lo; i <= hi; i++)); do out="$out $i"; done
+			else
+				[[ "$p" =~ ^[0-9]+$ ]] || return 1
+				((p >= 1 && p <= 4094)) || return 1
+				out="$out $p"
+			fi
+		done
+	done
+	emit_set $out
+	return 0
+}
+
+# select_trunk CANDIDATES PREVIOUS
+#   FR-4 trunk selection with hysteresis. CANDIDATES are "iface:tagcount" tokens; the
+#   port carrying the most distinct tags wins, but a marginal lead over the PREVIOUS
+#   trunk (<= TRUNK_HYSTERESIS) does not flip the choice, so a stable trunk does not
+#   flap between near-equal ports (guards AC-7/NFR-2 against repeated applies).
+#   Ties break on the lexicographically smallest iface for determinism.
+select_trunk() {
+	local cands="$1" previous="$2"
+	local margin=1
+	local tok iface count best="" bestcount=-1 prevcount=""
+	for tok in $cands; do
+		iface="${tok%%:*}"
+		count="${tok#*:}"
+		if ((count > bestcount)); then
+			bestcount="$count"
+			best="$iface"
+		elif ((count == bestcount)) && [[ "$iface" < "$best" ]]; then
+			best="$iface"
+		fi
+		[ "$iface" = "$previous" ] && prevcount="$count"
+	done
+	[ -z "$best" ] && return 0
+	if [ -n "$previous" ] && [ -n "$prevcount" ] && ((bestcount <= prevcount + margin)); then
+		echo "$previous"
+	else
+		echo "$best"
+	fi
+	return 0
+}
+
+# boot_removals OWNED PASS1 PASS2
+#   FR-23 two-pass boot removal set: an owned VLAN is removed only if absent from BOTH
+#   detection passes. Zero-detection guard (FR-22): if both passes are empty, remove
+#   nothing (never read "detected nothing" as "remove everything"). Prints the sorted set.
+boot_removals() {
+	local owned="$1" p1="$2" p2="$3"
+	local -a union=($p1 $p2)
+	[ ${#union[@]} -eq 0 ] && return 0
+	local seen=" $p1 $p2 " id out=""
+	for id in $owned; do
+		case "$seen" in *" $id "*) continue ;; esac
+		out="$out $id"
+	done
+	emit_set $out
+	return 0
+}
+
+# health_check_eval SNAP_IFACE POST_ROUTES
+#   Evaluate the FR-18 default-route health check. SNAP_IFACE is the egress iface of
+#   the lowest-metric default route captured before apply ("" if none). POST_ROUTES is
+#   the post-apply default routes as "iface:metric" tokens ("" if none). Prints PASS/FAIL.
+#   Decision is on the interface only (design §8): a metric or gateway change on the same
+#   iface is a normal DHCP event and must not revert. Empty snapshot never reverts on an
+#   independently-missing uplink, and generated VLANs add no default (AC-12), so any new
+#   default that appears is the base uplink, not ours.
+health_check_eval() {
+	local snap_iface="$1" post_routes="$2"
+	local tok iface metric lowest="" minmetric=""
+	for tok in $post_routes; do
+		iface="${tok%%:*}"
+		metric="${tok#*:}"
+		if [ -z "$minmetric" ] || ((metric < minmetric)); then
+			minmetric="$metric"
+			lowest="$iface"
+		fi
+	done
+	if [ -z "$snap_iface" ]; then
+		echo PASS
+	elif [ -z "$lowest" ]; then
+		echo FAIL
+	elif [ "$lowest" = "$snap_iface" ]; then
+		echo PASS
+	else
+		echo FAIL
+	fi
+	return 0
+}
+
+# vlan_guard N WARN LIMIT
+#   FR-36 count gate. N = would-be total VLAN set size. Prints OVER when N exceeds
+#   LIMIT (LIMIT 0 = unlimited, never OVER), else WARN when N exceeds WARN, else OK.
+#   OVER outranks WARN so a limit set below the warn threshold still fires.
+vlan_guard() {
+	local n="$1" warn="$2" limit="$3"
+	if [ "$limit" -gt 0 ] && [ "$n" -gt "$limit" ]; then
+		echo OVER
+	elif [ "$n" -gt "$warn" ]; then
+		echo WARN
+	else
+		echo OK
+	fi
+	return 0
+}
+
+# limit_fill ADDITIONS SLOTS
+#   FR-36 fill mode subset: the SLOTS lowest ids from ADDITIONS (deterministic:
+#   lowest-first, so every box on the same trunk picks the same subset).
+#   SLOTS <= 0 yields the empty set.
+limit_fill() {
+	local adds="$1" slots="$2" id out="" n=0
+	[ "$slots" -le 0 ] && return 0
+	for id in $(emit_set $adds); do
+		out="$out $id"
+		n=$((n + 1))
+		[ "$n" -ge "$slots" ] && break
+	done
+	emit_set $out
+	return 0
+}
+
+# compute_candidates DETECTED MIN MAX IGNORE MANAGED OWNED
+#   candidates = detected ∩ [MIN,MAX] − IGNORE − MANAGED − OWNED. Each set arg is a
+#   space-separated id list; result is the sorted, de-duplicated set on stdout.
+compute_candidates() {
+	local detected="$1" min="$2" max="$3" ignore="$4" managed="$5" owned="$6"
+	local id out=""
+	local excl=" $ignore $managed $owned "
+	for id in $detected; do
+		((id >= min && id <= max)) || continue
+		case "$excl" in *" $id "*) continue ;; esac
+		out="$out $id"
+	done
+	emit_set $out
+	return 0
+}
+
+# ---------------------------------------------------------------------------
+# Small set utilities (space-separated sorted id lists)
+# ---------------------------------------------------------------------------
+
+set_minus() { # A B -> A without B's members
+	local a="$1" b=" $2 " id out=""
+	for id in $a; do
+		case "$b" in *" $id "*) continue ;; esac
+		out="$out $id"
+	done
+	emit_set $out
+}
+
+set_union() { emit_set $1 $2; }
+
+count_ids() { set -- $1; echo "$#"; }
+
+in_list() { # VALUE "a b c" -> 0 if VALUE is one of the words
+	local x="$1" e
+	for e in $2; do [ "$x" = "$e" ] && return 0; done
+	return 1
+}
+
+is_uint() { case "$1" in '' | *[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+
+# ---------------------------------------------------------------------------
+# Logging (FR-31/32/33): leveled, to stderr (systemd journal, identifier dynavlan)
+# ---------------------------------------------------------------------------
+
+level_num() {
+	case "$1" in
+	debug) echo 0 ;; info) echo 1 ;; notice) echo 2 ;; warning) echo 3 ;; err) echo 4 ;; *) echo 1 ;;
+	esac
+}
+
+log() {
+	local lvl="$1"
+	shift
+	[ "$(level_num "$lvl")" -ge "$(level_num "${LOG_LEVEL:-info}")" ] &&
+		printf 'dynavlan[%s]: %s\n' "$lvl" "$*" >&2
+	return 0
+}
+
+usage() {
+	printf 'usage: dynavlan --boot|--rescan|--dry-run|--status|--reconfigure\n' >&2
+}
+
+# ---------------------------------------------------------------------------
+# Config (FR-0/6/9) - source /etc/dynavlan.conf, apply defaults, validate strictly
+# ---------------------------------------------------------------------------
+
+load_config() {
+	DETECT_METHOD="both"
+	VLAN_MIN=2
+	VLAN_MAX=1000
+	VLAN_IGNORE=""
+	VLAN_WARN=32
+	VLAN_LIMIT=64
+	VLAN_LIMIT_MODE=refuse
+	SNIFF_SECONDS=60
+	BOOT_SETTLE_SECONDS=20
+	CARRIER_WAIT_SECONDS=30
+	LEASE_SETTLE_SECONDS=30
+	RESCAN_MINUTES=5
+	RESET_ON_BOOT=true
+	RESTART_SNAPS="domotzpro-agent-publicstore"
+	RESTART_SERVICES=""
+	LOG_LEVEL=info
+	BACKUP_KEEP=10
+	PER_VLAN_MAC=false
+
+	if [ -f "$CONF_FILE" ]; then
+		# Sourced as root on every run: refuse if the file is not root-owned or is
+		# group/other-writable, else a permission drift becomes local root escalation.
+		# (Enforced only when running as root: that is the escalation scenario.)
+		if [ "$(id -u)" -eq 0 ]; then
+			local owner mode
+			owner=$(stat -c '%u' "$CONF_FILE" 2>/dev/null || stat -f '%u' "$CONF_FILE" 2>/dev/null)
+			mode=$(stat -c '%a' "$CONF_FILE" 2>/dev/null || stat -f '%Lp' "$CONF_FILE" 2>/dev/null)
+			if [ -z "$owner" ] || [ "$owner" != "0" ] || [ $((0$mode & 022)) -ne 0 ]; then
+				log err "refusing to source $CONF_FILE: must be root-owned and not group/other-writable (owner uid=${owner:-unknown} mode=${mode:-unknown})"
+				return 1
+			fi
+		fi
+		# shellcheck disable=SC1090
+		. "$CONF_FILE" || {
+			log err "failed to source $CONF_FILE"
+			return 1
+		}
+	fi
+
+	local k val
+	in_list "$LOG_LEVEL" "debug info notice warning err" || {
+		log err "invalid LOG_LEVEL=$LOG_LEVEL"
+		return 1
+	}
+	in_list "$DETECT_METHOD" "both lldp sniff" || {
+		log err "invalid DETECT_METHOD=$DETECT_METHOD (both|lldp|sniff)"
+		return 1
+	}
+	{ is_uint "$VLAN_MIN" && [ "$VLAN_MIN" -ge 1 ] && [ "$VLAN_MIN" -le 4094 ]; } || {
+		log err "invalid VLAN_MIN=$VLAN_MIN (1-4094)"
+		return 1
+	}
+	{ is_uint "$VLAN_MAX" && [ "$VLAN_MAX" -ge 1 ] && [ "$VLAN_MAX" -le 4094 ]; } || {
+		log err "invalid VLAN_MAX=$VLAN_MAX (1-4094)"
+		return 1
+	}
+	[ "$VLAN_MIN" -le "$VLAN_MAX" ] || {
+		log err "VLAN_MIN($VLAN_MIN) > VLAN_MAX($VLAN_MAX)"
+		return 1
+	}
+	IGNORE_SET=$(parse_vlan_ignore "$VLAN_IGNORE") || {
+		log err "invalid VLAN_IGNORE=\"$VLAN_IGNORE\""
+		return 1
+	}
+	{ is_uint "$VLAN_WARN" && [ "$VLAN_WARN" -ge 1 ]; } || {
+		log err "invalid VLAN_WARN=$VLAN_WARN (integer >= 1)"
+		return 1
+	}
+	is_uint "$VLAN_LIMIT" || {
+		log err "invalid VLAN_LIMIT=$VLAN_LIMIT (integer; 0 = unlimited)"
+		return 1
+	}
+	in_list "$VLAN_LIMIT_MODE" "refuse fill" || {
+		log err "invalid VLAN_LIMIT_MODE=$VLAN_LIMIT_MODE (refuse|fill)"
+		return 1
+	}
+	# SNIFF_SECONDS needs a >=1 floor: `timeout 0` means NO timeout, so 0 would make
+	# tcpdump run unbounded and detection hang forever.
+	{ is_uint "$SNIFF_SECONDS" && [ "$SNIFF_SECONDS" -ge 1 ]; } || {
+		log err "invalid SNIFF_SECONDS=$SNIFF_SECONDS (integer >= 1)"
+		return 1
+	}
+	for k in BOOT_SETTLE_SECONDS CARRIER_WAIT_SECONDS LEASE_SETTLE_SECONDS; do
+		eval "val=\$$k"
+		is_uint "$val" || {
+			log err "invalid $k=$val (non-negative integer)"
+			return 1
+		}
+	done
+	{ is_uint "$RESCAN_MINUTES" && [ "$RESCAN_MINUTES" -ge 1 ]; } || {
+		log err "invalid RESCAN_MINUTES=$RESCAN_MINUTES"
+		return 1
+	}
+	in_list "$RESET_ON_BOOT" "true false" || {
+		log err "invalid RESET_ON_BOOT=$RESET_ON_BOOT"
+		return 1
+	}
+	# >= 1: with 0, prune could delete the just-taken backup pre-revert and leave
+	# restore_prior with no disk-convergence target.
+	{ is_uint "$BACKUP_KEEP" && [ "$BACKUP_KEEP" -ge 1 ]; } || {
+		log err "invalid BACKUP_KEEP=$BACKUP_KEEP (integer >= 1)"
+		return 1
+	}
+	in_list "$PER_VLAN_MAC" "true false" || {
+		log err "invalid PER_VLAN_MAC=$PER_VLAN_MAC"
+		return 1
+	}
+	if [ "$PER_VLAN_MAC" = true ]; then
+		log err "PER_VLAN_MAC=true is not implemented in this version (G-4 open); set false"
+		return 1
+	fi
+	return 0
+}
+
+# ---------------------------------------------------------------------------
+# Preconditions (FR-0): refuse to run (change nothing) if any fail
+# ---------------------------------------------------------------------------
+
+netplan_version() { netplan --version 2>&1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1; }
+
+version_ge() { # A B -> 0 if A >= B
+	[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]
+}
+
+check_preconditions() {
+	if [ "$(id -u)" -ne 0 ]; then
+		log err "must run as root"
+		return 1
+	fi
+	command -v netplan >/dev/null 2>&1 || {
+		log err "netplan not found"
+		return 1
+	}
+	local v
+	v=$(netplan_version)
+	if [ -z "$v" ] || ! version_ge "$v" "$MIN_NETPLAN"; then
+		log err "netplan >= $MIN_NETPLAN required (found ${v:-unknown})"
+		return 1
+	fi
+	# Non-mutating capability probe (FR-0): introspection only, never a live apply.
+	netplan try --help >/dev/null 2>&1 || {
+		log err "'netplan try' unavailable; refusing (no silent fallback to bare 'netplan apply')"
+		return 1
+	}
+	if [ "$DETECT_METHOD" = sniff ] || [ "$DETECT_METHOD" = both ]; then
+		command -v tcpdump >/dev/null 2>&1 || {
+			log err "DETECT_METHOD=$DETECT_METHOD requires tcpdump (not installed)"
+			return 1
+		}
+	fi
+	if [ "$DETECT_METHOD" = lldp ] || [ "$DETECT_METHOD" = both ]; then
+		command -v lldpctl >/dev/null 2>&1 || {
+			log err "DETECT_METHOD=$DETECT_METHOD requires lldpctl (not installed)"
+			return 1
+		}
+	fi
+	return 0
+}
+
+# ---------------------------------------------------------------------------
+# Interface + trunk discovery (FR-1/2/3/4)
+# ---------------------------------------------------------------------------
+
+discover_phys_ifaces() { # live physical Ethernet NICs, never hardcoded, never from netplan
+	local p name
+	for p in /sys/class/net/*; do
+		name=$(basename "$p")
+		[ "$name" = "lo" ] && continue
+		[ -e "$p/device" ] || continue  # real device symlink: excludes VLANs, bridges, bonds, veth
+		[ -d "$p/wireless" ] && continue # exclude wireless
+		[ -e "$p/phy80211" ] && continue
+		[ "$(cat "$p/type" 2>/dev/null)" = "1" ] || continue # ARPHRD_ETHER
+		# Discovered names feed shell variable construction, YAML, and ip commands:
+		# constrain to a safe charset rather than trusting the kernel/udev namespace.
+		case "$name" in
+		*[!A-Za-z0-9_.-]*)
+			log warning "skipping interface with unexpected name characters: $name"
+			continue
+			;;
+		esac
+		printf '%s\n' "$name"
+	done
+}
+
+tags_var() { # IFACE -> per-iface tag-stash variable name (sanitized: no eval injection surface)
+	printf 'TAGS_%s' "${1//[^A-Za-z0-9_]/_}"
+}
+
+prep_iface() { # IFACE - set admin-up + promisc (no wait; carrier waited separately)
+	local i="$1"
+	ip link set "$i" up 2>/dev/null
+	ip link set "$i" promisc on 2>/dev/null # FR-2: makes the NIC VLAN filter transparent; left ON deliberately
+}
+
+has_carrier() { [ "$(cat "/sys/class/net/$1/carrier" 2>/dev/null)" = "1" ]; }
+
+detect_sniff() { # IFACE -> distinct 802.1Q VLAN ids seen (minimal snaplen, no disk write - FR-5)
+	local i="$1"
+	timeout "$SNIFF_SECONDS" tcpdump -i "$i" -e -nn -p -s 64 'vlan' 2>/dev/null |
+		grep -oE 'vlan [0-9]+' | awk '{print $2}' | sort -n -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+detect_lldp() { # IFACE -> VLAN ids advertised via LLDP
+	local i="$1"
+	lldpctl -f keyvalue "$i" 2>/dev/null |
+		grep -E 'vlan-id=' | sed -E 's/.*vlan-id=//' | grep -oE '^[0-9]+' | sort -n -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+detect_iface() { # IFACE -> union of enabled detection methods
+	local i="$1" ids=""
+	case "$DETECT_METHOD" in sniff | both) ids="$ids $(detect_sniff "$i")" ;; esac
+	case "$DETECT_METHOD" in lldp | both) ids="$ids $(detect_lldp "$i")" ;; esac
+	emit_set $ids
+}
+
+iface_tags() { eval "printf '%s' \"\${$(tags_var "$1"):-}\""; }
+
+run_detection() { # sets TRUNK_IFACE, DETECTED_VLANS ; returns 1 if no trunk found
+	local ifaces i tags n cands="" previous tok ifc up=""
+	ifaces=$(discover_phys_ifaces)
+	# Detection cost must NOT scale with port count (a 4-6 port box would blow the
+	# systemd TimeoutStartSec budget): up+promisc everything, then ONE shared carrier
+	# deadline across all ports, then the sniffs run CONCURRENTLY (one SNIFF_SECONDS
+	# window total). Detect only on carrier-up ifaces.
+	for i in $ifaces; do prep_iface "$i"; done
+	local elapsed=0 allup
+	while [ "$elapsed" -lt "$CARRIER_WAIT_SECONDS" ]; do
+		allup=1
+		for i in $ifaces; do has_carrier "$i" || allup=0; done
+		[ "$allup" = 1 ] && break
+		sleep 1
+		elapsed=$((elapsed + 1))
+	done
+	for i in $ifaces; do
+		if has_carrier "$i"; then
+			up="$up $i"
+		else
+			log info "no carrier on $i within ${CARRIER_WAIT_SECONDS}s; skipping detection on it"
+		fi
+	done
+	# Clear every stash (not just carrier-up ones): a NIC that lost carrier since the
+	# previous pass must not report stale tags through iface_tags.
+	for i in $ifaces; do unset "$(tags_var "$i")" 2>/dev/null; done
+	local scratch=""
+	[ -n "$up" ] && scratch=$(mktemp -d /run/dynavlan.detect.XXXXXX 2>/dev/null) || scratch=""
+	if [ -n "$scratch" ]; then
+		for i in $up; do detect_iface "$i" >"$scratch/$i" & done
+		wait # only detection jobs are in flight here (no other background children)
+		for i in $up; do
+			tags=$(cat "$scratch/$i" 2>/dev/null)
+			if [ -n "$tags" ]; then
+				n=$(count_ids "$tags")
+				cands="$cands ${i}:${n}"
+				eval "$(tags_var "$i")=\"\$tags\""
+			fi
+		done
+		rm -rf "$scratch"
+	else
+		for i in $up; do # scratch dir unavailable: sequential fallback
+			tags=$(detect_iface "$i")
+			if [ -n "$tags" ]; then
+				n=$(count_ids "$tags")
+				cands="$cands ${i}:${n}"
+				eval "$(tags_var "$i")=\"\$tags\""
+			fi
+		done
+	fi
+	if [ -z "$cands" ]; then
+		TRUNK_IFACE=""
+		DETECTED_VLANS=""
+		return 1
+	fi
+	previous=$(owned_parent)
+	TRUNK_IFACE=$(select_trunk "$cands" "$previous")
+	for tok in $cands; do
+		ifc="${tok%%:*}"
+		[ "$ifc" != "$TRUNK_IFACE" ] && log info "non-selected trunk candidate $ifc (${tok#*:} tags); leaving alone"
+	done
+	DETECTED_VLANS=$(emit_set $(iface_tags "$TRUNK_IFACE"))
+	log info "trunk selected: $TRUNK_IFACE"
+	return 0
+}
+
+# ---------------------------------------------------------------------------
+# Backend seam (§4) - netplan implementation, the only backend today.
+# The core never touches netplan except through these six backend_* functions.
+# ---------------------------------------------------------------------------
+
+backend_owned_vlans() { # VLAN ids currently in OUR file (the known-set, FR-20)
+	[ -f "$NETPLAN_FILE" ] || return 0
+	grep -E '^[[:space:]]+id:[[:space:]]*[0-9]+' "$NETPLAN_FILE" 2>/dev/null |
+		grep -oE '[0-9]+' | sort -n -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+owned_parent() { # parent iface of our VLANs = previously-selected trunk (stickiness source)
+	[ -f "$NETPLAN_FILE" ] || return 0
+	grep -E '^[[:space:]]+link:[[:space:]]*' "$NETPLAN_FILE" 2>/dev/null | awk '{print $2}' | head -1
+}
+
+backend_list_managed_vlans() { # VLAN ids managed OUTSIDE our namespace (FR-10: netplan+kernel, minus our own)
+	local all
+	all=$({
+		netplan get network.vlans 2>/dev/null | grep -E '^[[:space:]]*id:[[:space:]]*[0-9]+' | grep -oE '[0-9]+'
+		ip -d link show type vlan 2>/dev/null | grep -oE 'id [0-9]+' | awk '{print $2}'
+	} | sort -n -u | tr '\n' ' ' | sed 's/ $//')
+	# Both sources see our own VLANs too (netplan get merges 90-dynavlan.yaml; ip link
+	# lists our live sub-interfaces): subtract them, else every owned VLAN logs a false
+	# "managed elsewhere" exclusion warning on every run.
+	set_minus "$all" "$(backend_owned_vlans)"
+}
+
+backend_generate_config() { # TARGET_IDS - write our file atomically (FR-13/14/16) on TRUNK_IFACE
+	local ids="$1" id tmp
+	# mktemp in the SAME directory (mv stays an atomic same-fs rename) with an
+	# unpredictable name; mktemp also creates it 0600 from the start.
+	tmp=$(mktemp "$(dirname "$NETPLAN_FILE")/.dynavlan.XXXXXX") || return 1
+	{
+		printf '# Managed by dynavlan %s - do not edit; regenerated on each change.\n' "$ver"
+		printf 'network:\n  version: 2\n'
+		if [ -n "$ids" ]; then
+			printf '  vlans:\n'
+			for id in $(emit_set $ids); do
+				printf '    %s.%s:\n' "$TRUNK_IFACE" "$id"
+				printf '      id: %s\n' "$id"
+				printf '      link: %s\n' "$TRUNK_IFACE"
+				printf '      dhcp4: true\n'
+				printf '      dhcp4-overrides:\n'
+				printf '        use-routes: false\n'
+				printf '        use-dns: false\n'
+				printf '        use-ntp: false\n'
+				printf '        use-domains: false\n'
+			done
+		fi
+	} >"$tmp" || {
+		rm -f "$tmp"
+		return 1
+	}
+	chmod 600 "$tmp" 2>/dev/null
+	sync "$tmp" 2>/dev/null || sync
+	mv -f "$tmp" "$NETPLAN_FILE" || {
+		rm -f "$tmp"
+		return 1
+	}
+	return 0
+}
+
+backend_validate() { # [ROOTDIR] - netplan generate; sets VALIDATE_ERRSRC/MSG on failure (FR-17)
+	local rootdir="$1" out rc
+	if [ -n "$rootdir" ]; then
+		out=$(netplan generate --root-dir "$rootdir" 2>&1)
+		rc=$?
+	else
+		out=$(netplan generate 2>&1)
+		rc=$?
+	fi
+	[ "$rc" -eq 0 ] && return 0
+	VALIDATE_ERRMSG="$out"
+	if printf '%s' "$out" | grep -q '90-dynavlan.yaml'; then
+		VALIDATE_ERRSRC="ours"
+	else
+		VALIDATE_ERRSRC="base"
+	fi
+	return 1
+}
+
+# FR-18 / §9: apply via netplan try, health-check-gated accept driven through a fifo.
+#
+# TIMING MODEL (the crux): netplan try APPLIES the config first and only then reads
+# stdin for confirmation; its revert timer starts after the apply. A newline written
+# into the fifo early would sit in the pipe buffer and be consumed unconditionally
+# AFTER the apply - accepting a change the health check never actually saw applied.
+# So the accept is gated on three conditions, evaluated in a poll loop:
+#   1. APPLY EVIDENCE: PROBE_IFC (an interface that exists only once the apply has
+#      run, i.e. the first added VLAN) is present; for changes with no additions,
+#      fall back to a settle floor of APPLY_FALLBACK_SETTLE seconds.
+#   2. LIVENESS: netplan try is still running at accept time. A dead try means it
+#      reverted or failed - either way, never accept (a false accept would delete
+#      interfaces and restart the agent for a change that was never applied).
+#   3. HEALTH: post_apply_health PASSes on HEALTH_CONSEC consecutive samples.
+# On FAIL: write nothing AND keep the fifo write-end open until netplan try exits,
+# so it reverts via its own validated timeout path (stdin EOF behavior on early
+# close is NOT hardware-validated; do not exercise it). An independent wall-clock
+# guard bounds the whole interaction regardless of netplan try's own timer.
+backend_apply_with_revert() { # SNAP_IFACE PROBE_IFC -> 0 accepted, 1 reverted/failed
+	local snap_iface="$1" probe="$2" fifo result trypid
+	local waited=0 consec=0 applied=0 accepted=0
+	local wall_guard=$((TRY_TIMEOUT * 3)) # apply phase + confirmation window + margin
+	fifo=$(mktemp -u /run/dynavlan.fifo.XXXXXX)
+	mkfifo "$fifo" 2>/dev/null || {
+		log err "cannot create fifo $fifo"
+		return 1
+	}
+	trap '' PIPE # accept-write must tolerate netplan try having already exited
+	netplan try --timeout "$TRY_TIMEOUT" <"$fifo" >/dev/null 2>&1 &
+	trypid=$!
+	exec 9>"$fifo" # open write end (unblocks netplan try's read-open)
+	while [ "$waited" -lt "$wall_guard" ]; do
+		if ! kill -0 "$trypid" 2>/dev/null; then
+			log err "netplan try exited before accept (reverted or failed); not accepting"
+			break
+		fi
+		if [ "$applied" -eq 0 ]; then
+			if [ -n "$probe" ]; then
+				ip link show "$probe" >/dev/null 2>&1 && applied=1
+			elif [ "$waited" -ge "$APPLY_FALLBACK_SETTLE" ]; then
+				applied=1 # no added iface to probe (removal-only change): settle floor
+			fi
+		fi
+		if [ "$applied" -eq 1 ]; then
+			result=$(post_apply_health "$snap_iface")
+			if [ "$result" = PASS ]; then
+				consec=$((consec + 1))
+			else
+				consec=0
+			fi
+			if [ "$consec" -ge "$HEALTH_CONSEC" ]; then
+				if kill -0 "$trypid" 2>/dev/null; then # liveness re-check at the accept instant
+					printf '\n' >&9 2>/dev/null && accepted=1
+				fi
+				break
+			fi
+		fi
+		sleep "$POLL_INTERVAL"
+		waited=$((waited + POLL_INTERVAL))
+	done
+	[ "$waited" -ge "$wall_guard" ] && log err "wall-clock guard (${wall_guard}s) expired waiting for apply evidence + health; not accepting"
+	if [ "$accepted" -eq 1 ]; then
+		exec 9>&- # close after the accept write; netplan try exits immediately on accept
+		wait "$trypid" 2>/dev/null
+	else
+		# FAIL path: hold the write end OPEN so netplan try sees no EOF and reverts on
+		# its own timer (the hardware-validated path), bounded by an independent clock.
+		waited=0
+		while kill -0 "$trypid" 2>/dev/null && [ "$waited" -lt "$wall_guard" ]; do
+			sleep "$POLL_INTERVAL"
+			waited=$((waited + POLL_INTERVAL))
+		done
+		exec 9>&-
+		if kill -0 "$trypid" 2>/dev/null; then
+			log err "netplan try still running after ${wall_guard}s post-decision; leaving it to its own revert; state uncertain"
+		else
+			wait "$trypid" 2>/dev/null
+		fi
+	fi
+	trap - PIPE
+	rm -f "$fifo"
+	[ "$accepted" -eq 1 ]
+}
+
+backend_remove_vlan() { # PARENT ID - tear down live interface (FR-24), only ever called after ACCEPT
+	local parent="$1" id="$2" ifc="$1.$2"
+	if ip link show "$ifc" >/dev/null 2>&1; then
+		if ip link delete "$ifc" 2>/dev/null; then
+			log notice "removed VLAN $id (deleted interface $ifc)"
+		else
+			log warning "failed to delete interface $ifc"
+		fi
+	else
+		log info "VLAN $id interface $ifc already absent"
+	fi
+}
+
+# ---------------------------------------------------------------------------
+# Default-route snapshot + health check (FR-18, design §8)
+# ---------------------------------------------------------------------------
+
+default_routes_tokens() { # one "iface:metric" per default route (metric absent -> 0)
+	ip route show default 2>/dev/null | while read -r line; do
+		local dev metric
+		dev=$(printf '%s\n' "$line" | grep -oE 'dev [^ ]+' | awk '{print $2}')
+		[ -z "$dev" ] && continue
+		metric=$(printf '%s\n' "$line" | grep -oE 'metric [0-9]+' | awk '{print $2}')
+		[ -z "$metric" ] && metric=0
+		printf '%s:%s\n' "$dev" "$metric"
+	done
+}
+
+snapshot_default_route() { # dev of the lowest-metric default route, "" if none
+	local tok dev metric best_dev="" best_metric=""
+	for tok in $(default_routes_tokens); do
+		dev="${tok%%:*}"
+		metric="${tok#*:}"
+		if [ -z "$best_metric" ] || [ "$metric" -lt "$best_metric" ]; then
+			best_metric="$metric"
+			best_dev="$dev"
+		fi
+	done
+	printf '%s' "$best_dev"
+}
+
+post_apply_health() { # SNAP_IFACE -> PASS/FAIL (delegates the decision to the pure evaluator)
+	local snap_iface="$1" tokens
+	tokens=$(default_routes_tokens | tr '\n' ' ')
+	health_check_eval "$snap_iface" "$tokens"
+}
+
+# ---------------------------------------------------------------------------
+# Backups (FR-19)
+# ---------------------------------------------------------------------------
+
+backup_current() { # -> non-zero if a prior file exists but could not be backed up
+	[ -f "$NETPLAN_FILE" ] || return 0
+	mkdir -p -m 700 "$BACKUP_DIR" 2>/dev/null
+	local ts
+	ts=$(date -u +%Y%m%dT%H%M%SZ 2>/dev/null || echo backup)
+	LAST_BACKUP="$BACKUP_DIR/90-dynavlan.yaml.$ts.$$"
+	if ! cp -p "$NETPLAN_FILE" "$LAST_BACKUP" 2>/dev/null; then
+		LAST_BACKUP=""
+		return 1
+	fi
+	return 0
+}
+
+restore_prior() { # HAD_PRIOR - converge disk back to the prior file (or none on first run)
+	local had="$1"
+	if [ "$had" = 1 ] && [ -n "$LAST_BACKUP" ] && [ -f "$LAST_BACKUP" ]; then
+		cp -p "$LAST_BACKUP" "$NETPLAN_FILE" 2>/dev/null
+		chmod 600 "$NETPLAN_FILE" 2>/dev/null
+	else
+		rm -f "$NETPLAN_FILE" 2>/dev/null
+	fi
+}
+
+prune_backups() {
+	[ -d "$BACKUP_DIR" ] || return 0
+	local keep="${BACKUP_KEEP:-10}"
+	ls -1t "$BACKUP_DIR"/90-dynavlan.yaml.* 2>/dev/null | tail -n +"$((keep + 1))" |
+		while read -r f; do rm -f "$f"; done
+}
+
+# ---------------------------------------------------------------------------
+# Change-gated side effects (FR-27/28)
+# ---------------------------------------------------------------------------
+
+wait_leases() { # ADD_IDS - bounded, non-fatal wait for new-VLAN leases
+	local ids="$1" id ifc waited
+	[ -z "$ids" ] && return 0
+	for id in $ids; do
+		ifc="$TRUNK_IFACE.$id"
+		waited=0
+		while [ "$waited" -lt "$LEASE_SETTLE_SECONDS" ]; do
+			ip -4 addr show dev "$ifc" 2>/dev/null | grep -q 'inet ' && break
+			sleep 1
+			waited=$((waited + 1))
+		done
+		if ip -4 addr show dev "$ifc" 2>/dev/null | grep -q 'inet '; then
+			log info "VLAN $id leased on $ifc"
+		else
+			log warning "VLAN $id ($ifc) acquired no lease within ${LEASE_SETTLE_SECONDS}s"
+		fi
+	done
+}
+
+restart_targets() {
+	local s
+	for s in $RESTART_SNAPS; do
+		if snap restart "$s" >/dev/null 2>&1; then
+			log notice "restarted snap $s"
+		else
+			log warning "failed to restart snap $s (missing or error); continuing"
+		fi
+	done
+	for s in $RESTART_SERVICES; do
+		if systemctl restart "$s" >/dev/null 2>&1; then
+			log notice "restarted service $s"
+		else
+			log warning "failed to restart service $s (missing or error); continuing"
+		fi
+	done
+}
+
+# ---------------------------------------------------------------------------
+# Apply/rollback state machine (design §7) - the safety-critical chain
+# ---------------------------------------------------------------------------
+
+apply_change() { # TARGET_IDS ADDITIONS REMOVALS
+	local target="$1" additions="$2" removals="$3"
+	local snap_iface had_prior=0 id probe=""
+	# Probe iface: the first added VLAN's interface exists only once netplan try has
+	# actually applied - the §9 accept loop uses it as apply-completion evidence.
+	for id in $additions; do
+		probe="$TRUNK_IFACE.$id"
+		break
+	done
+	snap_iface=$(snapshot_default_route)
+	[ -f "$NETPLAN_FILE" ] && had_prior=1
+	if ! backup_current; then
+		# No backup = no safe disk-convergence target on revert. Fail toward no change.
+		log err "cannot back up current $NETPLAN_FILE (disk full or $BACKUP_DIR unwritable); refusing to apply"
+		return 1
+	fi
+	if ! backend_generate_config "$target"; then
+		log err "failed to write $NETPLAN_FILE"
+		restore_prior "$had_prior"
+		return 1
+	fi
+	if ! backend_validate ""; then
+		if [ "$VALIDATE_ERRSRC" = base ]; then
+			log err "netplan generate failed on a BASE netplan file (NOT dynavlan's); dynavlan updates are frozen until the base config is fixed: $VALIDATE_ERRMSG"
+		else
+			log err "netplan generate rejected dynavlan's own config: $VALIDATE_ERRMSG"
+		fi
+		restore_prior "$had_prior"
+		return 1
+	fi
+	log info "applying target [${target:-none}] on $TRUNK_IFACE via netplan try (uplink snapshot: ${snap_iface:-none})"
+	if backend_apply_with_revert "$snap_iface" "$probe"; then
+		log notice "netplan try ACCEPTED"
+		prune_backups # prune only after accept: a revert must still find LAST_BACKUP on disk
+		for id in $removals; do backend_remove_vlan "$OLD_TRUNK" "$id"; done # FR-24: deletes only after accept
+		wait_leases "$additions"
+		restart_targets
+		log notice "reconcile applied on $TRUNK_IFACE: added [${additions:-none}] removed [${removals:-none}]"
+		return 0
+	fi
+	# REVERT path (FR-27/AC-11): no deletes, no lease-settle, no restarts.
+	log err "post-apply health check FAILED; netplan try reverted; uplink preserved, no deletes, no restarts"
+	# Converge disk to the prior file so the next run starts from known-good. Do NOT re-apply
+	# (FR-19: netplan try already reverted the live state; a competing restore must not fight it).
+	restore_prior "$had_prior"
+	return 1
+}
+
+# ---------------------------------------------------------------------------
+# Exclusion / overlap / count warnings (FR-10/11/12)
+# ---------------------------------------------------------------------------
+
+log_exclusions() { # DETECTED MANAGED
+	local detected="$1" mset=" $2 " id
+	for id in $detected; do
+		case "$mset" in *" $id "*) log warning "VLAN $id detected but managed elsewhere (netplan/kernel); excluded" ;; esac
+	done
+}
+
+warn_overlap() { # OWNED - FR-11: warn when an owned id is ALSO defined in another netplan file
+	local owned="$1" id n ids
+	[ -z "$owned" ] && return 0
+	# netplan get merges all files; an id appearing under two different stanza keys
+	# (ours + an external file's) shows up twice in the merged output.
+	ids=$(netplan get network.vlans 2>/dev/null | grep -E '^[[:space:]]*id:[[:space:]]*[0-9]+' | grep -oE '[0-9]+')
+	for id in $owned; do
+		n=$(printf '%s\n' "$ids" | grep -cx "$id")
+		[ "$n" -ge 2 ] && log warning "dynavlan VLAN $id also defined in another netplan file (FR-11); keeping dynavlan's entry"
+	done
+	return 0
+}
+
+gate_vlan_count() { # KEPT ADDITIONS - echoes the (possibly reduced) additions; rc 1 = refuse (FR-12/FR-36)
+	local kept="$1" adds="$2" nk na n slots newadds dropped
+	nk=$(count_ids "$kept")
+	na=$(count_ids "$adds")
+	n=$((nk + na))
+	case "$(vlan_guard "$n" "$VLAN_WARN" "$VLAN_LIMIT")" in
+	OK)
+		printf '%s' "$adds"
+		return 0
+		;;
+	WARN)
+		log warning "about to configure $n VLANs (> VLAN_WARN=$VLAN_WARN): a wide range on a many-VLAN trunk causes a simultaneous DHCP-DISCOVER burst; consider narrowing VLAN_MIN/VLAN_MAX"
+		printf '%s' "$adds"
+		return 0
+		;;
+	OVER)
+		if [ "$VLAN_LIMIT_MODE" = fill ]; then
+			# Fill: keep everything owned, add the lowest ids into the remaining
+			# slots (deterministic across the fleet), and name every skipped VLAN
+			# so the monitoring gap is visible in the journal, not silent.
+			slots=$((VLAN_LIMIT - nk))
+			[ "$slots" -lt 0 ] && slots=0
+			newadds=$(limit_fill "$adds" "$slots")
+			dropped=$(set_minus "$adds" "$newadds")
+			log warning "VLAN_LIMIT=$VLAN_LIMIT reached (would be $n): adding $(count_ids "$newadds") of $na detected; NOT monitoring [${dropped:-none}] (VLAN_LIMIT_MODE=fill). Narrow VLAN_MIN/VLAN_MAX, extend VLAN_IGNORE, or raise VLAN_LIMIT"
+			printf '%s' "$newadds"
+			return 0
+		fi
+		log err "VLAN_LIMIT exceeded: target set would be $n VLANs (> VLAN_LIMIT=$VLAN_LIMIT); refusing to apply, changing nothing. Narrow VLAN_MIN/VLAN_MAX, extend VLAN_IGNORE, or raise VLAN_LIMIT (0 = unlimited). Detection likely indicates a misconfigured range or a core trunk"
+		return 1
+		;;
+	esac
+}
+
+# ---------------------------------------------------------------------------
+# Reconcile modes (FR-21/22/23/25)
+# ---------------------------------------------------------------------------
+
+do_boot() {
+	log info "run start: mode=boot detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}] reset_on_boot=$RESET_ON_BOOT"
+	if ! run_detection || [ -z "$DETECTED_VLANS" ]; then
+		log err "boot reconcile aborted: no carrier / no tags / zero VLANs detected. Changing nothing (FR-22 zero-detection guard)"
+		return 0
+	fi
+	local owned managed additions removals target pass1 pass2 ref
+	local sel1 seltags1 sel2="" seltags2=""
+	sel1="$TRUNK_IFACE" # freshly-selected trunk BEFORE pinning (relocation evidence)
+	seltags1="$DETECTED_VLANS"
+	owned=$(backend_owned_vlans)
+	OLD_TRUNK=$(owned_parent)
+	[ -z "$OLD_TRUNK" ] && OLD_TRUNK="$TRUNK_IFACE"
+	# Pin to the owned parent (mirrors do_rescan): both detection passes AND the
+	# generated config must describe the SAME wire. Without this, a second tagged
+	# NIC winning trunk selection in either pass would make boot_removals compare
+	# tag sets from different interfaces and tear down a live-but-idle owned VLAN.
+	# Boot never relocates a live parent; the RELOCATED branch below (AC-3) handles
+	# the trunk having MOVED to a different NIC, with two-pass evidence.
+	if [ -n "$owned" ]; then TRUNK_IFACE="$OLD_TRUNK"; fi
+	ref="$TRUNK_IFACE"
+	pass1=$(emit_set $(iface_tags "$ref"))
+	log info "detected pass1=[${pass1:-none}] on $ref"
+	managed=$(backend_list_managed_vlans)
+	log_exclusions "$pass1" "$managed"
+	warn_overlap "$owned"
+	additions=$(compute_candidates "$pass1" "$VLAN_MIN" "$VLAN_MAX" "$IGNORE_SET" "$managed" "$owned")
+	removals=""
+	if [ "$RESET_ON_BOOT" = true ]; then
+		log info "boot removal pass 2 in ${BOOT_SETTLE_SECONDS}s..."
+		sleep "$BOOT_SETTLE_SECONDS"
+		pass2=""
+		local pass2_valid=0
+		if run_detection; then
+			sel2="$TRUNK_IFACE" # fresh selection again (relocation evidence)
+			seltags2="$DETECTED_VLANS"
+			# Trust pass 2 for removals only if the reference iface itself has carrier:
+			# an empty read off a dead link is not evidence of absence.
+			if [ "$(cat "/sys/class/net/$ref/carrier" 2>/dev/null)" = "1" ]; then
+				pass2=$(emit_set $(iface_tags "$ref"))
+				pass2_valid=1
+			fi
+		fi
+		log info "detected pass2=[${pass2:-none}] on $ref"
+		# RELOCATION (AC-3): the owned parent carries no tags in EITHER pass while a
+		# DIFFERENT iface was independently selected, with tags, in BOTH passes. That
+		# is two-pass evidence the trunk physically moved (cable re-patched, port
+		# swap, NIC failure). Reconcile in one pass: remove all owned VLANs from the
+		# old parent, provision the new trunk's set on the new parent. Without this
+		# branch, pinning would strand the box on a dead parent forever.
+		if [ -n "$owned" ] && [ -z "$pass1" ] && [ -z "$pass2" ] &&
+			[ -n "$sel1" ] && [ "$sel1" = "$sel2" ] && [ "$sel1" != "$ref" ] &&
+			[ -n "$seltags1" ] && [ -n "$seltags2" ]; then
+			log notice "trunk relocated: $ref carries no tags (both passes); $sel1 does (both passes). Reconciling to $sel1"
+			TRUNK_IFACE="$sel1"
+			removals="$owned" # deleted from OLD_TRUNK=$ref, only after accept (FR-24)
+			additions=$(compute_candidates "$(set_union "$seltags1" "$seltags2")" "$VLAN_MIN" "$VLAN_MAX" "$IGNORE_SET" "$managed" "")
+			target="$additions"
+			if [ -z "$additions" ] && [ -z "$removals" ]; then
+				log info "no change after relocation filtering; zero applies/restarts"
+				return 0
+			fi
+			additions=$(gate_vlan_count "" "$additions") || return 1
+			target="$additions"
+			apply_change "$target" "$additions" "$removals"
+			return $?
+		fi
+		if [ "$pass2_valid" = 1 ]; then
+			removals=$(boot_removals "$owned" "$pass1" "$pass2")
+		else
+			log warning "boot pass 2 could not re-verify trunk $ref (no carrier); skipping removals this boot"
+		fi
+	fi
+	TRUNK_IFACE="$ref" # run_detection in pass 2 may have re-selected; re-pin before generate
+	target=$(set_union "$(set_minus "$owned" "$removals")" "$additions")
+	if [ -z "$additions" ] && [ -z "$removals" ]; then
+		log info "no change: owned=[${owned:-none}] detected=[$pass1]; zero applies/restarts"
+		return 0
+	fi
+	additions=$(gate_vlan_count "$(set_minus "$owned" "$removals")" "$additions") || return 1
+	if [ -z "$additions" ] && [ -z "$removals" ]; then
+		log info "no change after VLAN_LIMIT gating; zero applies/restarts"
+		return 0
+	fi
+	target=$(set_union "$(set_minus "$owned" "$removals")" "$additions")
+	apply_change "$target" "$additions" "$removals"
+}
+
+do_rescan() {
+	log info "run start: mode=rescan detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}]"
+	if ! run_detection; then
+		log info "rescan: no trunk detected; nothing to add"
+		return 0
+	fi
+	local pass="$DETECTED_VLANS" owned managed additions target
+	owned=$(backend_owned_vlans)
+	OLD_TRUNK=$(owned_parent)
+	[ -z "$OLD_TRUNK" ] && OLD_TRUNK="$TRUNK_IFACE"
+	# Rescan is add-only and never relocates: if we already own VLANs, pin to their parent.
+	if [ -n "$owned" ]; then
+		TRUNK_IFACE="$OLD_TRUNK"
+		pass=$(emit_set $(iface_tags "$OLD_TRUNK"))
+	fi
+	log info "detected=[$pass] on $TRUNK_IFACE"
+	managed=$(backend_list_managed_vlans)
+	log_exclusions "$pass" "$managed"
+	warn_overlap "$owned"
+	additions=$(compute_candidates "$pass" "$VLAN_MIN" "$VLAN_MAX" "$IGNORE_SET" "$managed" "$owned")
+	if [ -z "$additions" ]; then
+		log info "rescan: no new VLANs (owned=[${owned:-none}] detected=[$pass]); zero applies/restarts"
+		return 0
+	fi
+	additions=$(gate_vlan_count "$owned" "$additions") || return 1
+	if [ -z "$additions" ]; then
+		log info "rescan: no additions after VLAN_LIMIT gating; zero applies/restarts"
+		return 0
+	fi
+	target=$(set_union "$owned" "$additions")
+	apply_change "$target" "$additions" ""
+}
+
+# ---------------------------------------------------------------------------
+# Operator entrypoints (FR-34/35, --reconfigure)
+# ---------------------------------------------------------------------------
+
+do_dryrun() { # FR-34: detect, compute diff, validate in a throwaway tree; never apply
+	log info "dry-run: detecting (no changes will be made)..."
+	if ! run_detection; then
+		printf 'dry-run: no trunk detected; would change nothing\n'
+		return 0
+	fi
+	local pass="$DETECTED_VLANS" owned managed additions removals target tree saved
+	owned=$(backend_owned_vlans)
+	OLD_TRUNK=$(owned_parent)
+	[ -z "$OLD_TRUNK" ] && OLD_TRUNK="$TRUNK_IFACE"
+	# Mirror the boot/rescan pinning so the preview names the trunk --boot would
+	# actually use, not whichever NIC won this round's selection.
+	if [ -n "$owned" ]; then
+		TRUNK_IFACE="$OLD_TRUNK"
+		pass=$(emit_set $(iface_tags "$OLD_TRUNK"))
+	fi
+	managed=$(backend_list_managed_vlans)
+	additions=$(compute_candidates "$pass" "$VLAN_MIN" "$VLAN_MAX" "$IGNORE_SET" "$managed" "$owned")
+	if [ "$RESET_ON_BOOT" = true ]; then removals=$(set_minus "$owned" "$pass"); else removals=""; fi
+	target=$(set_union "$(set_minus "$owned" "$removals")" "$additions")
+	printf 'dry-run diff (boot mode, single detection pass):\n'
+	printf '  trunk:     %s\n' "$TRUNK_IFACE"
+	printf '  detected:  [%s]\n' "$pass"
+	printf '  owned:     [%s]\n' "${owned:-none}"
+	printf '  additions: [%s]\n' "${additions:-none}"
+	printf '  removals:  [%s]  (indicative; boot confirms removals with a 2-pass sniff)\n' "${removals:-none}"
+	printf '  target:    [%s]\n' "${target:-none}"
+	printf '  count gate: %s (%s VLANs; VLAN_WARN=%s VLAN_LIMIT=%s mode=%s)\n' \
+		"$(vlan_guard "$(count_ids "$target")" "$VLAN_WARN" "$VLAN_LIMIT")" \
+		"$(count_ids "$target")" "$VLAN_WARN" "$VLAN_LIMIT" "$VLAN_LIMIT_MODE"
+	tree=$(mktemp -d /run/dynavlan.dryrun.XXXXXX) || tree=""
+	if [ -z "$tree" ]; then
+		# Without the throwaway tree, NETPLAN_FILE would point at the REAL file and
+		# dry-run would violate its never-apply contract (FR-34). Bail instead.
+		printf '  validate:  SKIPPED - cannot create scratch tree in /run\n'
+		return 1
+	fi
+	mkdir -p "$tree/etc/netplan"
+	cp -a /etc/netplan/. "$tree/etc/netplan/" 2>/dev/null
+	saved="$NETPLAN_FILE"
+	NETPLAN_FILE="$tree/etc/netplan/90-dynavlan.yaml"
+	if ! backend_generate_config "$target"; then
+		NETPLAN_FILE="$saved"
+		printf '  validate:  SKIPPED - could not write candidate config into the throwaway tree\n'
+		rm -rf "$tree"
+		return 1
+	fi
+	NETPLAN_FILE="$saved"
+	if backend_validate "$tree"; then
+		printf '  validate:  OK\n'
+	elif [ "$VALIDATE_ERRSRC" = base ]; then
+		printf '  validate:  FAIL - a BASE netplan file is invalid (not dynavlan): %s\n' "$VALIDATE_ERRMSG"
+	else
+		printf '  validate:  FAIL - dynavlan config invalid: %s\n' "$VALIDATE_ERRMSG"
+	fi
+	rm -rf "$tree"
+	printf '  (dry-run only: no netplan try, no apply, no restart)\n'
+}
+
+do_status() { # FR-35
+	local owned trunk managed
+	owned=$(backend_owned_vlans)
+	trunk=$(owned_parent)
+	printf 'dynavlan %s\n' "$ver"
+	printf '  configured (owned): [%s] on %s\n' "${owned:-none}" "${trunk:-none}"
+	printf '  detect_method: %s   range: %s-%s   ignore: [%s]\n' "$DETECT_METHOD" "$VLAN_MIN" "$VLAN_MAX" "${IGNORE_SET:-none}"
+	log info "status: running a ${SNIFF_SECONDS}s detection pass..."
+	if run_detection; then
+		managed=$(backend_list_managed_vlans)
+		printf '  detected now: [%s] on trunk %s\n' "$DETECTED_VLANS" "$TRUNK_IFACE"
+		printf '  managed elsewhere: [%s]\n' "${managed:-none}"
+	else
+		printf '  detected now: [none] (no trunk)\n'
+	fi
+	printf '  run history: journalctl -t dynavlan\n'
+	return 0
+}
+
+do_reconfigure() { # render the timer interval drop-in from RESCAN_MINUTES
+	local dropdir="/etc/systemd/system/dynavlan.timer.d"
+	mkdir -p "$dropdir" 2>/dev/null || {
+		log err "cannot create $dropdir"
+		return 1
+	}
+	{
+		printf '[Timer]\n'
+		printf 'OnUnitActiveSec=\n' # reset: OnUnitActiveSec accumulates across drop-ins, so clear the base value first
+		printf 'OnUnitActiveSec=%smin\n' "$RESCAN_MINUTES"
+	} >"$dropdir/interval.conf" || {
+		log err "failed to write $dropdir/interval.conf"
+		return 1
+	}
+	systemctl daemon-reload 2>/dev/null
+	log notice "timer interval set to ${RESCAN_MINUTES}min ($dropdir/interval.conf)"
+	return 0
+}
+
+# ---------------------------------------------------------------------------
+# Entrypoint
+# ---------------------------------------------------------------------------
+
+main() {
+	local mode="${1:-}" rc
+	case "$mode" in
+	--boot | --rescan | --dry-run | --status | --reconfigure) ;;
+	'' | -h | --help)
+		usage
+		return 2
+		;;
+	*)
+		printf 'unknown mode: %s\n' "$mode" >&2
+		usage
+		return 2
+		;;
+	esac
+
+	load_config || {
+		log err "invalid configuration; refusing to run"
+		return 1
+	}
+
+	case "$mode" in
+	--status)
+		# Root required: detection needs link-up/promisc/tcpdump; unprivileged it
+		# would silently fail every probe and report a confidently wrong "no trunk".
+		[ "$(id -u)" -eq 0 ] || {
+			log err "must run as root"
+			return 1
+		}
+		do_status
+		return $?
+		;;
+	--reconfigure)
+		[ "$(id -u)" -eq 0 ] || {
+			log err "must run as root"
+			return 1
+		}
+		do_reconfigure
+		return $?
+		;;
+	esac
+
+	check_preconditions || return 1
+
+	case "$mode" in
+	--dry-run)
+		do_dryrun
+		return $?
+		;;
+	--boot | --rescan)
+		# FR-30: serialize on an fd-held flock (kernel-released on death).
+		exec 8>"$LOCK_FILE" || {
+			log err "cannot open lock $LOCK_FILE"
+			return 1
+		}
+		if ! flock -n 8; then
+			log info "skipped, run in progress"
+			return 0
+		fi
+		if [ "$mode" = --boot ]; then do_boot; else do_rescan; fi
+		rc=$?
+		log info "run end: mode=${mode#--} rc=$rc"
+		return $rc
+		;;
+	esac
+}
+
+# Run main only when executed, not when sourced.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+	main "$@"
+fi

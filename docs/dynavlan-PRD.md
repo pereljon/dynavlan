@@ -1,6 +1,9 @@
-# dynavlan - Product Requirements Document (v3.1)
+# dynavlan - Product Requirements Document (v3.2)
 
-Status: Draft v3.1, design-locked and hardware-validated 2026-07-14. Implementation-ready (third architect review returned GO). Not yet implemented.
+Status: Draft v3.2, design-locked and hardware-validated 2026-07-14; implemented 2026-07-21..23 with two review rounds folded in. Not yet released.
+
+### Changes from v3.1 (post-implementation review rounds + approved feature)
+FR-12: `VLAN_COUNT_WARN` renamed `VLAN_WARN`. NEW FR-36 (`VLAN_LIMIT`/`VLAN_LIMIT_MODE`): hard cap on total VLAN count, refuse-loud by default with opt-in deterministic fill. NEW AC-13 for the limit. FR-18 accept mechanism hardened after a second review round found the fifo ACCEPT race (see the requirement's accept-evidence clause): accept requires apply-completion evidence + netplan-try liveness + consecutive health passes; the FAIL path holds the fifo open so revert rides netplan's own timer. FR-19: `BACKUP_KEEP` minimum is 1 (0 could leave a revert with no disk-convergence target). Boot reconcile (FR-22/23) pins both passes to the owned parent and adds an explicit two-pass-evidence relocation branch (AC-3). Detection is bounded independent of port count (shared carrier deadline, concurrent sniffs).
 Owner: IT / infrastructure team.
 Supersedes: PRD v3, v2, v1 (all 2026-07-14).
 Related: `context/decisions.md`, `docs/deployment-guide.md`, `context/open_questions.md`.
@@ -97,7 +100,8 @@ Each FR carries [SEVERITY / IMPACT].
 - FR-9 [MEDIUM / DETERMINISM]: Subtract `VLAN_IGNORE` (denylist, never configured even if detected). Format: comma/whitespace-separated IDs with `low-high` inclusive ranges (e.g. `"1,5,20-25,80"`), parsed as a set; IDs 1-4094, range low<=high, malformed refuses to run. Ignore always wins.
 - FR-10 [HIGH / CONTINUITY]: Exclude any VLAN ID already managed elsewhere, by numeric ID regardless of interface name. Union of two filename-agnostic sources, minus dynavlan's own IDs: (a) `netplan get network.vlans` (merges all `/etc/netplan/*.yaml` regardless of filename; primary, because a duplicate netplan key is what a collision would break); (b) live `ip -d link show type vlan` (catches VLANs created outside netplan). Rationale for CONTINUITY (not RECOVERABILITY): a duplicate key is caught by FR-17 `netplan generate`, which refuses to apply and preserves the working file, so the failure mode is a blocked update, not a stranded box.
 - FR-11 [LOW / DETERMINISM]: Warn when a dynavlan VLAN overlaps a VLAN later defined in an external file, without retracting dynavlan's entry.
-- FR-12 [MEDIUM / CONTINUITY]: Warn and proceed when about to configure more than `VLAN_COUNT_WARN` VLANs; the warning notes that a wide range on a many-VLAN trunk produces a simultaneous DHCP-DISCOVER burst and recommends narrowing the range.
+- FR-12 [MEDIUM / CONTINUITY]: Warn and proceed when about to configure more than `VLAN_WARN` VLANs (renamed from `VLAN_COUNT_WARN` in v3.2); the warning notes that a wide range on a many-VLAN trunk produces a simultaneous DHCP-DISCOVER burst and recommends narrowing the range.
+- FR-36 [HIGH / CONTINUITY] (v3.2): `VLAN_LIMIT` (default 64; 0 = unlimited) hard-caps the total VLAN set size (kept + additions). `VLAN_LIMIT_MODE` (default `refuse`): `refuse` = when the would-be set exceeds the limit, apply NOTHING new (existing owned VLANs keep running), log `err` naming the count, the limit, and the remedies (narrow `VLAN_MIN`/`VLAN_MAX`, extend `VLAN_IGNORE`, raise `VLAN_LIMIT`); never partial-provision. `fill` (explicit opt-in) = keep all owned VLANs, add the LOWEST-id additions into the remaining slots (deterministic across a fleet), and log a warning naming every skipped VLAN so the monitoring gap is visible, never silent. Rationale: over-limit detection indicates misconfiguration (range too wide, or patched into a core trunk); refuse surfaces it at deploy time (attended) instead of leaving a quiet partial gap discovered mid-incident; a too-large apply also stresses the FR-18 try-window timing assumptions.
 
 Candidate formula: `candidates = detected ∩ [VLAN_MIN,VLAN_MAX] − VLAN_IGNORE − (managed elsewhere) − (our own)`.
 
@@ -126,7 +130,8 @@ Candidate formula: `candidates = detected ∩ [VLAN_MIN,VLAN_MAX] − VLAN_IGNOR
   4. If PASS, write a newline to ACCEPT; if FAIL, write nothing and let the timer REVERT.
   5. VLAN-level failures NEVER trigger revert; only base-uplink default-route integrity does.
   - Invariant: `N > (max health-check duration + margin)`, so the timer cannot fire mid-check. A hard wall-clock guard independent of `netplan try`'s own timer bounds the whole interaction. The accept-write must tolerate `netplan try` having already reverted and closed the pipe (handle SIGPIPE/EPIPE without crashing). Rollback is gated on the health check, never on `netplan apply`/`try` exit code.
-- FR-19 [MEDIUM / CONTINUITY]: Back up the current `90-dynavlan.yaml` before every change; retain the most recent `BACKUP_KEEP` (default 10); first run has no prior file so the rollback target is "no dynavlan file" (remove + reapply). This backup is an audit/history and manual-recovery artifact; the authoritative in-run rollback is FR-18's `netplan try` revert. Do not implement a competing restore-from-backup path that fights netplan's own revert.
+  - ACCEPT-EVIDENCE (v3.2, closes the fifo-ACCEPT race): `netplan try` applies BEFORE reading stdin, and a newline written early sits in the pipe buffer and is consumed unconditionally after the apply. Therefore the accept may be written only when ALL hold: (a) apply-completion evidence - the first added VLAN's interface exists (or, for changes with no additions, a settle floor has elapsed); (b) `netplan try` is still alive at the accept instant (a dead try = reverted or failed = never accept; a false accept would delete interfaces and restart the agent for a change never applied); (c) the health check PASSes on consecutive samples. On FAIL, write nothing AND keep the fifo write-end OPEN until `netplan try` exits, so revert rides its own validated timeout path (stdin-EOF behavior on early close is not hardware-validated).
+- FR-19 [MEDIUM / CONTINUITY]: Back up the current `90-dynavlan.yaml` before every change; a failed backup refuses the apply (no safe disk-convergence target on revert). Retain the most recent `BACKUP_KEEP` (default 10, minimum 1; pruning happens only after ACCEPT so a revert always finds the just-taken backup); first run has no prior file so the rollback target is "no dynavlan file" (remove + reapply). This backup is an audit/history and manual-recovery artifact; the authoritative in-run rollback is FR-18's `netplan try` revert. Do not implement a competing restore-from-backup path that fights netplan's own revert.
 
 ### 7.7 Persistence and reconciliation
 - FR-20 [HIGH / CONTINUITY]: The generated `90-dynavlan.yaml` is the persistent known-set; no separate state file.
@@ -161,7 +166,9 @@ Candidate formula: `candidates = detected ∩ [VLAN_MIN,VLAN_MAX] − VLAN_IGNOR
 # VLAN_MIN=2                                     # >= 1  (default 2 skips switch mgmt VLAN 1)
 # VLAN_MAX=1000                                  # <= 4094
 # VLAN_IGNORE=""                                 # IDs never configured; comma/space list w/ ranges, e.g. "1,5,20-25,80"
-# VLAN_COUNT_WARN=32                             # warn (proceed) above this many VLANs
+# VLAN_WARN=32                                   # warn (proceed) above this many VLANs
+# VLAN_LIMIT=64                                  # hard cap on total VLANs; 0 = unlimited (FR-36)
+# VLAN_LIMIT_MODE=refuse                         # refuse | fill (FR-36)
 # SNIFF_SECONDS=60                               # passive capture window
 # BOOT_SETTLE_SECONDS=20                         # delay between the two boot-removal detection passes
 # CARRIER_WAIT_SECONDS=30                        # max wait for link carrier before sniff
@@ -171,7 +178,7 @@ Candidate formula: `candidates = detected ∩ [VLAN_MIN,VLAN_MAX] − VLAN_IGNOR
 # RESTART_SNAPS="domotzpro-agent-publicstore"    # space-separated; snap restart
 # RESTART_SERVICES=""                            # space-separated; systemctl restart
 # LOG_LEVEL=info                                 # debug | info | notice | warning | err
-# BACKUP_KEEP=10                                 # retained 90-dynavlan.yaml backups
+# BACKUP_KEEP=10                                 # retained 90-dynavlan.yaml backups; minimum 1
 # PER_VLAN_MAC=false                             # derive a distinct MAC per VLAN (default off; shared MAC validated)
 ```
 
@@ -219,3 +226,4 @@ Project `dynavlan`. Script `/usr/local/sbin/dynavlan` (`--boot`, `--rescan`, `--
 - AC-10 [MEDIUM]: A second physical NIC that is untagged/carries no tags (e.g. `enp2s0`) is never selected as trunk and gets no VLANs.
 - AC-11 [HIGH]: A change that reverts (health check fails) leaves no deleted interfaces, no restarts, and the prior VLAN set intact.
 - AC-12 [MEDIUM]: A boot with the trunk up but no uplink lease yet (no default route to snapshot) does not cause a spurious revert; if the change adds only isolated VLANs (no default route), it is accepted, and the box is not left a persistent no-op waiting for a route that the change never affected.
+- AC-13 [HIGH] (v3.2): On a trunk carrying more in-range VLANs than `VLAN_LIMIT` with `VLAN_LIMIT_MODE=refuse`, dynavlan provisions nothing new (any existing owned set untouched and running) and logs a clear `err` naming count, limit, and remedies; after the operator narrows the range or raises the limit, the next run provisions normally. With `fill`, exactly `VLAN_LIMIT` VLANs run (lowest ids), and every skipped VLAN is named in the journal.
