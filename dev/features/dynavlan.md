@@ -86,7 +86,7 @@ A startup stub `backend_detect` (reads `/etc/os-release`, probes for `netplan`) 
 
 **`--rescan`** (FR-21): preconditions → discover/prep → detect (single pass) → additions only (add-only) → if change: `apply_change`.
 
-**`--dry-run`** (FR-34): detect + compute diff + `backend_validate` against a throwaway tree → print intended add/remove; **never apply, never restart**. The throwaway tree is a copy of the real `/etc/netplan/` (base files included) with the candidate `90-dynavlan.yaml` overlaid, so `netplan generate` sees base files too and dry-run surfaces an FR-17 base-file-freeze (R-5) rather than hiding it.
+**`--dry-run`** (FR-34): detect + compute diff + `backend_validate` against a throwaway tree → print intended add/remove; **never apply, never restart**. The throwaway tree is a copy of the real `/etc/netplan/` (base files included) with the candidate `90-dynavlan.yaml` overlaid, so `netplan generate` sees base files too and dry-run surfaces an FR-17 base-file-freeze (R-5) rather than hiding it. Lock interaction (round-4): dry-run TRIES the FR-30 flock non-blocking - if free it holds it for the preview (a timer rescan landing mid-preview skips normally and retries next cycle); if already held it does NOT block the operator, warns the preview may reflect mid-change state, and proceeds read-only.
 
 **`--status`** (FR-35): print detected vs owned vs excluded/ignored, selected trunk, last-run result.
 
@@ -120,6 +120,8 @@ apply_change(target_set):
 ```
 
 Every failure path lands on "no net change, uplink intact, logged." A death anywhere releases the flock (kernel, fd-held) and `netplan try` reverts (timer). See §9 for the accept/revert primitive.
+
+`restore_prior` (disk convergence on any failure/revert path) checks its copy-back and logs `err` on failure naming the surviving backup path (round-4): a failed restore means disk holds the reverted config while live state is the prior one - the next run's owned-set would be wrong - and being loud with the manual-recovery pointer is the only safe remedy at that point.
 
 ## 8. Health check (FR-18)
 

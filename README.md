@@ -76,3 +76,7 @@ Exercise it on the real hardware with console access before trusting it unattend
 | `docs/deployment-guide.md` | The manual Domotz-on-Ubuntu appliance runbook dynavlan builds on |
 
 The repo also holds the base Domotz-on-Ubuntu deployment runbook (`docs/deployment-guide.md`) that dynavlan was first built for; dynavlan itself is hardware- and vendor-agnostic.
+
+## License
+
+MIT - see [LICENSE](LICENSE).

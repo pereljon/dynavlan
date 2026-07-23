@@ -794,8 +794,14 @@ backup_current() { # -> non-zero if a prior file exists but could not be backed 
 restore_prior() { # HAD_PRIOR - converge disk back to the prior file (or none on first run)
 	local had="$1"
 	if [ "$had" = 1 ] && [ -n "$LAST_BACKUP" ] && [ -f "$LAST_BACKUP" ]; then
-		cp -p "$LAST_BACKUP" "$NETPLAN_FILE" 2>/dev/null
-		chmod 600 "$NETPLAN_FILE" 2>/dev/null
+		# Failure here means disk has our new (reverted) config while the live state is
+		# the prior one: the next run's owned-set would be wrong. Nothing safe to do at
+		# this point but be loud about exactly where the known-good copy still lives.
+		if cp -p "$LAST_BACKUP" "$NETPLAN_FILE" 2>/dev/null; then
+			chmod 600 "$NETPLAN_FILE" 2>/dev/null
+		else
+			log err "could not restore prior $NETPLAN_FILE from $LAST_BACKUP (disk full?); on-disk config now DIVERGES from live state - restore it manually from $LAST_BACKUP"
+		fi
 	else
 		rm -f "$NETPLAN_FILE" 2>/dev/null
 	fi
@@ -1243,6 +1249,13 @@ main() {
 
 	case "$mode" in
 	--dry-run)
+		# Take the run lock if free and hold it for the preview, so a timer rescan
+		# cannot start applying mid-preview (it skips per FR-30 and retries next
+		# cycle). If a run already holds it, do NOT block the operator: warn that
+		# the preview may reflect mid-change state and continue (dry-run is read-only).
+		if exec 8>"$LOCK_FILE" 2>/dev/null; then
+			flock -n 8 || log warning "a boot/rescan run is in progress; dry-run preview may reflect mid-change state"
+		fi
 		do_dryrun
 		return $?
 		;;

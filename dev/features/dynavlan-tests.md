@@ -101,6 +101,8 @@ Note: 1d/1e require `reconcile_boot` and `detect_union` to expose these as pure 
 
 Verifies on real inputs: interface discovery, trunk selection, sniff+lldp detection, range/ignore/exclusion filtering, and that the generated config validates. The dry-run validation tree includes the real base netplan files (see design §6), so it DOES surface an FR-17 base-file-freeze condition. Does NOT cover the apply/rollback path (by design) — that is Layer 3.
 
+Lock interaction (round-4): while a `--boot`/`--rescan` holds the FR-30 flock, a concurrent `--dry-run` warns "run in progress; preview may reflect mid-change state" and still completes read-only; conversely, while a dry-run's preview runs, a timer rescan logs "skipped, run in progress" and retries next cycle. Quick check: start `--dry-run` (its sniff window is long enough) and `systemctl start dynavlan-rescan.service` mid-window; confirm the skip line in the journal.
+
 ## Layer 3 - Manual hardware checklist (apply/rollback safety)
 
 Run on the **actual Protectli/Ubuntu appliance plugged into the live Meraki trunk**, with **console access** (keyboard+monitor or serial) so a failed revert never strands the box. Testing on real hardware is deliberate: the Meraki trunk supplies real tagged frames, so sniff/LLDP detection is exercised for real rather than approximated by a synthetic bridge, and the igb NIC / netplan behaviors (promisc, rx-vlan-filter, try/revert) are the ones already hardware-validated. Console access is the one hard requirement: it is the recovery path independent of the box's own uplink. `netplan try` still auto-reverts on timeout, so most cases self-heal even with no intervention; the console is the backstop for the residual cases where the safety net itself is under test.
