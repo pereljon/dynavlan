@@ -12,7 +12,7 @@ secrets.yaml
 secrets.yml
 
 # Claude
-.claude/settings.local.json
+.claude/
 
 # OS
 .DS_Store

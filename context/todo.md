@@ -10,7 +10,7 @@ Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 - [x] PRD written, revised to v3.1, three architect reviews (final verdict GO / implementation-ready) - docs/dynavlan-PRD.md
 - [x] Technical design doc - dev/features/dynavlan.md (architecture, backend seam, apply/rollback state machine, module decomposition, systemd/install layout)
 - [x] Test plan written + architect-reviewed + hardened - dev/features/dynavlan-tests.md (lean 3-layer: unit asserts, --dry-run, hardware checklist)
-- [x] Project genericized (no company-specific refs) and pushed to github.com/pereljon/dynavlan (private). NOTE: two later local commits (design doc, test plan) are NOT yet pushed.
+- [x] Project genericized (no company-specific refs) and pushed to github.com/pereljon/dynavlan (private). Fully synced 2026-07-23 (f42c6b1..36190a8: design docs, implementation, review rounds 1-3).
 
 ## NEXT: Build dynavlan
 
@@ -26,9 +26,19 @@ Approach agreed: single cohesive bash implementation (NOT subagent fan-out - the
 - [x] Step 4 - Review pass (done 2026-07-23, TWO rounds). Round 1: `code-reviewer` + `security-reviewer`; 1 HIGH + 6 MEDIUM fixed. Round 2 (Fable model, briefed to verify round-1 fixes): BLOCK verdict - CRITICAL fifo-ACCEPT race (accept could be buffered pre-apply, nullifying FR-18), dead-try false accept, FAIL-path EOF, relocation deadlock (round-1 regression), detection scaling; ALL FIXED same day (see decisions.md 2026-07-23 round-2 entry). backend_apply_with_revert rewritten as an evidence+liveness+consecutive-health poll loop; do_boot gained the AC-3 relocation branch; detection now port-count-independent. Script 1242 lines; 47/47 asserts green (incl. new 1f); PRD bumped v3.2.
 - [x] VLAN_LIMIT feature (approved + done 2026-07-23): VLAN_WARN=32 (renamed from VLAN_COUNT_WARN), VLAN_LIMIT=64 (0=unlimited), VLAN_LIMIT_MODE=refuse|fill (default refuse). FR-36/AC-13 in PRD v3.2; tests 1f; wired into boot/rescan/relocation/dry-run. Removals-only changes bypass the cap (shrink always allowed).
 - [x] Round-3 targeted review (done 2026-07-23): scoped to round-2 fixes + VLAN_LIMIT. 1 HIGH (mid-revert false ACCEPT - closed with the §9 confirmation-window bound) + 2 MEDIUM + 3 LOW, all fixed; clean bills on fifo lifecycle, probe pre-existence, detection concurrency, gate plumbing, bash-3.2 parse. See decisions.md round-3 entry. Script 1270 lines; 47/47 green. NOT yet committed (commit cfa4383 predates these fixes).
-- [ ] Step 5 - Run the hardware integration checklist (dynavlan-tests.md Layer 3) on the actual Protectli appliance on the live Meraki trunk, with console access (user has it). Codify the already-hand-validated cases. No VM.
+- [ ] Step 5 - NEXT ACTION. Run the hardware integration checklist (dynavlan-tests.md Layer 3, L3-1..L3-21) on the actual Protectli appliance on the live Meraki trunk, with console access (user has it). No VM. Install runbook (given to user 2026-07-23): (1) scp dynavlan, dynavlan.conf, 3 units, install.sh to the box; (2) `sudo ./install.sh` (installs deps/script/config/units, persistent journald, enables service+timer for NEXT boot, changes nothing on the network); (3) `sudo dynavlan --dry-run` and sanity-check the diff vs a manual tcpdump; (4) first `sudo dynavlan --boot` AT THE CONSOLE, watch `journalctl -t dynavlan -f`, then `--status` + `ip addr` to verify isolated leases; timer arms on reboot or `systemctl start dynavlan.timer`. Priority checklist rows beyond the happy path: L3-15/L3-20 (accept race + mid-revert guard), L3-16 (FAIL path rides netplan's own revert), L3-17 (dead-try), L3-18 (cross-NIC relocation), L3-21 (reverted-add ghost netdev probe).
+
+## State snapshot (2026-07-23, pre-restart)
+- Build COMPLETE through review round 3. Script 1270 lines, 47/47 unit asserts green. All review findings (3 rounds) fixed.
+- Repo synced to github.com/pereljon/dynavlan at 36190a8 (origin now uses the SSH alias git@github.com-pereljon per user preference, saved to memory).
+- Uncommitted locally: this context/todo.md edit only (docs-only; fold into the next commit).
+- Nothing has ever been exercised on hardware. Layer 2 (--dry-run) and Layer 3 are entirely outstanding; do NOT claim any feature works until exercised on the box.
 - [ ] Update dev/CODEMAP.md and dev/SKELETON.md (currently describe the base deployment) to cover dynavlan once code lands.
 
 ## Open items (off critical path - see context/open_questions.md)
-- [ ] IR-1: exact minimum netplan version (pinned conservatively at 0.106; possible later relaxation).
+- [x] IR-1: minimum netplan version (resolved 2026-07-23, user-approved) - keep pinned at 0.106 (validated floor). See decisions.md / open_questions.md IR-1.
 - [ ] G-4: per-VLAN MAC derivation function (only if PER_VLAN_MAC enabled; default off).
+- [ ] Non-Meraki switch detection (post-v0.1 future) - LLDP VLAN-table advertisement varies by vendor; sniff-primary proven only on Meraki; low-traffic VLANs invisible to sniff regardless of vendor. See open_questions.md "non-Meraki switches".
+
+## Docs
+- [x] README generalized for v0.1.0 pre-release (done 2026-07-23) - repositioned around vendor-agnostic dynamic VLAN discovery + service-restart integration; Domotz/Protectli demoted to reference deployment; pre-release/initial-testing banner added. See decisions.md 2026-07-23 README entry.
