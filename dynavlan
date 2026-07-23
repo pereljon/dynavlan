@@ -644,8 +644,16 @@ backend_validate() { # [ROOTDIR] - netplan generate; sets VALIDATE_ERRSRC/MSG on
 # guard bounds the whole interaction regardless of netplan try's own timer.
 backend_apply_with_revert() { # SNAP_IFACE PROBE_IFC -> 0 accepted, 1 reverted/failed
 	local snap_iface="$1" probe="$2" fifo result trypid
-	local waited=0 consec=0 applied=0 accepted=0
+	local waited=0 consec=0 accepted=0 seen_at=""
 	local wall_guard=$((TRY_TIMEOUT * 3)) # apply phase + confirmation window + margin
+	# The accept must land INSIDE netplan try's confirmation window. Its revert timer
+	# starts when its apply completes, which is AT OR BEFORE the moment our probe
+	# first appears (seen_at). So accepting is forbidden once
+	# (waited - seen_at) >= TRY_TIMEOUT - 2*POLL_INTERVAL: beyond that point a
+	# still-alive netplan try may be mid-REVERT, routing may have just been restored
+	# by the revert itself (health would PASS!), and a buffered newline would land as
+	# a false ACCEPT for a change that was rolled back.
+	local accept_cutoff=$((TRY_TIMEOUT - 2 * POLL_INTERVAL))
 	fifo=$(mktemp -u /run/dynavlan.fifo.XXXXXX)
 	mkfifo "$fifo" 2>/dev/null || {
 		log err "cannot create fifo $fifo"
@@ -660,14 +668,25 @@ backend_apply_with_revert() { # SNAP_IFACE PROBE_IFC -> 0 accepted, 1 reverted/f
 			log err "netplan try exited before accept (reverted or failed); not accepting"
 			break
 		fi
-		if [ "$applied" -eq 0 ]; then
+		# Apply evidence: the probe iface appearing means the apply has BEGUN (netdev
+		# creation is async after the networkd restart; it does not prove completion,
+		# which is why the settle floor below is unconditional). Probe checked every
+		# tick from t=0 so seen_at tracks the earliest evidence. No-probe changes
+		# (removal-only) anchor the window at t=0, which is conservative-safe.
+		if [ -z "$seen_at" ]; then
 			if [ -n "$probe" ]; then
-				ip link show "$probe" >/dev/null 2>&1 && applied=1
-			elif [ "$waited" -ge "$APPLY_FALLBACK_SETTLE" ]; then
-				applied=1 # no added iface to probe (removal-only change): settle floor
+				ip link show "$probe" >/dev/null 2>&1 && seen_at="$waited"
+			else
+				seen_at=0
 			fi
 		fi
-		if [ "$applied" -eq 1 ]; then
+		# Health sampling starts only after evidence AND an unconditional settle floor
+		# (probe appearance alone can precede the apply's routing effects by seconds).
+		if [ -n "$seen_at" ] && [ "$waited" -ge "$APPLY_FALLBACK_SETTLE" ]; then
+			if [ $((waited - seen_at)) -ge "$accept_cutoff" ]; then
+				log err "confirmation window elapsed without sustained health (revert imminent or in progress); not accepting"
+				break
+			fi
 			result=$(post_apply_health "$snap_iface")
 			if [ "$result" = PASS ]; then
 				consec=$((consec + 1))
@@ -922,6 +941,13 @@ gate_vlan_count() { # KEPT ADDITIONS - echoes the (possibly reduced) additions; 
 		return 0
 		;;
 	OVER)
+		# Removals-only change while already over the limit: always allow. The cap
+		# gates growth; blocking a shrink would freeze an over-limit box over-limit.
+		if [ "$na" -eq 0 ]; then
+			log warning "VLAN set ($nk) exceeds VLAN_LIMIT=$VLAN_LIMIT but this change adds nothing (removals-only); allowing the shrink"
+			printf '%s' "$adds"
+			return 0
+		fi
 		if [ "$VLAN_LIMIT_MODE" = fill ]; then
 			# Fill: keep everything owned, add the lowest ids into the remaining
 			# slots (deterministic across the fleet), and name every skipped VLAN
@@ -967,6 +993,13 @@ do_boot() {
 	ref="$TRUNK_IFACE"
 	pass1=$(emit_set $(iface_tags "$ref"))
 	log info "detected pass1=[${pass1:-none}] on $ref"
+	# Loud breadcrumb regardless of RESET_ON_BOOT: if the owned parent shows nothing
+	# while another NIC carries tags, monitoring may be dead because the trunk moved.
+	# With RESET_ON_BOOT=false relocation can never happen, so without this line the
+	# box would sit at zero monitoring logging only info-level "no change" forever.
+	if [ -n "$owned" ] && [ -z "$pass1" ] && [ -n "$sel1" ] && [ "$sel1" != "$ref" ] && [ -n "$seltags1" ]; then
+		log warning "owned parent $ref carries no tags while $sel1 does; trunk may have moved. Relocation requires RESET_ON_BOOT=true and two-pass evidence"
+	fi
 	managed=$(backend_list_managed_vlans)
 	log_exclusions "$pass1" "$managed"
 	warn_overlap "$owned"
@@ -997,15 +1030,10 @@ do_boot() {
 		if [ -n "$owned" ] && [ -z "$pass1" ] && [ -z "$pass2" ] &&
 			[ -n "$sel1" ] && [ "$sel1" = "$sel2" ] && [ "$sel1" != "$ref" ] &&
 			[ -n "$seltags1" ] && [ -n "$seltags2" ]; then
-			log notice "trunk relocated: $ref carries no tags (both passes); $sel1 does (both passes). Reconciling to $sel1"
+			log notice "trunk relocated: $ref carries no tags in both passes (carrier=$(cat "/sys/class/net/$ref/carrier" 2>/dev/null || echo '?')); $sel1 does (both passes). Reconciling to $sel1"
 			TRUNK_IFACE="$sel1"
 			removals="$owned" # deleted from OLD_TRUNK=$ref, only after accept (FR-24)
 			additions=$(compute_candidates "$(set_union "$seltags1" "$seltags2")" "$VLAN_MIN" "$VLAN_MAX" "$IGNORE_SET" "$managed" "")
-			target="$additions"
-			if [ -z "$additions" ] && [ -z "$removals" ]; then
-				log info "no change after relocation filtering; zero applies/restarts"
-				return 0
-			fi
 			additions=$(gate_vlan_count "" "$additions") || return 1
 			target="$additions"
 			apply_change "$target" "$additions" "$removals"
