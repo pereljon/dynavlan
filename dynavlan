@@ -36,6 +36,7 @@ OLD_TRUNK=""         # parent iface of our currently-owned VLANs (previous trunk
 LAST_BACKUP=""       # path of the most recent pre-change backup
 VALIDATE_ERRSRC=""   # "ours" | "base" after a failed backend_validate
 VALIDATE_ERRMSG=""
+ROUTE_METRICS=""     # "id:metric" map for this run (FR-37, VLAN_ROUTES=true only)
 
 # ---------------------------------------------------------------------------
 # Pure helpers (side-effect-free, unit-tested in tests/unit.sh)
@@ -191,6 +192,74 @@ limit_fill() {
 	return 0
 }
 
+# assign_route_metrics KEPT_MAP ADDITIONS START MODE
+#   FR-37 route-metric assignment for VLAN_ROUTES=true. KEPT_MAP is "id:metric"
+#   tokens (surviving assignments read back from our own YAML); ADDITIONS is a set
+#   of new ids. Prints the full "id:metric" map sorted by id.
+#   discovery: kept assignments are preserved VERBATIM (an existing VLAN's metric
+#     never changes); additions, ascending, take max(START-1, highest kept)+1
+#     onward - so new discoveries never renumber the established order.
+#   id: stateless metric = START + id for every id (kept map ignored); identical
+#     on every box regardless of discovery history.
+assign_route_metrics() {
+	local kept="$1" adds="$2" start="$3" mode="$4"
+	local tok id metric next out=""
+	if [ "$mode" = id ]; then
+		local res=""
+		for tok in $kept; do out="$out ${tok%%:*}"; done
+		for id in $(emit_set $out $adds); do
+			res="${res:+$res }${id}:$((start + id))"
+		done
+		printf '%s' "$res"
+		return 0
+	fi
+	next=$((start - 1))
+	for tok in $kept; do
+		metric="${tok#*:}"
+		[ "$metric" -gt "$next" ] && next="$metric"
+	done
+	out="$kept"
+	for id in $(emit_set $adds); do
+		next=$((next + 1))
+		out="$out ${id}:${next}"
+	done
+	[ -z "${out// /}" ] && return 0
+	printf '%s\n' $out | sort -t: -k1,1n | tr '\n' ' ' | sed 's/ $//'
+	return 0
+}
+
+# map_filter MAP IDS
+#   Keep only the "id:metric" tokens of MAP whose id is in the IDS set (used to
+#   drop removed VLANs' persisted metrics before reassignment). Order preserved.
+map_filter() {
+	local map="$1" ids=" $2 " tok out=""
+	for tok in $map; do
+		case "$ids" in *" ${tok%%:*} "*) out="${out:+$out }$tok" ;; esac
+	done
+	printf '%s' "$out"
+	return 0
+}
+
+# metric_conflict UPLINK_METRIC MAP
+#   FR-37 guard: CONFLICT if any assigned metric is <= the uplink default's metric
+#   (that VLAN's default would out-prioritize or tie the uplink -> guaranteed
+#   health-FAIL revert loop; refuse loudly up front instead). Empty uplink metric
+#   (no pre-apply default) -> OK.
+metric_conflict() {
+	local up="$1" map="$2" tok metric
+	if [ -n "$up" ]; then
+		for tok in $map; do
+			metric="${tok#*:}"
+			if [ "$metric" -le "$up" ]; then
+				echo CONFLICT
+				return 0
+			fi
+		done
+	fi
+	echo OK
+	return 0
+}
+
 # compute_candidates DETECTED MIN MAX IGNORE MANAGED OWNED
 #   candidates = detected ∩ [MIN,MAX] − IGNORE − MANAGED − OWNED. Each set arg is a
 #   space-separated id list; result is the sorted, de-duplicated set on stdout.
@@ -272,7 +341,10 @@ load_config() {
 	LEASE_SETTLE_SECONDS=30
 	RESCAN_MINUTES=5
 	RESET_ON_BOOT=true
-	RESTART_SNAPS="domotzpro-agent-publicstore"
+	VLAN_ROUTES=false
+	VLAN_ROUTE_METRIC_START=100
+	VLAN_ROUTE_METRIC_MODE=discovery
+	RESTART_SNAPS=""
 	RESTART_SERVICES=""
 	LOG_LEVEL=info
 	BACKUP_KEEP=10
@@ -354,6 +426,18 @@ load_config() {
 	}
 	in_list "$RESET_ON_BOOT" "true false" || {
 		log err "invalid RESET_ON_BOOT=$RESET_ON_BOOT"
+		return 1
+	}
+	in_list "$VLAN_ROUTES" "true false" || {
+		log err "invalid VLAN_ROUTES=$VLAN_ROUTES"
+		return 1
+	}
+	{ is_uint "$VLAN_ROUTE_METRIC_START" && [ "$VLAN_ROUTE_METRIC_START" -ge 1 ]; } || {
+		log err "invalid VLAN_ROUTE_METRIC_START=$VLAN_ROUTE_METRIC_START (integer >= 1)"
+		return 1
+	}
+	in_list "$VLAN_ROUTE_METRIC_MODE" "discovery id" || {
+		log err "invalid VLAN_ROUTE_METRIC_MODE=$VLAN_ROUTE_METRIC_MODE (discovery|id)"
 		return 1
 	}
 	# >= 1: with 0, prune could delete the just-taken backup pre-revert and leave
@@ -553,6 +637,15 @@ backend_owned_vlans() { # VLAN ids currently in OUR file (the known-set, FR-20)
 		grep -oE '[0-9]+' | sort -n -u | tr '\n' ' ' | sed 's/ $//'
 }
 
+backend_owned_metrics() { # "id:metric" map persisted in OUR file (FR-37 discovery-mode state)
+	[ -f "$NETPLAN_FILE" ] || return 0
+	# Our generated stanzas order id: before route-metric: within each block, so an
+	# id-then-metric pairing scan is reliable on a file only we write.
+	awk '/^[[:space:]]+id:[[:space:]]*[0-9]+/ {id=$2}
+	     /^[[:space:]]+route-metric:[[:space:]]*[0-9]+/ {if (id != "") {print id":"$2; id=""}}' \
+		"$NETPLAN_FILE" 2>/dev/null | tr '\n' ' ' | sed 's/ $//'
+}
+
 owned_parent() { # parent iface of our VLANs = previously-selected trunk (stickiness source)
 	[ -f "$NETPLAN_FILE" ] || return 0
 	grep -E '^[[:space:]]+link:[[:space:]]*' "$NETPLAN_FILE" 2>/dev/null | awk '{print $2}' | head -1
@@ -586,7 +679,24 @@ backend_generate_config() { # TARGET_IDS - write our file atomically (FR-13/14/1
 				printf '      link: %s\n' "$TRUNK_IFACE"
 				printf '      dhcp4: true\n'
 				printf '      dhcp4-overrides:\n'
-				printf '        use-routes: false\n'
+				if [ "$VLAN_ROUTES" = true ]; then
+					# FR-37: accept DHCP routes on this VLAN at its assigned metric
+					# (always above the uplink's; guarded by metric_conflict pre-apply).
+					# DNS/NTP/domains stay declined - routes only, never the resolver.
+					local metric="" mtok
+					for mtok in $ROUTE_METRICS; do
+						[ "${mtok%%:*}" = "$id" ] && metric="${mtok#*:}"
+					done
+					if [ -z "$metric" ]; then
+						log err "internal: no route metric assigned for VLAN $id (map [$ROUTE_METRICS]); refusing to generate"
+						rm -f "$tmp"
+						return 1
+					fi
+					printf '        use-routes: true\n'
+					printf '        route-metric: %s\n' "$metric"
+				else
+					printf '        use-routes: false\n'
+				fi
 				printf '        use-dns: false\n'
 				printf '        use-ntp: false\n'
 				printf '        use-domains: false\n'
@@ -768,6 +878,15 @@ snapshot_default_route() { # dev of the lowest-metric default route, "" if none
 	printf '%s' "$best_dev"
 }
 
+snapshot_default_metric() { # metric of the lowest-metric default route, "" if none
+	local tok metric best=""
+	for tok in $(default_routes_tokens); do
+		metric="${tok#*:}"
+		if [ -z "$best" ] || [ "$metric" -lt "$best" ]; then best="$metric"; fi
+	done
+	printf '%s' "$best"
+}
+
 post_apply_health() { # SNAP_IFACE -> PASS/FAIL (delegates the decision to the pure evaluator)
 	local snap_iface="$1" tokens
 	tokens=$(default_routes_tokens | tr '\n' ' ')
@@ -869,6 +988,19 @@ apply_change() { # TARGET_IDS ADDITIONS REMOVALS
 		break
 	done
 	snap_iface=$(snapshot_default_route)
+	# FR-37: assign per-VLAN route metrics for this run and refuse up front if any
+	# would out-prioritize or tie the uplink (a guaranteed health-FAIL revert loop).
+	ROUTE_METRICS=""
+	if [ "$VLAN_ROUTES" = true ]; then
+		local kept_map snap_metric
+		kept_map=$(map_filter "$(backend_owned_metrics)" "$(set_minus "$target" "$additions")")
+		ROUTE_METRICS=$(assign_route_metrics "$kept_map" "$additions" "$VLAN_ROUTE_METRIC_START" "$VLAN_ROUTE_METRIC_MODE")
+		snap_metric=$(snapshot_default_metric)
+		if [ "$(metric_conflict "$snap_metric" "$ROUTE_METRICS")" = CONFLICT ]; then
+			log err "VLAN_ROUTES metric conflict: uplink default (${snap_iface:-?}) has metric ${snap_metric} but assigned VLAN metrics [${ROUTE_METRICS}] would match or beat it; raise VLAN_ROUTE_METRIC_START above the uplink metric. Refusing to apply, changing nothing"
+			return 1
+		fi
+	fi
 	[ -f "$NETPLAN_FILE" ] && had_prior=1
 	if ! backup_current; then
 		# No backup = no safe disk-convergence target on revert. Fail toward no change.
@@ -1133,6 +1265,18 @@ do_dryrun() { # FR-34: detect, compute diff, validate in a throwaway tree; never
 	printf '  count gate: %s (%s VLANs; VLAN_WARN=%s VLAN_LIMIT=%s mode=%s)\n' \
 		"$(vlan_guard "$(count_ids "$target")" "$VLAN_WARN" "$VLAN_LIMIT")" \
 		"$(count_ids "$target")" "$VLAN_WARN" "$VLAN_LIMIT" "$VLAN_LIMIT_MODE"
+	# FR-37 preview: assign metrics the way apply_change would and surface a conflict.
+	ROUTE_METRICS=""
+	if [ "$VLAN_ROUTES" = true ]; then
+		local kept_map snap_metric
+		kept_map=$(map_filter "$(backend_owned_metrics)" "$(set_minus "$owned" "$removals")")
+		ROUTE_METRICS=$(assign_route_metrics "$kept_map" "$additions" "$VLAN_ROUTE_METRIC_START" "$VLAN_ROUTE_METRIC_MODE")
+		snap_metric=$(snapshot_default_metric)
+		printf '  routes:    ON mode=%s start=%s metrics [%s]\n' "$VLAN_ROUTE_METRIC_MODE" "$VLAN_ROUTE_METRIC_START" "${ROUTE_METRICS:-none}"
+		if [ "$(metric_conflict "$snap_metric" "$ROUTE_METRICS")" = CONFLICT ]; then
+			printf '  routes:    CONFLICT - uplink default metric %s would be matched/beaten; --boot would refuse (raise VLAN_ROUTE_METRIC_START)\n' "$snap_metric"
+		fi
+	fi
 	tree=$(mktemp -d /run/dynavlan.dryrun.XXXXXX) || tree=""
 	if [ -z "$tree" ]; then
 		# Without the throwaway tree, NETPLAN_FILE would point at the REAL file and

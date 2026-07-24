@@ -121,6 +121,34 @@ call limit_fill "1 5 9" 0;     ok "1f fill zero slots -> empty"     ""
 call limit_fill "1 5" 10;      ok "1f fill slots exceed adds"       "1 5"
 
 # ---------------------------------------------------------------------------
+# 1g. assign_route_metrics / metric_conflict - VLAN_ROUTES metric assignment
+#     assign_route_metrics KEPT_MAP ADDITIONS START MODE -> "id:metric ..." (sorted by id)
+#       discovery: kept preserved verbatim; additions get max(START-1, highest kept)+1 ...
+#       id: stateless metric = START + id for every id (kept map ignored)
+#     metric_conflict UPLINK_METRIC MAP -> CONFLICT if any metric <= uplink, else OK
+# ---------------------------------------------------------------------------
+
+call assign_route_metrics "" "21 22" 100 discovery;            ok "1g discovery fresh start"              "21:100 22:101"
+call assign_route_metrics "21:100 22:101" "18" 100 discovery;  ok "1g discovery new id continues, keeps"  "18:102 21:100 22:101"
+call assign_route_metrics "21:100" "18 30" 100 discovery;      ok "1g discovery batch ascending"          "18:101 21:100 30:102"
+call assign_route_metrics "21:100 22:101" "" 100 discovery;    ok "1g discovery no additions -> kept"     "21:100 22:101"
+call assign_route_metrics "21:100" "25" 200 discovery;         ok "1g discovery raised START wins"        "21:100 25:200"
+call assign_route_metrics "21:250" "25" 200 discovery;         ok "1g discovery high kept metric wins"    "21:250 25:251"
+call assign_route_metrics "" "" 100 discovery;                 ok "1g discovery all empty -> empty"       ""
+call assign_route_metrics "21:999" "18 22" 100 id;             ok "1g id mode stateless, ignores kept"    "18:118 21:121 22:122"
+call assign_route_metrics "" "5" 100 id;                       ok "1g id mode fresh"                      "5:105"
+
+call map_filter "18:102 21:100 22:101" "21 22";  ok "1g map_filter keeps listed ids"   "21:100 22:101"
+call map_filter "18:102 21:100" "";              ok "1g map_filter empty ids -> empty" ""
+call map_filter "" "21";                         ok "1g map_filter empty map -> empty" ""
+
+call metric_conflict ""  "21:100 22:101";  ok "1g no uplink metric -> OK"        "OK"
+call metric_conflict 10  "21:100 22:101";  ok "1g uplink below all -> OK"        "OK"
+call metric_conflict 100 "21:100 22:101";  ok "1g tie with uplink -> CONFLICT"   "CONFLICT"
+call metric_conflict 300 "21:100 22:101";  ok "1g uplink above -> CONFLICT"      "CONFLICT"
+call metric_conflict 100 "";               ok "1g empty map -> OK"               "OK"
+
+# ---------------------------------------------------------------------------
 
 printf '\n%s tests, %s failures\n' "$tests" "$fails"
 [ "$fails" -eq 0 ]

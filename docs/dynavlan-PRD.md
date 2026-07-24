@@ -1,6 +1,9 @@
-# dynavlan - Product Requirements Document (v3.2)
+# dynavlan - Product Requirements Document (v3.3)
 
-Status: Draft v3.2, design-locked and hardware-validated 2026-07-14; implemented 2026-07-21..23 with two review rounds folded in. Not yet released.
+Status: Draft v3.3, design-locked and hardware-validated 2026-07-14; implemented 2026-07-21..23 with three review rounds folded in. Not yet released.
+
+### Changes from v3.2
+NEW FR-37 (`VLAN_ROUTES`/`VLAN_ROUTE_METRIC_START`/`VLAN_ROUTE_METRIC_MODE`): opt-in routed mode - accept DHCP routes on discovered VLANs at per-VLAN metrics (discovery-order or id-derived assignment, persisted in our own YAML), guarded by an up-front uplink-metric conflict refusal. NEW AC-14. Round-4 operational fixes: `restore_prior` failure is loud; `--dry-run` takes the run lock non-blocking.
 
 ### Changes from v3.1 (post-implementation review rounds + approved feature)
 FR-12: `VLAN_COUNT_WARN` renamed `VLAN_WARN`. NEW FR-36 (`VLAN_LIMIT`/`VLAN_LIMIT_MODE`): hard cap on total VLAN count, refuse-loud by default with opt-in deterministic fill. NEW AC-13 for the limit. FR-18 accept mechanism hardened after a second review round found the fifo ACCEPT race (see the requirement's accept-evidence clause): accept requires apply-completion evidence + netplan-try liveness + consecutive health passes; the FAIL path holds the fifo open so revert rides netplan's own timer. FR-19: `BACKUP_KEEP` minimum is 1 (0 could leave a revert with no disk-convergence target). Boot reconcile (FR-22/23) pins both passes to the owned parent and adds an explicit two-pass-evidence relocation branch (AC-3). Detection is bounded independent of port count (shared carrier deadline, concurrent sniffs).
@@ -37,11 +40,11 @@ Severity and impact are independent: a CONTINUITY item can be CRITICAL severity.
 
 ## 1. Summary
 
-dynavlan is a self-configuring VLAN provisioning tool for Linux network-monitoring appliances (Domotz on Protectli/Ubuntu, vendor-agnostic). It discovers the active tagged VLANs on whatever trunk the appliance is plugged into, brings each up with DHCP via netplan (address only, fully route/DNS-isolated), and restarts the monitoring agent so it picks up the new subnets. It runs at boot and on a timer, with no human editing YAML and no SSH.
+dynavlan is a self-configuring VLAN provisioning tool for netplan/systemd-networkd Linux boxes (hardware- and vendor-agnostic; validated on a Protectli/igb appliance). It discovers the active tagged VLANs on whatever trunk the box is plugged into, brings each up with DHCP via netplan (address only, fully route/DNS-isolated by default), and restarts the nominated snaps/services so an interface-enumerating agent picks up the new subnets. It runs at boot and on a timer, with no human editing YAML and no SSH.
 
 ## 2. Problem
 
-Static netplan with hardcoded VLAN IDs (`docs/deployment-guide.md`) fails three ways: per-site VLAN schemes require hand-editing netplan on a headless box (confirmed live: lab box carries 1/21/22/101, not the template's set); Domotz's assisted scripts still need SSH and a per-box wizard and destructively rewrite one shared file; neither approach scales as deployments move off a single standardized baseline onto mixed sites/hardware. No built-in netplan mechanism does dynamic discovery.
+Static netplan with hand-declared VLAN IDs fails three ways: per-site VLAN schemes require hand-editing netplan on a headless box (confirmed live: the lab box carries 1/21/22/101, not the template's set); vendor-assisted configuration scripts still need SSH and a per-box wizard and destructively rewrite one shared file; neither approach scales across sites and mixed hardware. No built-in netplan mechanism does dynamic discovery.
 
 ## 3. Goals
 
@@ -67,11 +70,11 @@ Static netplan with hardcoded VLAN IDs (`docs/deployment-guide.md`) fails three 
 - Secondary: support staff diagnosing a deployed box from logs and `--status`.
 - Tertiary: third-party operators on their own hardware/stack.
 
-## 6. Deltas from the base deployment (and why)
+## 6. Deltas from the static manual approach (and why)
 
-| Base deployment (manual) | dynavlan | Why |
-|--------------------------|----------|-----|
-| VLANs hand-declared in `01-netcfg.yaml` | Auto-discovered into `90-dynavlan.yaml` | Zero-touch, site-agnostic. |
+| Static manual netplan | dynavlan | Why |
+|-----------------------|----------|-----|
+| VLANs hand-declared in a base netplan file | Auto-discovered into `90-dynavlan.yaml` | Zero-touch, site-agnostic. |
 | Every VLAN gets a default route (metrics 10/20/100...) | VLANs get NO default route (`use-routes: false`) | Monitoring box needs only subnet reachability; untagged uplink is sole default route. |
 | VLAN DHCP brings DNS/NTP/routes | Address only (`use-dns/use-ntp/use-domains/use-routes` all false) | Prevents each site VLAN polluting the monitor's routing/resolver (confidentiality-sensitive). Validated: without these, public OpenDNS pinned as host routes. |
 | Single `enp1s0` assumed | Interfaces + trunk discovered from live kernel state | Different hardware names NICs differently. |
@@ -117,6 +120,7 @@ Candidate formula: `candidates = detected ∩ [VLAN_MIN,VLAN_MAX] − VLAN_IGNOR
     use-domains: false
   ```
   yielding address + connected subnet route only (validated). Inherit the networkd renderer; never re-declare it.
+- FR-37 [HIGH / RECOVERABILITY] (v3.3): `VLAN_ROUTES` (default false) optionally accepts DHCP routes on discovered VLANs, each at a distinct per-VLAN metric; `use-dns`/`use-ntp`/`use-domains` remain false in both modes (routes only, never the resolver). When true, FR-14's stanza becomes `use-routes: true` + `route-metric: <assigned>`. Metric assignment: `VLAN_ROUTE_METRIC_START` (default 100, >= 1) and `VLAN_ROUTE_METRIC_MODE` (default `discovery`): `discovery` = existing VLANs keep their persisted metric VERBATIM forever (assignments are stored in and re-read from `90-dynavlan.yaml`, the file dynavlan already owns); new discoveries, ascending, take `max(START-1, highest existing)+1` onward, so later discoveries never renumber established priorities. `id` = stateless `metric = START + VLAN id`, identical on every box regardless of discovery history. GUARD (the recoverability clause): before any disk change, if any assigned metric is <= the pre-apply uplink default's metric, that VLAN's default would out-prioritize or tie the uplink - a guaranteed FR-18 health-FAIL revert loop - so REFUSE loudly naming the uplink metric and the remedy (raise `VLAN_ROUTE_METRIC_START`), changing nothing. FR-18's empty-snapshot stance under `VLAN_ROUTES=true`: with no pre-apply default route, a VLAN-provided default may become the uplink and health PASSes - this is intended failover behavior, documented rather than prevented. Dry-run previews the assigned map and surfaces a would-be conflict.
 - FR-15 [LOW / DETERMINISM]: `PER_VLAN_MAC` (default OFF). Shared parent MAC is validated working on the lab box (distinct leases across four VLANs). When enabled, derive a per-VLAN MAC from the base MAC + VLAN ID with a defined function: set the locally-administered bit, clear multicast bit, confine VLAN-ID mixing to the low 3 bytes with defined overflow, and avoid cross-box collision on the same L2. Off by default because the derivation carries footguns and solves a problem not yet observed.
 - FR-16 [CRITICAL / RECOVERABILITY]: Write `90-dynavlan.yaml` atomically: temp file in the same directory, fsync, `rename()` over the target. A mid-run kill cannot leave partial YAML (defense-in-depth behind FR-17).
 
@@ -144,7 +148,7 @@ Candidate formula: `candidates = detected ∩ [VLAN_MIN,VLAN_MAX] − VLAN_IGNOR
 ### 7.8 Change-gated side effects
 - FR-26 [MEDIUM / CONTINUITY]: Apply, snap restarts, and service restarts occur only when the VLAN set actually changes. Steady state performs zero applies and zero restarts.
 - FR-27 [HIGH / CONTINUITY]: On an ACCEPTED change only, execute in order: (FR-24 deletes for removals) → wait for new-VLAN DHCP leases up to `LEASE_SETTLE_SECONDS` (a VLAN that fails to lease is logged and does not block) → restart each snap in `RESTART_SNAPS` → restart each service in `RESTART_SERVICES`. On a REVERTED change, none of this runs: no lease-settle, no restarts; the run ends with an apply-rollback `err` and no side effects.
-- FR-28 [MEDIUM / CONTINUITY]: `RESTART_SNAPS` (default `domotzpro-agent-publicstore`) via `snap restart`; `RESTART_SERVICES` (default empty) via `systemctl restart`. A missing/failing entry is logged and skipped, not fatal to the rest.
+- FR-28 [MEDIUM / CONTINUITY]: `RESTART_SNAPS` (default empty; e.g. `domotzpro-agent-publicstore` to restart the Domotz agent) via `snap restart`; `RESTART_SERVICES` (default empty) via `systemctl restart`. A missing/failing entry is logged and skipped, not fatal to the rest.
 
 ### 7.9 Scheduling and concurrency
 - FR-29 [HIGH / CONTINUITY]: Boot via `dynavlan.service` (`After=systemd-networkd.service`, NOT hard-blocked on `network-online.target`); rescan every `RESCAN_MINUTES` (default 5) via `dynavlan.timer` (monotonic `OnBootSec`/`OnUnitActiveSec`, to survive RTC/NTP drift).
@@ -175,11 +179,14 @@ Candidate formula: `candidates = detected ∩ [VLAN_MIN,VLAN_MAX] − VLAN_IGNOR
 # LEASE_SETTLE_SECONDS=30                        # max wait for new VLAN leases before restarts
 # RESCAN_MINUTES=5                               # timer interval
 # RESET_ON_BOOT=true                             # true = reconcile at boot; false = add-only across boots
-# RESTART_SNAPS="domotzpro-agent-publicstore"    # space-separated; snap restart
+# RESTART_SNAPS=""                               # space-separated; snap restart, e.g. "domotzpro-agent-publicstore"
 # RESTART_SERVICES=""                            # space-separated; systemctl restart
 # LOG_LEVEL=info                                 # debug | info | notice | warning | err
 # BACKUP_KEEP=10                                 # retained 90-dynavlan.yaml backups; minimum 1
 # PER_VLAN_MAC=false                             # derive a distinct MAC per VLAN (default off; shared MAC validated)
+# VLAN_ROUTES=false                              # true = accept DHCP routes on discovered VLANs at per-VLAN metrics (FR-37)
+# VLAN_ROUTE_METRIC_START=100                    # first metric; must exceed the uplink default's metric (FR-37)
+# VLAN_ROUTE_METRIC_MODE=discovery               # discovery | id (FR-37)
 ```
 
 ## 9. Non-Functional Requirements
@@ -215,7 +222,7 @@ Project `dynavlan`. Script `/usr/local/sbin/dynavlan` (`--boot`, `--rescan`, `--
 ## 13. Acceptance Criteria
 
 - AC-1 [CRITICAL]: Freshly imaged box on a trunk with in-range tagged VLANs comes up monitoring all of them, no SSH, no manual edit.
-- AC-2 [HIGH]: Adding a VLAN results in monitoring within one rescan interval, Domotz snap restarting exactly once (exactly-once rests on FR-26 change-gating + FR-30 serialization).
+- AC-2 [HIGH]: Adding a VLAN results in monitoring within one rescan interval, each nominated restart target restarting exactly once (exactly-once rests on FR-26 change-gating + FR-30 serialization).
 - AC-3 [HIGH]: A box moved to a different site drops the old VLANs (explicit delete, after accept) and configures the new ones on reboot, in a single reconcile, only when detection is non-empty.
 - AC-4 [CRITICAL]: An unplugged/carrierless boot changes nothing (FR-22 guard); previously-known VLANs are not wiped.
 - AC-5 [CRITICAL]: An invalid config value or missing required dependency prevents any change and is clearly logged (FR-0).
@@ -227,3 +234,4 @@ Project `dynavlan`. Script `/usr/local/sbin/dynavlan` (`--boot`, `--rescan`, `--
 - AC-11 [HIGH]: A change that reverts (health check fails) leaves no deleted interfaces, no restarts, and the prior VLAN set intact.
 - AC-12 [MEDIUM]: A boot with the trunk up but no uplink lease yet (no default route to snapshot) does not cause a spurious revert; if the change adds only isolated VLANs (no default route), it is accepted, and the box is not left a persistent no-op waiting for a route that the change never affected.
 - AC-13 [HIGH] (v3.2): On a trunk carrying more in-range VLANs than `VLAN_LIMIT` with `VLAN_LIMIT_MODE=refuse`, dynavlan provisions nothing new (any existing owned set untouched and running) and logs a clear `err` naming count, limit, and remedies; after the operator narrows the range or raises the limit, the next run provisions normally. With `fill`, exactly `VLAN_LIMIT` VLANs run (lowest ids), and every skipped VLAN is named in the journal.
+- AC-14 [HIGH] (v3.3): With `VLAN_ROUTES=true` and `VLAN_ROUTE_METRIC_START` above the uplink metric, each provisioned VLAN's DHCP default route is installed at its assigned metric, the uplink remains the lowest-metric default, and health passes; an already-provisioned VLAN keeps its exact metric across subsequent reconciles (discovery mode). With `VLAN_ROUTE_METRIC_START` at or below the uplink metric, dynavlan refuses before touching disk, logs the conflict naming both metrics, and changes nothing.

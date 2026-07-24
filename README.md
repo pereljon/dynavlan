@@ -13,7 +13,7 @@ dynavlan removes the human from that loop. It discovers the VLANs from the wire,
 ## How it works
 
 1. **Discover** the trunk and its live tagged VLANs from kernel state and the wire (LLDP plus passive sniff; neither interface names, VLAN IDs, nor the native VLAN are hardcoded).
-2. **Isolate**: each VLAN comes up DHCP address-only with routes, DNS, NTP, and search domains all declined, so a monitored subnet can never hijack the box's uplink or resolver.
+2. **Isolate**: by default each VLAN comes up DHCP address-only with routes, DNS, NTP, and search domains all declined, so a monitored subnet can never hijack the box's uplink or resolver. An opt-in routed mode (`VLAN_ROUTES=true`) instead accepts DHCP routes per VLAN at deterministic per-VLAN metrics (starting from `VLAN_ROUTE_METRIC_START`, always above the uplink's metric - dynavlan refuses up front if they would collide); DNS/NTP stay declined either way.
 3. **Apply with a safety net**: dynavlan owns exactly one generated netplan file and touches nothing else. Every apply goes through `netplan try` against a pre-apply default-route snapshot and **auto-reverts on a routing-health failure** - the box is never stranded.
 4. **Restart** the services you configure, so the monitoring/discovery agent re-enumerates and starts watching the new VLANs.
 
@@ -57,7 +57,7 @@ dynavlan --reconfigure  # rewrite the timer drop-in after changing RESCAN_MINUTE
 
 ## Safety
 
-dynavlan targets appliances at client sites with no remote console, where a bad apply that breaks the uplink is unrecoverable. Every design choice favors recoverability:
+dynavlan is built for boxes that may be remote, headless, or unattended, where a bad apply that breaks the uplink could be unrecoverable. Every design choice favors recoverability:
 
 - Every apply is validated and health-checked against a pre-apply default-route snapshot; a routing failure auto-reverts via `netplan try`. Rollback is gated on the health check, never on an exit code.
 - dynavlan owns one generated netplan file and never reads or writes any other config.
@@ -73,9 +73,7 @@ Exercise it on the real hardware with console access before trusting it unattend
 | `dev/features/dynavlan.md` | Technical design: architecture, apply/rollback state machine, systemd/install layout |
 | `dev/features/dynavlan-tests.md` | Test plan: unit asserts, `--dry-run`, hardware integration checklist |
 | `dynavlan.conf` | Config reference (every key documented at its default) |
-| `docs/deployment-guide.md` | The manual Domotz-on-Ubuntu appliance runbook dynavlan builds on |
-
-The repo also holds the base Domotz-on-Ubuntu deployment runbook (`docs/deployment-guide.md`) that dynavlan was first built for; dynavlan itself is hardware- and vendor-agnostic.
+| `docs/deployment-guide.md` | Deployment guide: install, configure, first attended run, operation, removal |
 
 ## License
 

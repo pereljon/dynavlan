@@ -64,6 +64,8 @@ A startup stub `backend_detect` (reads `/etc/os-release`, probes for `netplan`) 
 | `discover_phys_ifaces` | Live physical NICs from `/sys/class/net` (device symlink, type==1, exclude lo/wifi/vlan) |
 | `prep_iface` / `has_carrier` | Set iface up + promisc on (all NICs first); then ONE shared carrier deadline (`CARRIER_WAIT_SECONDS` total, not per port). Detection runs ONLY on carrier-up ifaces, and the per-iface sniffs run CONCURRENTLY (one `SNIFF_SECONDS` window total) so detection cost does not scale with port count |
 | `vlan_guard` / `limit_fill` / `gate_vlan_count` | FR-12/FR-36 count gate: pure `vlan_guard(n,warn,limit)` → OK/WARN/OVER and `limit_fill(adds,slots)` → lowest-N subset (tests 1f); `gate_vlan_count` orchestrates warn / refuse / fill per `VLAN_LIMIT_MODE` |
+| `assign_route_metrics` / `map_filter` / `metric_conflict` | FR-37 routed mode (tests 1g): pure metric assignment (`discovery` = kept verbatim + next-free for new; `id` = START+id stateless), map filtering to surviving ids, and the uplink-metric conflict guard (CONFLICT if any assigned metric <= uplink metric) |
+| `backend_owned_metrics` / `snapshot_default_metric` | FR-37 state: read the persisted "id:metric" map back from our own YAML; capture the pre-apply uplink default's metric for the conflict guard |
 | `detect_sniff` | Passive 802.1Q capture (`tcpdump`, minimal snaplen, no disk) → VLAN IDs per iface |
 | `detect_lldp` | `lldpctl` advertised VLANs per iface |
 | `detect_union` | Union of enabled methods; pick trunk (most tags, hysteresis). Selection factored into a pure helper `select_trunk(candidates,previous)` for unit testing (tests 1e) |
@@ -150,6 +152,7 @@ The concurrency-sensitive part (IR-2), hardened after the round-2 review found t
 - Known-set (`backend_owned_vlans`): parsed from `90-dynavlan.yaml` (`netplan get network.vlans` is authoritative for IDs).
 - `VLAN_IGNORE`: parsed once into an associative-array set for O(1) membership.
 - Generated VLAN stanza per ID (FR-14): `<iface>.<id>` with `dhcp4: true` + `use-routes/use-dns/use-ntp/use-domains: false`.
+- Routed mode (FR-37, `VLAN_ROUTES=true`, default off): the stanza becomes `use-routes: true` + `route-metric: <assigned>`; DNS/NTP/domains stay declined. The "id:metric" map is computed once per run in `apply_change` (the single choke point, so boot/rescan/relocation/dry-run all agree): kept ids keep their metric read back from our own YAML (`backend_owned_metrics` - the owned file doubles as the assignment store, no extra state file); additions are assigned per `VLAN_ROUTE_METRIC_MODE`. Before any disk change, `metric_conflict` refuses loudly if an assigned metric would match or beat the uplink default's metric (that VLAN's default would win, guaranteeing an FR-18 health-FAIL revert loop - refuse up front instead of revert-looping). Empty pre-apply snapshot with routes on: a VLAN default may become the uplink; documented as intended failover (PRD FR-37).
 
 ## 11. systemd units & install layout
 

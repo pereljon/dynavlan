@@ -1,141 +1,119 @@
-# Domotz Deployment Guide (Protectli / Ubuntu Server)
+# dynavlan Deployment Guide
 
-A reference runbook for provisioning a Domotz monitoring agent on a Protectli (Intel) box running Ubuntu Server. dynavlan automates the VLAN portion of step 8; this guide documents the surrounding manual deployment.
+How to deploy dynavlan on a netplan/systemd-networkd Ubuntu box. This covers installation, configuration, the first (attended) run, and ongoing operation. What dynavlan is and how it works: `README.md`, `docs/dynavlan-PRD.md`.
 
-## 1. Install Ubuntu Server
+> **Pre-release note:** dynavlan is in initial testing. Perform the first apply at the console (physical or serial), not over SSH alone - a bad apply can drop the connection, and the console is the recovery path.
 
-- Minimum install.
-- Auto-partition with LVM.
-- Create an admin user:
-  - Name: `<Admin Name>`
-  - Username: `<admin>`
-  - Password: stored in your password manager
-- Set a hostname.
-- Pull the SSH public key from your provisioning account: `https://github.com/<your-tech-account>.keys`
-- Disable SSH password authentication.
-- Don't install any extra services during install.
+## 1. Prerequisites
 
-## 2. Log Into Device
+- Ubuntu (or compatible) using **netplan with the systemd-networkd renderer**; netplan >= 0.106 (dynavlan checks and refuses below it).
+- Root access.
+- The box's trunk-facing NIC patched to a switch port carrying tagged VLANs. No switch-side configuration is required beyond the trunk itself.
+- `tcpdump` (sniff detection, default) and `lldpd` (LLDP detection). `install.sh` installs both if missing.
+- Base uplink connectivity already working (dynavlan never touches base netplan files; it only adds its own).
 
-```
-ssh -i ~/.ssh/<your_tech_key> <admin>@IP_ADDRESS
-```
+## 2. Install
 
-## 3. Update OS
+Copy the six artifacts to the box and run the installer:
 
 ```
-sudo apt -y remove needrestart
-sudo apt update && sudo apt -y dist-upgrade
-sudo apt -y autoremove
+scp dynavlan dynavlan.conf dynavlan.service dynavlan-rescan.service dynavlan.timer install.sh <user>@<box>:
+ssh <user>@<box>
+sudo ./install.sh
 ```
 
-## 4. Install UFW
+`install.sh`:
+
+- installs the script to `/usr/local/sbin/dynavlan` and the config template to `/etc/dynavlan.conf` (never clobbers an existing config)
+- installs the three systemd units and a persistent-journald drop-in (so run history survives reboots)
+- ensures `tcpdump` and `lldpd` are present
+- enables `dynavlan.service` (boot reconcile) and `dynavlan.timer` (periodic rescan) **for the next boot**
+
+Install changes nothing on the network. The first apply happens only when you run `--boot` yourself or on the next reboot.
+
+## 3. Configure
+
+Every key in `/etc/dynavlan.conf` is shipped commented at its built-in default; uncomment to override. Invalid values refuse to run (logged at `err`) - dynavlan never silently substitutes a default for a value you set wrong.
+
+The keys most deployments touch:
 
 ```
-sudo apt -y install ufw
-sudo ufw allow ssh
-sudo ufw enable
+# VLAN_MIN=2 / VLAN_MAX=1000       # discovery range (default skips VLAN 1)
+# VLAN_IGNORE=""                   # VLANs never to configure, e.g. "5,20-25"
+# RESTART_SNAPS="..."              # snaps to restart after a VLAN change
+# RESTART_SERVICES=""              # systemd services to restart after a VLAN change
+# RESCAN_MINUTES=5                 # timer interval (run --reconfigure after changing)
+# VLAN_ROUTES=false                # opt-in: accept DHCP routes per VLAN at per-VLAN metrics
 ```
 
-## 5. Set Up Domotz
+Set `RESTART_SNAPS`/`RESTART_SERVICES` to whatever agent should re-enumerate interfaces after a VLAN change (see README "Service-restart integration"). Leave `VLAN_ROUTES` off unless you specifically want the box routing via discovered VLANs; the default is full route/DNS isolation.
+
+## 4. First run (attended, at the console)
+
+1. **Preview** - detection plus the intended diff, zero changes:
+
+   ```
+   sudo dynavlan --dry-run
+   ```
+
+   Sanity-check the detected VLAN list against what the trunk actually carries (e.g. a manual `tcpdump -i <iface> -e -nn vlan`). Confirm `validate: OK`.
+
+2. **First apply** - at the console, watching the journal in a second terminal:
+
+   ```
+   sudo journalctl -t dynavlan -f     # terminal 2
+   sudo dynavlan --boot               # terminal 1 (console)
+   ```
+
+   Every apply goes through `netplan try` with a health check against the pre-apply default route; on failure it auto-reverts and the box keeps its uplink.
+
+3. **Verify**:
+
+   ```
+   sudo dynavlan --status
+   ip addr        # each discovered VLAN has a lease
+   ip route       # default route unchanged (isolation mode: no routes on VLANs)
+   ```
+
+4. The rescan timer arms on the next reboot, or start it now:
+
+   ```
+   sudo systemctl start dynavlan.timer
+   ```
+
+## 5. Ongoing operation
+
+| Task | Command |
+|------|---------|
+| See owned vs detected VLANs | `sudo dynavlan --status` |
+| Preview what a reconcile would do | `sudo dynavlan --dry-run` |
+| Force an add-only rescan now | `sudo systemctl start dynavlan-rescan.service` |
+| Full reconcile (adds + removals) | `sudo dynavlan --boot` (or reboot) |
+| Change the rescan interval | edit `RESCAN_MINUTES`, then `sudo dynavlan --reconfigure` |
+| Run history | `journalctl -t dynavlan` |
+
+Steady state is hands-off: boot reconciles the VLAN set against the trunk (two-pass, with guards against removing anything on faulty detection); the timer adds newly appearing VLANs between boots. VLANs that disappear from the trunk are removed at the next boot reconcile, never by the timer.
+
+## 6. Files on the box
+
+| Path | What |
+|------|------|
+| `/usr/local/sbin/dynavlan` | the tool |
+| `/etc/dynavlan.conf` | configuration |
+| `/etc/netplan/90-dynavlan.yaml` | the ONE netplan file dynavlan owns (do not edit; regenerated) |
+| `/var/backups/dynavlan/` | timestamped backups of the owned file (last `BACKUP_KEEP`) |
+| `/etc/systemd/system/dynavlan.{service,timer}`, `dynavlan-rescan.service` | units |
+| `/run/dynavlan.lock` | run lock (fd-held; safe to ignore) |
+
+## 7. Removal
 
 ```
-sudo snap install domotzpro-agent-publicstore
-sudo snap connect domotzpro-agent-publicstore:firewall-control
-sudo snap connect domotzpro-agent-publicstore:network-observe
-sudo snap connect domotzpro-agent-publicstore:raw-usb
-sudo snap connect domotzpro-agent-publicstore:shutdown
-sudo snap connect domotzpro-agent-publicstore:system-observe
-sudo sh -c 'echo tun >> /etc/modules'
-sudo modprobe tun
-sudo ufw allow 3000
+sudo systemctl disable --now dynavlan.timer dynavlan.service
+sudo rm /etc/systemd/system/dynavlan.service /etc/systemd/system/dynavlan-rescan.service /etc/systemd/system/dynavlan.timer
+sudo rm -rf /etc/systemd/system/dynavlan.timer.d
+sudo systemctl daemon-reload
+sudo rm /etc/netplan/90-dynavlan.yaml && sudo netplan apply   # drops dynavlan's VLANs
+sudo rm /usr/local/sbin/dynavlan /etc/dynavlan.conf
 ```
 
-## 6. Install iPerf3
-
-```
-sudo apt -y install iperf3
-sudo ufw allow 5210
-```
-
-## 7. Install Additional Packages
-
-```
-sudo apt -y install apt-utils iputils-ping net-tools nano lldpd screen tcpdump
-```
-
-## 8. Set Up Networking (netplan)
-
-The static configuration below is the manual approach dynavlan replaces. It declares a fixed set of VLANs by hand; dynavlan discovers them automatically instead (see `docs/dynavlan-PRD.md`).
-
-```
-sudo nano /etc/netplan/01-netcfg.yaml
-```
-
-Example `/etc/netplan/01-netcfg.yaml` (VLAN IDs are an example set; adjust per site):
-
-```yaml
-# Network config for Domotz
-# /etc/netplan/01-netcfg.yaml
-# sudo netplan apply
-network:
-  version: 2
-  renderer: networkd
-  ethernets:
-    enp1s0:
-      dhcp4: true
-      dhcp4-overrides:
-        route-metric: 10
-    enp2s0:
-      dhcp4: true
-      dhcp4-overrides:
-        route-metric: 20
-  vlans:
-    vlan1:
-      id: 1
-      link: enp1s0
-      dhcp4: true
-      dhcp4-overrides:
-        route-metric: 100
-    vlan11:
-      id: 11
-      link: enp1s0
-      dhcp4: true
-      dhcp4-overrides:
-        route-metric: 200
-    vlan19:
-      id: 19
-      link: enp1s0
-      dhcp4: true
-      dhcp4-overrides:
-        route-metric: 300
-    vlan20:
-      id: 20
-      link: enp1s0
-      dhcp4: true
-      dhcp4-overrides:
-        route-metric: 400
-    vlan21:
-      id: 21
-      link: enp1s0
-      dhcp4: true
-      dhcp4-overrides:
-        route-metric: 500
-    vlan22:
-      id: 22
-      link: enp1s0
-      dhcp4: true
-      dhcp4-overrides:
-        route-metric: 600
-    vlan23:
-      id: 23
-      link: enp1s0
-      dhcp4: true
-      dhcp4-overrides:
-        route-metric: 700
-```
-
-```
-sudo chmod go-r /etc/netplan/01-netcfg.yaml
-sudo netplan apply
-```
+Base networking is untouched throughout - dynavlan never modified it.

@@ -11,11 +11,11 @@ Guidance for Claude Code when working in this repository.
 
 ## Start Here
 
-On a fresh session or after a compact: read `context/index.md` first (read-order + live state). dynavlan is not yet built, so before coding read the design in order: `docs/dynavlan-PRD.md` (authoritative requirements), `dev/features/dynavlan.md` (technical design), `dev/features/dynavlan-tests.md` (tests to write first). The current next action is in `context/todo.md` under "NEXT: Build dynavlan". Note: `dev/SKELETON.md` and `dev/CODEMAP.md` currently describe the base manual deployment, not dynavlan; they get populated for dynavlan once code lands.
+On a fresh session or after a compact: read `context/index.md` first (read-order + live state). dynavlan is code-complete (reviewed, NOT yet exercised on hardware); before coding a change read `dev/SKELETON.md` (logic flow + invariants), then `docs/dynavlan-PRD.md` (authoritative requirements) and `dev/features/dynavlan.md` (technical design) for the affected area. The current next action is in `context/todo.md` (Step 5, hardware checklist). `dev/CODEMAP.md` maps every function for locating code.
 
 ## Project
 
-**dynavlan** -- a self-configuring VLAN provisioning tool for headless Linux network-monitoring appliances (Domotz on Protectli/Ubuntu, designed vendor-agnostic). Single-file bash on Ubuntu with netplan/systemd-networkd. It discovers the active tagged VLANs on whatever trunk the box is plugged into, brings each up with DHCP (address-only, fully route/DNS-isolated), and restarts the monitoring agent, with no SSH and no hand-edited YAML. Runs at boot and on a timer. The repo also holds the base Domotz-on-Ubuntu deployment runbook (`docs/deployment-guide.md`) that dynavlan builds on.
+**dynavlan** -- a self-configuring VLAN provisioning tool for headless netplan/systemd-networkd Linux boxes (hardware- and vendor-agnostic; validated on a Protectli/igb appliance). Single-file bash. It discovers the active tagged VLANs on whatever trunk the box is plugged into, brings each up with DHCP (address-only, fully route/DNS-isolated by default), and restarts the nominated snaps/services (e.g. the Domotz agent snap) so an interface-enumerating agent picks up the new subnets, with no SSH and no hand-edited YAML. Runs at boot and on a timer. Deployment steps: `docs/deployment-guide.md`.
 
 Audience: infrastructure tool that runs unattended on client sites with no remote console. Safety and recoverability dominate every decision; a bad apply that breaks the uplink is unrecoverable remotely.
 
@@ -54,11 +54,10 @@ Infrastructure, not a framework. Never surprise the operator; never strand the b
 | `context/open_questions.md` | Unresolved questions with status and resolution path |
 | `dev/CODEMAP.md` | Where things live: function/module purposes, for locating code |
 | `dev/SKELETON.md` | How it works: logic flow and key invariants |
-| `dev/IMPLEMENTATION-SPEC.md` | Architecture of the base manual deployment (netplan, VLANs, hardening) |
 | `dev/features/dynavlan.md` | dynavlan technical design: architecture, backend seam, apply/rollback state machine, module decomposition, systemd/install layout |
 | `dev/features/dynavlan-tests.md` | dynavlan test plan: unit assert cases (1a-1f), `--dry-run` verification, hardware integration checklist |
 | `docs/dynavlan-PRD.md` | dynavlan product requirements (v3.2): authoritative FR/NFR/AC with severity+impact tags |
-| `docs/deployment-guide.md` | The manual Domotz-on-Ubuntu provisioning runbook dynavlan builds on |
+| `docs/deployment-guide.md` | dynavlan deployment guide: install, configure, first attended run, operation, removal |
 | `README.md` | Landing page: what the project is and where the docs are |
 | `CHANGELOG.md` | What changed per release |
 
@@ -88,9 +87,9 @@ Runs as root on a headless appliance at client sites with no remote console. The
 
 ## Development Workflow
 
-dynavlan is not yet implemented. The build sequence is in `context/todo.md` under "NEXT: Build dynavlan": (1) TDD the pure helpers (`tests/unit.sh`) under `superpowers:test-driven-development`; (2) build the core script cohesively (the apply/rollback state machine is too coupled for subagent fan-out); (3) config template, systemd `dynavlan.service`/`dynavlan.timer`, `install.sh`; (4) `code-reviewer` + `security-reviewer` subagent pass; (5) run the hardware integration checklist. There is no hot-reload: it installs as a systemd service + timer; exercise it on the actual Protectli appliance on the live Meraki trunk with console access, never only over SSH (a bad apply drops the connection). No VM: real hardware on the real trunk is the test bed.
+dynavlan is code-complete (built TDD-first per `superpowers:test-driven-development`, four review rounds folded in) but NOT yet exercised on hardware; do not claim any feature works until it has run on the box. Changes follow the same pattern: TDD new pure helpers in `tests/unit.sh` (RED first), wire cohesively (the apply/rollback state machine is too coupled for subagent fan-out), review scoped to the change. There is no hot-reload: it installs as a systemd service + timer; exercise it on the actual Protectli appliance on the live Meraki trunk with console access, never only over SSH (a bad apply drops the connection). No VM: real hardware on the real trunk is the test bed. The outstanding hardware pass is `context/todo.md` Step 5 (checklist rows L3-1..L3-23).
 
-Before coding any change once code exists: read `dev/features/dynavlan.md` (and `dev/CODEMAP.md`/`dev/SKELETON.md` once populated) to identify the blast radius, then locate the specific functions. Don't start editing until you know what's affected.
+Before coding any change once code exists: read `dev/SKELETON.md` + `dev/CODEMAP.md` (and `dev/features/dynavlan.md` for design depth) to identify the blast radius, then locate the specific functions. Don't start editing until you know what's affected.
 
 ### Code Review Before Release
 
@@ -129,7 +128,7 @@ After any code change, check whether these need updating:
 - `docs/dynavlan-PRD.md` (requirement changes: FR/NFR/AC)
 - `dev/features/dynavlan.md` (design: architecture, state machine, module changes)
 - `dev/features/dynavlan-tests.md` (new/changed test cases)
-- `dev/CODEMAP.md` / `dev/SKELETON.md` (once populated for dynavlan: new/renamed functions, logic-flow changes)
+- `dev/CODEMAP.md` / `dev/SKELETON.md` (new/renamed functions, logic-flow or invariant changes)
 - `context/` files (todo, decisions, open questions)
 - `CLAUDE.md` (if key behaviors changed)
 - `CHANGELOG.md` (new features, fixes, removals per release)
