@@ -202,6 +202,11 @@ say "done."
 cat <<EOF
 
 Next steps:
+  0. If this was an UPGRADE, apply the new build's config to the VLANs already
+     configured here (dynavlan otherwise only rewrites its config when the VLAN
+     set changes, so a change to what it GENERATES would never reach this box):
+       sudo dynavlan --reapply
+     It applies nothing if the generated config already matches what is on disk.
   1. Preview what dynavlan would do on this trunk (no changes):
        sudo dynavlan --dry-run
   2. Apply now (discovers VLANs, applies, restarts monitoring):

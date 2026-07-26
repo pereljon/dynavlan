@@ -14,6 +14,7 @@ main(mode)
   [--status/--reconfigure: root check, run, exit]
   check_preconditions    # root; netplan >= MIN_NETPLAN (--version on 1.x, else dpkg; undeterminable = its own refusal); `netplan try` capability probe (non-mutating); tcpdump/lldpctl per DETECT_METHOD
   [--dry-run: try the flock non-blocking (hold if free; warn + proceed read-only if held), preview, exit]
+  [--reapply: take fd-held flock BLOCKING (-w); busy past the timeout = err, rc 1, nothing applied]
   [--boot/--rescan: take fd-held flock (non-blocking; busy = "skipped", rc 0), dispatch]
 ```
 
@@ -42,6 +43,7 @@ All three modes funnel into the same `apply_change`; they differ only in how the
 
 - **--boot** (reconcile): detection pass 1 → **zero-detection guard**: no carrier / no tags / zero detected = ABORT, change nothing → pin to the owned parent (both passes and the generate describe the SAME wire) → settle → pass 2 → removals = owned ids absent from BOTH passes (pass 2 only counts if the reference iface has carrier) → **relocation branch**: owned parent tagless in both passes while a different iface was independently selected with tags in both passes = the trunk physically moved; reconcile to it in one pass → count gate → apply.
 - **--rescan** (timer): add-only. Pinned to the owned parent, never relocates, never removes. Candidates = detected ∩ [MIN,MAX] − ignore − managed-elsewhere − owned → count gate → apply.
+- **--reapply** (FR-39): NO detection at all. Pins to `owned_parent` (refuses if there is none), target = the owned set verbatim, generates a candidate under `/run`, and applies ONLY if `config_body_differs` says the body changed (line 1, the version/build header, is excluded positionally - FR-38 put a per-build id there and comparing it would force an apply on every upgrade). Never adds or removes a VLAN. Bypasses the count gate (zero additions is not growth; `fill` mode would trim). On ACCEPT, lease-waits the FULL owned set, since there are no additions to wait on and restarting the agent mid-re-DHCP would drop kept subnets. Exists because regeneration is otherwise gated on the VLAN-set diff, so a change to the GENERATED stanza never reaches a box whose VLAN set is stable.
 - **--dry-run**: same pinning and candidate math, single pass; generates into a throwaway copy of /etc/netplan and validates there; prints the diff, count gate, and (routed mode) the metric map + any would-be conflict. Never applies.
 
 Count gate (FR-12/36): warn above VLAN_WARN; above VLAN_LIMIT either refuse loudly (default) or fill lowest-ids into the remaining slots. Removals-only changes always pass the gate (the cap gates growth, never a shrink).

@@ -37,6 +37,7 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 | `level_num` / `log` | Leveled logging to stderr → journald (identifier `dynavlan`), gated by LOG_LEVEL |
 | `usage` | One-line usage to stderr |
 | `version_string` | Pure: `<ver> (build <id>)`; empty build renders `unknown`, never `(build )` (FR-38) | 1k |
+| `config_body_differs` | Pure: SAME/DIFFERENT for two configs ignoring exactly line 1 (the version/build header) (FR-39) | 1m |
 | `load_config` | Defaults, then source /etc/dynavlan.conf (root-owned, not group/other-writable, else refuse), then strict-validate every key |
 
 ## Preconditions (FR-0)
@@ -112,6 +113,7 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 | `do_boot` | Two-pass reconcile: zero-detection guard, owned-parent pinning, carrier-gated removals, AC-3 relocation branch |
 | `do_rescan` | Add-only timer reconcile, pinned to the owned parent, never relocates/removes |
 | `do_dryrun` | Preview: same pinning/candidate math, throwaway-tree validate, diff + count gate + FR-37 metric/conflict preview; never applies |
+| `do_reapply` | FR-39: regenerate the owned set with this build, apply only if the body differs; NO detection (pins to owned_parent), full owned set lease-waited, count gate bypassed |
 | `do_status` | Owned vs detected-now vs managed-elsewhere report (root; runs a detection pass) |
 | `render_timer_dropin` | Pure: timer drop-in text for an interval; restates ALL monotonic triggers, since the reset clears the whole list (FR-21a) |
 | `do_reconfigure` | Write the rendered drop-in to `dynavlan.timer.d/interval.conf` + daemon-reload |

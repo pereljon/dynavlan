@@ -396,6 +396,50 @@ assert_eq "$(bash "$src" --version)" "dynavlan $ver (build source)" "1l unstampe
 rm -f "$stamp_tmp"
 
 # ---------------------------------------------------------------------------
+# 1m. config_body_differs - FR-39 reapply comparison
+#
+# Line 1 is the `# Managed by dynavlan <ver> (build <id>)` header. FR-38 put the
+# build id there, so a whole-file comparison would report a difference after every
+# rebuild and make --reapply always apply - a no-change apply on the one operation
+# that can strand a box. The skip is POSITIONAL (exactly line 1), never a pattern
+# match on header text: a pattern match would silently stop working if the header
+# format ever changed, and the failure would be an apply loop.
+# ---------------------------------------------------------------------------
+
+body_a='# Managed by dynavlan 0.1.0 (build aaaaaaa)
+network:
+  version: 2
+  vlans:
+    enp1s0.18:
+      dhcp4: true'
+body_b='# Managed by dynavlan 0.1.0 (build bbbbbbb-dirty)
+network:
+  version: 2
+  vlans:
+    enp1s0.18:
+      dhcp4: true'
+body_c='# Managed by dynavlan 0.1.0 (build aaaaaaa)
+network:
+  version: 2
+  vlans:
+    enp1s0.18:
+      dhcp4: true
+      accept-ra: false'
+body_d='# Managed by dynavlan 0.1.0 (build aaaaaaa)
+NETWORK-DIFFERS-ON-LINE-2:
+  version: 2
+  vlans:
+    enp1s0.18:
+      dhcp4: true'
+
+call config_body_differs "$body_a" "$body_a"; ok "1m identical -> SAME" "SAME"
+call config_body_differs "$body_a" "$body_b"; ok "1m header/build differs ONLY -> SAME (the FR-38 apply-loop guard)" "SAME"
+call config_body_differs "$body_a" "$body_c"; ok "1m body differs -> DIFFERENT" "DIFFERENT"
+call config_body_differs "$body_a" "$body_d"; ok "1m difference on line 2 is still caught" "DIFFERENT"
+call config_body_differs "$body_a" ""; ok "1m empty live file -> DIFFERENT" "DIFFERENT"
+call config_body_differs "" ""; ok "1m both empty -> SAME" "SAME"
+
+# ---------------------------------------------------------------------------
 
 printf '\n%s tests, %s failures\n' "$tests" "$fails"
 [ "$fails" -eq 0 ]

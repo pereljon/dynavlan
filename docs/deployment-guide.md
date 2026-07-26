@@ -101,9 +101,13 @@ Set `RESTART_SNAPS`/`RESTART_SERVICES` to whatever agent should re-enumerate int
 
 ## 5. Ongoing operation
 
+**After every upgrade, run `sudo dynavlan --reapply`.** dynavlan rewrites its netplan file only when the VLAN *set* changes, so a new build that generates a different config (an isolation key, a security fix) would otherwise never reach a box whose VLANs are stable - the fix would be installed and inert. `--reapply` regenerates the owned set with the running build and applies it through the usual `netplan try` + health-check path, or does nothing at all if the config already matches. It never adds or removes a VLAN, and never runs detection.
+
+
 | Task | Command |
 |------|---------|
 | Check which build is installed | `dynavlan --version` (no root needed) |
+| Apply a new build's config to existing VLANs | `sudo dynavlan --reapply` (run after every upgrade) |
 | See owned vs detected VLANs | `sudo dynavlan --status` |
 | Preview what a reconcile would do | `sudo dynavlan --dry-run` |
 | Force an add-only rescan now | `sudo systemctl start dynavlan-rescan.service` |

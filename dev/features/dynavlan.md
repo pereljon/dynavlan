@@ -72,7 +72,8 @@ A startup stub `backend_detect` (reads `/etc/os-release`, probes for `netplan`) 
 | `compute_candidates` | `detected ∩ [MIN,MAX] − VLAN_IGNORE − backend_list_managed_vlans − backend_owned_vlans` |
 | `reconcile_boot` | Two-pass: additions single-pass, removals need absence in both passes; zero-detection guard. Removal-set combination factored into a pure helper `boot_removals(owned,pass1,pass2)` for unit testing (tests 1d) |
 | `reconcile_rescan` | Add-only; skip VLANs with an active lease |
-| `apply_change` | Orchestrate the safety sequence (§7): generate → validate → apply_with_revert → deletes → restarts |
+| `apply_change` | Orchestrate the safety sequence (§7): generate → validate → apply_with_revert → deletes → restarts. Optional 4th arg overrides the lease-wait set (FR-39 reapply waits on the full owned set, having no additions) |
+| `do_reapply` / `config_body_differs` | FR-39: regenerate the owned set with the running build and apply only if the body differs (line 1, the version/build header, excluded positionally). No detection - pinned to `owned_parent`, since detecting could silently turn a reapply into a trunk relocation. Count gate bypassed; blocking lock |
 | `snapshot_default_route` | Capture iface/gw/metric of lowest-metric default route (health-check reference) |
 | `health_check` | PASS iff post-apply default route egresses snapshot iface (or empty→empty); ARP non-fatal |
 | `wait_leases` | Bounded `LEASE_SETTLE_SECONDS` wait for new-VLAN leases; non-blocking on failure |

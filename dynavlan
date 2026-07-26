@@ -33,6 +33,7 @@ TRY_TIMEOUT=30                                 # FR-18: netplan try confirmation
 POLL_INTERVAL=2                                # accept-loop sampling interval (§9)
 APPLY_FALLBACK_SETTLE=10                       # min settle before health sampling when no probe iface exists
 HEALTH_CONSEC=2                                # consecutive health PASSes required to accept
+REAPPLY_LOCK_WAIT=300                          # FR-39: --reapply waits for an in-flight run (a rescan can legitimately take minutes)
 
 # Default log level so log() works before load_config; overwritten by config.
 LOG_LEVEL="${LOG_LEVEL:-info}"
@@ -237,6 +238,27 @@ assign_route_metrics() {
 	return 0
 }
 
+# config_body_differs GENERATED LIVE
+#   FR-39: DIFFERENT if the two configs differ anywhere below line 1, else SAME.
+#
+#   Line 1 is the `# Managed by dynavlan <ver> (build <id>)` header. FR-38 put the
+#   build id in it, so comparing whole files would report a difference after every
+#   rebuild and make --reapply apply unconditionally - a no-change apply, on the
+#   one operation that can strand a headless box. Skipping it is also the correct
+#   semantics: the header records which build last wrote this body, and if a newer
+#   build produces an identical body then the old header is still true.
+#
+#   The skip is POSITIONAL (exactly line 1), deliberately not a pattern match on
+#   header text: a pattern match would silently stop matching if the header format
+#   ever changed, and the resulting failure is an apply loop rather than an error.
+config_body_differs() {
+	local a b
+	a=$(printf '%s\n' "$1" | tail -n +2)
+	b=$(printf '%s\n' "$2" | tail -n +2)
+	if [ "$a" = "$b" ]; then printf 'SAME'; else printf 'DIFFERENT'; fi
+	return 0
+}
+
 # map_ids MAP
 #   Ids of an "id:metric" map, as a sorted set.
 map_ids() {
@@ -365,7 +387,7 @@ log() {
 }
 
 usage() {
-	printf 'usage: dynavlan --boot|--rescan|--dry-run|--status|--reconfigure|--version (-V)\n' >&2
+	printf 'usage: dynavlan --boot|--rescan|--reapply|--dry-run|--status|--reconfigure|--version (-V)\n' >&2
 }
 
 # Pure: the full build identity, e.g. "0.1.0 (build 18a6ea2-dirty)". An empty
@@ -1108,8 +1130,13 @@ restart_targets() {
 # Apply/rollback state machine (design §7) - the safety-critical chain
 # ---------------------------------------------------------------------------
 
-apply_change() { # TARGET_IDS ADDITIONS REMOVALS
-	local target="$1" additions="$2" removals="$3"
+apply_change() { # TARGET_IDS ADDITIONS REMOVALS [LEASE_SET]
+	# LEASE_SET defaults to ADDITIONS: normally only new VLANs need a lease before the
+	# restart targets re-enumerate interfaces. FR-39 reapply overrides it with the FULL
+	# owned set, because it has no additions at all - rewriting every stanza can make
+	# networkd reconfigure the existing links, and restarting an interface-enumerating
+	# agent while kept VLANs are mid-re-DHCP would DROP those subnets from inventory.
+	local target="$1" additions="$2" removals="$3" lease_set="${4-$2}"
 	local snap_iface had_prior=0 id probe=""
 	# Probe iface: the first added VLAN's interface exists only once netplan try has
 	# actually applied - the §9 accept loop uses it as apply-completion evidence.
@@ -1155,7 +1182,7 @@ apply_change() { # TARGET_IDS ADDITIONS REMOVALS
 		log notice "netplan try ACCEPTED"
 		prune_backups # prune only after accept: a revert must still find LAST_BACKUP on disk
 		for id in $removals; do backend_remove_vlan "$OLD_TRUNK" "$id"; done # FR-24: deletes only after accept
-		wait_leases "$additions"
+		wait_leases "$lease_set"
 		restart_targets
 		log notice "reconcile applied on $TRUNK_IFACE: added [${additions:-none}] removed [${removals:-none}]"
 		return 0
@@ -1397,9 +1424,11 @@ do_dryrun() { # FR-34: detect, compute diff, validate in a throwaway tree; never
 	# FR-37 preview: assign metrics the way apply_change would and surface a conflict.
 	ROUTE_METRICS=""
 	if [ "$VLAN_ROUTES" = true ]; then
-		local kept_map snap_metric
-		kept_map=$(map_filter "$(backend_owned_metrics)" "$(set_minus "$owned" "$removals")")
-		ROUTE_METRICS=$(assign_route_metrics "$kept_map" "$additions" "$VLAN_ROUTE_METRIC_START" "$VLAN_ROUTE_METRIC_MODE")
+		local snap_metric
+		# Same decision point as apply_change, not a parallel recomposition: a preview
+		# that assigns metrics differently from the apply it previews is worse than no
+		# preview at all.
+		ROUTE_METRICS=$(plan_route_metrics "$(backend_owned_metrics)" "$target" "$additions" "$VLAN_ROUTE_METRIC_START" "$VLAN_ROUTE_METRIC_MODE")
 		snap_metric=$(snapshot_default_metric)
 		printf '  routes:    ON mode=%s start=%s metrics [%s]\n' "$VLAN_ROUTE_METRIC_MODE" "$VLAN_ROUTE_METRIC_START" "${ROUTE_METRICS:-none}"
 		if [ "$(metric_conflict "$snap_metric" "$ROUTE_METRICS")" = CONFLICT ]; then
@@ -1433,6 +1462,72 @@ do_dryrun() { # FR-34: detect, compute diff, validate in a throwaway tree; never
 	fi
 	rm -rf "$tree"
 	printf '  (dry-run only: no netplan try, no apply, no restart)\n'
+}
+
+# FR-39: regenerate the OWNED set with the current build and apply only if the
+# generated body actually differs from what is on disk.
+#
+# Deliberately runs NO detection. If it detected and trunk selection landed on a
+# different NIC, "reapply" would silently become a trunk RELOCATION - every VLAN
+# renamed onto another parent - with none of boot's two-pass evidence and no
+# cleanup of the abandoned links. Pinning to the owned parent also makes this fast
+# and carrier-independent, which is what an operator invoking it by hand wants.
+do_reapply() {
+	local owned parent live generated saved tmpdir hdr rc
+	owned=$(backend_owned_vlans)
+	if [ -z "$owned" ]; then
+		log notice "reapply: no VLANs owned; nothing to regenerate"
+		return 0
+	fi
+	parent=$(owned_parent)
+	if [ -z "$parent" ]; then
+		log err "reapply: $NETPLAN_FILE defines VLANs but no parent link; refusing (cannot know which trunk to write) - run --boot to reconcile from detection instead"
+		return 1
+	fi
+	TRUNK_IFACE="$parent"
+	log info "run start: dynavlan $(version_string "$ver" "$build") mode=reapply owned=[$owned] parent=$TRUNK_IFACE"
+
+	live=$(cat "$NETPLAN_FILE" 2>/dev/null)
+	hdr=$(printf '%s\n' "$live" | head -1)
+	case "$hdr" in
+	*"Managed by dynavlan"*) log info "on-disk config header: ${hdr#\# Managed by }" ;;
+	esac
+
+	# Generate a candidate into /run, never into /etc/netplan: nothing may land next
+	# to the live file that a later `netplan apply` by any actor could pick up.
+	tmpdir=$(mktemp -d /run/dynavlan.reapply.XXXXXX) || {
+		log err "reapply: cannot create scratch dir in /run; refusing"
+		return 1
+	}
+	ROUTE_METRICS=""
+	if [ "$VLAN_ROUTES" = true ]; then
+		ROUTE_METRICS=$(plan_route_metrics "$(backend_owned_metrics)" "$owned" "" "$VLAN_ROUTE_METRIC_START" "$VLAN_ROUTE_METRIC_MODE")
+	fi
+	saved="$NETPLAN_FILE"
+	NETPLAN_FILE="$tmpdir/90-dynavlan.yaml"
+	if ! backend_generate_config "$owned"; then
+		NETPLAN_FILE="$saved"
+		rm -rf "$tmpdir"
+		log err "reapply: could not generate a candidate config; nothing changed"
+		return 1
+	fi
+	generated=$(cat "$NETPLAN_FILE" 2>/dev/null)
+	NETPLAN_FILE="$saved"
+	rm -rf "$tmpdir"
+
+	if [ "$(config_body_differs "$generated" "$live")" = SAME ]; then
+		log notice "reapply: on-disk config already matches what this build generates; no change, nothing applied"
+		return 0
+	fi
+
+	# Count gate is deliberately NOT consulted: with zero additions this is not
+	# growth, and in fill mode it would TRIM the owned set - turning a reapply into
+	# a silent removal. Log the count for observability instead.
+	log notice "reapply: config drift detected ($(count_ids "$owned") VLANs owned; VLAN_WARN=$VLAN_WARN VLAN_LIMIT=$VLAN_LIMIT); applying regenerated config"
+	apply_change "$owned" "" "" "$owned"
+	rc=$?
+	[ "$rc" -eq 0 ] && log notice "reapply: applied regenerated config for [$owned] on $TRUNK_IFACE"
+	return $rc
 }
 
 do_status() { # FR-35
@@ -1502,7 +1597,7 @@ do_reconfigure() { # render the timer interval drop-in from RESCAN_MINUTES
 main() {
 	local mode="${1:-}" rc
 	case "$mode" in
-	--boot | --rescan | --dry-run | --status | --reconfigure) ;;
+	--boot | --rescan | --reapply | --dry-run | --status | --reconfigure) ;;
 	--version | -V)
 		# Answered before the config load and the root check on purpose: "what is
 		# installed here" must stay answerable when the config is invalid or the
@@ -1561,6 +1656,23 @@ main() {
 		fi
 		do_dryrun
 		return $?
+		;;
+	--reapply)
+		# Blocks rather than skipping. --boot/--rescan are scheduled and simply run
+		# again next cycle, so "skipped" is harmless there; --reapply is an operator
+		# typing a command, and returning rc 0 without applying would read as success.
+		exec 8>"$LOCK_FILE" || {
+			log err "cannot open lock $LOCK_FILE"
+			return 1
+		}
+		if ! flock -w "$REAPPLY_LOCK_WAIT" 8; then
+			log err "another dynavlan run still holds $LOCK_FILE after ${REAPPLY_LOCK_WAIT}s; nothing applied. Wait for it to finish (or stop dynavlan.timer) and re-run"
+			return 1
+		fi
+		do_reapply
+		rc=$?
+		log info "run end: mode=reapply rc=$rc"
+		return $rc
 		;;
 	--boot | --rescan)
 		# FR-30: serialize on an fd-held flock (kernel-released on death).
