@@ -42,7 +42,7 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 |----------|------------------|
 | `parse_version` | Pure: first `N.N[.N]` in a version string, empty when none (handles dpkg epoch/revision) |
 | `netplan_version` / `version_ge` | Probe netplan version (`netplan --version` on 1.x, else dpkg-query on 0.10x) and compare against MIN_NETPLAN (sort -V) |
-| `check_preconditions` | root; netplan >= min; non-mutating `netplan try` capability probe; tcpdump/lldpctl per DETECT_METHOD |
+| `check_preconditions` | root; netplan >= min; non-mutating `netplan try` capability probe; tcpdump/lldpctl per DETECT_METHOD; tcpdump `-Q in` support (FR-5a, probed via `-d`, non-mutating) |
 
 ## Discovery + detection (FR-1..5)
 
@@ -51,7 +51,7 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 | `discover_phys_ifaces` | Live physical Ethernet NICs from /sys/class/net (device symlink, ARPHRD_ETHER, not wireless, safe charset) |
 | `tags_var` / `iface_tags` | Sanitized per-iface tag-stash variable name and its reader (no eval injection surface) |
 | `prep_iface` / `has_carrier` | Admin-up + promisc on; carrier probe |
-| `detect_sniff` | Passive 802.1Q capture (tcpdump, minimal snaplen, no disk) → VLAN ids |
+| `detect_sniff` | Passive 802.1Q capture, INBOUND ONLY (`-Q in`, FR-5a: our own egress is not evidence); minimal snaplen, no disk → VLAN ids |
 | `lldp_tagged_vlans` | Pure: tagged VLAN ids from `lldpctl -f keyvalue` text; drops the native VLAN (`pvid=yes`), stateful adjacency parse (FR-7a) |
 | `detect_lldp` | lldpctl-advertised VLAN ids, PVID excluded |
 | `detect_iface` | Union of enabled methods for one iface |

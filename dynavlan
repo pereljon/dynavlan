@@ -510,6 +510,15 @@ check_preconditions() {
 			log err "DETECT_METHOD=$DETECT_METHOD requires tcpdump (not installed)"
 			return 1
 		}
+		# Inbound-only capture is a correctness requirement, not an optimization
+		# (see detect_sniff): without it we detect our own egress and removals can
+		# never fire. Refuse rather than silently capture both directions. `-d`
+		# compiles the filter and exits without opening the device: non-mutating,
+		# and it does not need root.
+		tcpdump -Q in -d vlan >/dev/null 2>&1 || {
+			log err "tcpdump does not support '-Q in' (inbound-only capture); refusing - without it detection counts our own transmitted frames and VLAN removal can never fire"
+			return 1
+		}
 	fi
 	if [ "$DETECT_METHOD" = lldp ] || [ "$DETECT_METHOD" = both ]; then
 		command -v lldpctl >/dev/null 2>&1 || {
@@ -559,7 +568,15 @@ has_carrier() { [ "$(cat "/sys/class/net/$1/carrier" 2>/dev/null)" = "1" ]; }
 
 detect_sniff() { # IFACE -> distinct 802.1Q VLAN ids seen (minimal snaplen, no disk write - FR-5)
 	local i="$1"
-	timeout "$SNIFF_SECONDS" tcpdump -i "$i" -e -nn -p -s 64 'vlan' 2>/dev/null |
+	# `-Q in` (INBOUND ONLY) is load-bearing, not a tidy-up: tcpdump captures egress
+	# too, and every VLAN we own transmits tagged DHCP on the parent (DISCOVER retries
+	# forever if it never leases, renewals if it did). Counting our own frames as
+	# evidence makes detection self-fulfilling - an owned VLAN is always "detected",
+	# so FR-23 removal can never fire, including when the switch genuinely stops
+	# trunking it. Only frames the switch actually delivers are evidence of the trunk.
+	# Hardware-validated (2026-07-25): the dead enp1s0.100 kept itself alive across
+	# reboots this way - 1 outbound VID-100 DHCP Request from our own MAC, 0 inbound.
+	timeout "$SNIFF_SECONDS" tcpdump -i "$i" -e -nn -p -Q in -s 64 'vlan' 2>/dev/null |
 		grep -oE 'vlan [0-9]+' | awk '{print $2}' | sort -n -u | tr '\n' ' ' | sed 's/ $//'
 }
 

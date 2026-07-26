@@ -79,7 +79,21 @@ owned = [18 21 22 100 101], steady state (--dry-run reports additions/removals b
       discovery has never worked; every VLAN seen so far came from the boot reconcile. Fix: pure
       `render_timer_dropin` restates all triggers, first fire via OnActiveSec (survives install.sh's
       stop/restart). Suite 80 -> 82 (section 1j). Hardware row L3-24 added.
-- [ ] **DEPLOY the FR-7a + FR-21a fixes to the box and confirm.** After install, `systemctl list-timers
+- [x] **FR-7a + FR-21a DEPLOYED AND CONFIRMED ON HARDWARE (2026-07-25 02:18-02:26 box time).**
+      install.sh upgrade path ran end-to-end for the first time (stop timer -> lock -> swap -> reconfigure ->
+      restart via trap). Timer now real: NEXT 02:26:01, LAST 02:21:01, TimersMonotonic gained
+      `{ OnActiveUSec=2min ; next_elapse=46min }`, and the OnUnitActiveSec chain picked up its anchor once
+      the run deactivated (it reads n/a WHILE the triggered service runs - not a bug). First-ever rescan ran
+      02:21:02-02:22:34: `no new VLANs ... zero applies/restarts` (NFR-2 idempotency confirmed live).
+      `detect_lldp enp1s0` now returns empty (FR-7a confirmed on the wire).
+- [x] **HARDWARE BUG 4 (FR-5a): the sniff counted our own egress; removals could never fire. FIXED IN
+      REPO, NOT YET DEPLOYED.** Found because 100 stayed in `detected` after the LLDP fix. 75s directional
+      capture: 1 outbound VID-100 DHCP Request from our own MAC, 0 inbound. Every owned VLAN transmits
+      tagged DHCP, so every owned VLAN self-detects and FR-23 removal is dead in general. Fix: `-Q in`
+      plus a refuse-to-run probe (`tcpdump -Q in -d vlan`, non-mutating). Hardware row L3-25.
+- [ ] **DEPLOY the FR-5a fix, then `--boot` to finally clear the dead `enp1s0.100`.** Until then the box
+      still owns it and a reboot will NOT clear it (the config recreates the interface, it transmits, the
+      sniff sees itself, removal is suppressed). Confirm afterwards that `detected` drops 100. After install, `systemctl list-timers
       dynavlan.timer` MUST show a real NEXT (never n/a) - that is the only proof; active + Result=success
       proved nothing. Then confirm a rescan actually appears in `journalctl -t dynavlan` after the interval.
 - [ ] (superseded, kept for the record) DEPLOY the FR-7a fix to the box and confirm. The box still runs the pre-fix script and still

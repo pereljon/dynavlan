@@ -25,11 +25,13 @@ run_detection
   discover_phys_ifaces   # /sys/class/net: real device symlink, ARPHRD_ETHER, not wireless, safe charset
   prep_iface (all)       # admin-up + promisc on (promisc makes the NIC VLAN filter transparent; left ON)
   one shared carrier deadline (CARRIER_WAIT_SECONDS total, NOT per port)
-  concurrent sniff+lldp per carrier-up iface (one SNIFF_SECONDS window total)
+  concurrent sniff+lldp per carrier-up iface (one SNIFF_SECONDS window total); sniff is INBOUND ONLY
   select_trunk           # most distinct tags wins; hysteresis margin 1 vs the previous trunk; lexicographic tiebreak
 ```
 
 Detection cost is deliberately independent of port count (a 4-6 port box must not blow the systemd start timeout). Sniff is the primary detector (LLDP on Meraki advertises only the native VLAN); `both` is the default.
+
+**The sniff is INBOUND ONLY** (FR-5a, `tcpdump -Q in`). Packet capture sees egress too, and every VLAN we own transmits tagged DHCP on the parent - DISCOVER retries forever if it never leases, renewals if it did. Counting those makes detection self-fulfilling: an owned VLAN is permanently "detected" on its own evidence, so FR-23 removal can never fire, neither for a VLAN created in error nor for one the switch genuinely stopped trunking. Hardware-validated (2026-07-25): a dead `enp1s0.100` sustained itself across reboots on 1 outbound VID-100 DHCP Request from our own MAC, 0 inbound in 75s. Missing `-Q` support is a refuse-to-run precondition, never a silent fallback to bidirectional capture; the probe is `tcpdump -Q in -d vlan`, which compiles the filter without opening the device (non-mutating, no root needed).
 
 **LLDP never contributes the native VLAN** (FR-7a). `lldpctl` flags it `pvid=yes`, and it is untagged on the wire: a VLAN interface carrying that tag can never receive a frame, so it comes up, never leases, and stays dead. Hardware-validated 2026-07-25: LLDP advertised only `vlan-id=100 / pvid=yes`, dynavlan built `enp1s0.100`, and it took no lease in 30s. `lldp_tagged_vlans` drops it. The exclusion is scoped to the LLDP source alone - if the sniff sees tagged frames for that ID, it is a real tagged VLAN and stays a candidate. Note `lldpctl -f keyvalue` gives no index in the key, so `vlan-id` and its `pvid` are correlated by ADJACENCY only; the parse is necessarily stateful, and a block with no `pvid` key is treated as tagged.
 
