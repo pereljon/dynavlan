@@ -19,8 +19,10 @@ Copy the six artifacts to the box and run the installer:
 ```
 scp dynavlan dynavlan.conf dynavlan.service dynavlan-rescan.service dynavlan.timer install.sh <user>@<box>:
 ssh <user>@<box>
-sudo ./install.sh
+sudo bash install.sh
 ```
+
+`sudo bash install.sh` rather than `sudo ./install.sh` on purpose: transfers that do not carry Unix modes (a GitHub ZIP download, `rsync` without `-p`, anything routed through a filesystem with no permission bits) strip the executable bit, and `./install.sh` then fails with "Permission denied". Invoking the interpreter sidesteps it. The mode of `dynavlan` itself does not matter, since the installer places it with `install -m 0755`.
 
 `install.sh`:
 

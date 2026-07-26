@@ -40,7 +40,7 @@ No dependency on NIC names, native VLAN, switch vendor, or the contents/filename
 ## Install
 
 ```sh
-sudo ./install.sh
+sudo bash install.sh
 ```
 
 Installs the script to `/usr/local/sbin/dynavlan`, the config template to `/etc/dynavlan.conf`, the systemd units, and a persistent-journald drop-in. It enables the boot service and rescan timer for the next boot but changes nothing on the network itself. Configure via `/etc/dynavlan.conf` (every key is documented at its default).

@@ -18,11 +18,25 @@ SBIN="/usr/local/sbin/dynavlan"
 CONF="/etc/dynavlan.conf"
 UNIT_DIR="/etc/systemd/system"
 JOURNALD_DROPIN="/etc/systemd/journald.conf.d/00-dynavlan-persistent.conf"
+LOCK_FILE="/run/dynavlan.lock"   # FR-30: the same lock dynavlan runs hold
+LOCK_WAIT=300                    # a rescan can legitimately run for minutes (sniff + try window + leases)
+
+TIMER_WAS_ACTIVE=0
 
 say() { printf '[install] %s\n' "$*"; }
 die() {
 	printf '[install] ERROR: %s\n' "$*" >&2
 	exit 1
+}
+
+# Runs on every exit path, including die: never leave the box with rescans
+# silently switched off because the install aborted halfway.
+restore_timer() {
+	if [ "$TIMER_WAS_ACTIVE" -eq 1 ]; then
+		say "restarting dynavlan.timer"
+		systemctl start dynavlan.timer ||
+			printf '[install] ERROR: could not restart dynavlan.timer; start it manually\n' >&2
+	fi
 }
 
 [ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"
@@ -48,11 +62,31 @@ else
 	say "WARNING: apt-get not found; ensure tcpdump and lldpd/lldpctl are installed for DETECT_METHOD=both"
 fi
 
-# 2. Script.
+# 2. Quiesce before touching the script (upgrade path). On a first install nothing
+#    is running and this is a no-op; on an upgrade the rescan timer has been firing
+#    since the last install, so two things must be true before the swap:
+#      (a) no new run starts mid-install -> stop the timer, restored on exit;
+#      (b) no run is in flight -> take the FR-30 lock and wait for it.
+#    Without (b) the script file is rewritten under a live `dynavlan --rescan`; bash
+#    reads a script lazily by file offset, so the running invocation would execute
+#    garbage or stop mid-logic, possibly between `netplan try` and its confirmation.
+if systemctl is-active --quiet dynavlan.timer 2>/dev/null; then
+	TIMER_WAS_ACTIVE=1
+	trap restore_timer EXIT
+	say "stopping dynavlan.timer for the duration of the install"
+	systemctl stop dynavlan.timer
+fi
+
+say "waiting for any in-flight dynavlan run to finish (FR-30 lock, up to ${LOCK_WAIT}s)"
+exec 9>"$LOCK_FILE"
+flock -w "$LOCK_WAIT" 9 ||
+	die "a dynavlan run still holds $LOCK_FILE after ${LOCK_WAIT}s; refusing to replace the script under a live run (wait for it to finish, or stop dynavlan-rescan.service, then re-run)"
+
+# 3. Script.
 say "installing $SBIN"
 install -m 0755 -o root -g root "$SRC_DIR/dynavlan" "$SBIN"
 
-# 3. Config template (never clobber an existing operator config).
+# 4. Config template (never clobber an existing operator config).
 if [ -f "$CONF" ]; then
 	say "keeping existing $CONF (template not overwritten)"
 else
@@ -60,13 +94,13 @@ else
 	install -m 0644 -o root -g root "$SRC_DIR/dynavlan.conf" "$CONF"
 fi
 
-# 4. systemd units.
+# 5. systemd units.
 say "installing systemd units"
 install -m 0644 -o root -g root "$SRC_DIR/dynavlan.service" "$UNIT_DIR/dynavlan.service"
 install -m 0644 -o root -g root "$SRC_DIR/dynavlan-rescan.service" "$UNIT_DIR/dynavlan-rescan.service"
 install -m 0644 -o root -g root "$SRC_DIR/dynavlan.timer" "$UNIT_DIR/dynavlan.timer"
 
-# 5. Persistent journald (FR-31): a boot-looping headless box must retain logs across reboot.
+# 6. Persistent journald (FR-31): a boot-looping headless box must retain logs across reboot.
 say "ensuring persistent journald"
 mkdir -p "$(dirname "$JOURNALD_DROPIN")"
 cat >"$JOURNALD_DROPIN" <<'EOF'
@@ -79,18 +113,24 @@ mkdir -p /var/log/journal
 systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
 systemctl restart systemd-journald
 
-# 6. Render the timer interval from RESCAN_MINUTES and reload.
+# 7. Render the timer interval from RESCAN_MINUTES and reload.
 say "reloading systemd and rendering timer interval"
 systemctl daemon-reload
 "$SBIN" --reconfigure
 
-# 7. Enable the boot service and the rescan timer for NEXT boot. Deliberately NOT
-#    `--now`: a monotonic timer whose OnBootSec is already past would fire the rescan
-#    (detect + netplan try + agent restart) immediately, before the operator's
-#    --dry-run preview. Install must never trigger a surprise network change.
+# 8. Enable the boot service and the rescan timer for NEXT boot. Deliberately NOT
+#    `--now`: on a first install, a monotonic timer whose OnBootSec is already past
+#    would fire the rescan (detect + netplan try + agent restart) immediately, before
+#    the operator's --dry-run preview. Install must never trigger a surprise network
+#    change. On an upgrade the timer was already running, so restore_timer puts it
+#    back exactly as it was found; that is the operator's existing posture, not a new
+#    change, but it does mean the new code rescans within RESCAN_MINUTES.
 say "enabling dynavlan.service (boot) and dynavlan.timer (rescan) for next boot"
 systemctl enable dynavlan.service
 systemctl enable dynavlan.timer
+
+# The swap is complete; a queued run may proceed. The timer is restored by the trap.
+exec 9>&-
 
 say "done."
 cat <<EOF
@@ -106,5 +146,19 @@ Next steps:
   4. Status any time:
        sudo dynavlan --status
 
-The rescan timer is already active (every RESCAN_MINUTES, add-only).
 EOF
+
+if [ "$TIMER_WAS_ACTIVE" -eq 1 ]; then
+	cat <<EOF
+This was an upgrade: the rescan timer was running before and has been restarted,
+so the NEW code will rescan (add-only) within RESCAN_MINUTES. Run the --dry-run
+above now if you want to see what it will do before it does it. To hold it off:
+     sudo systemctl stop dynavlan.timer
+EOF
+else
+	cat <<EOF
+The rescan timer is enabled but NOT yet running: it arms at the next boot, or
+start it now with 'sudo systemctl start dynavlan.timer' once you are happy with
+the --dry-run preview.
+EOF
+fi
