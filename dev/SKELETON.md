@@ -31,6 +31,8 @@ run_detection
 
 Detection cost is deliberately independent of port count (a 4-6 port box must not blow the systemd start timeout). Sniff is the primary detector (LLDP on Meraki advertises only the native VLAN); `both` is the default.
 
+**LLDP never contributes the native VLAN** (FR-7a). `lldpctl` flags it `pvid=yes`, and it is untagged on the wire: a VLAN interface carrying that tag can never receive a frame, so it comes up, never leases, and stays dead. Hardware-validated 2026-07-25: LLDP advertised only `vlan-id=100 / pvid=yes`, dynavlan built `enp1s0.100`, and it took no lease in 30s. `lldp_tagged_vlans` drops it. The exclusion is scoped to the LLDP source alone - if the sniff sees tagged frames for that ID, it is a real tagged VLAN and stays a candidate. Note `lldpctl -f keyvalue` gives no index in the key, so `vlan-id` and its `pvid` are correlated by ADJACENCY only; the parse is necessarily stateful, and a block with no `pvid` key is treated as tagged.
+
 ## Reconcile policies
 
 All three modes funnel into the same `apply_change`; they differ only in how the target set is computed.

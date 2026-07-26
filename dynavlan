@@ -563,10 +563,31 @@ detect_sniff() { # IFACE -> distinct 802.1Q VLAN ids seen (minimal snaplen, no d
 		grep -oE 'vlan [0-9]+' | awk '{print $2}' | sort -n -u | tr '\n' ' ' | sed 's/ $//'
 }
 
-detect_lldp() { # IFACE -> VLAN ids advertised via LLDP
+# Pure: tagged VLAN ids from `lldpctl -f keyvalue` text, native VLAN excluded.
+# The native VLAN is UNTAGGED on the wire, so a VLAN interface carrying its tag
+# can never receive a frame (it comes up, never leases, and stays dead) - LLDP
+# must not offer it as a tagged candidate. lldpctl flags it pvid=yes, but emits
+# one flat block per VLAN with no index in the key, so vlan-id and its pvid are
+# correlated by ADJACENCY only and the parse has to be stateful. A block with no
+# pvid key is treated as tagged: absence of the flag is not evidence of native.
+lldp_tagged_vlans() {
+	printf '%s\n' "$1" | awk '
+		/\.vlan-id=/ {
+			if (pending != "") print pending
+			pending = ""
+			v = $0
+			sub(/.*\.vlan-id=/, "", v)
+			if (v ~ /^[0-9]+/) { sub(/[^0-9].*/, "", v); pending = v }
+			next
+		}
+		/\.pvid=yes/ { pending = ""; next }
+		END { if (pending != "") print pending }
+	' | sort -n -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+detect_lldp() { # IFACE -> tagged VLAN ids advertised via LLDP (PVID excluded)
 	local i="$1"
-	lldpctl -f keyvalue "$i" 2>/dev/null |
-		grep -E 'vlan-id=' | sed -E 's/.*vlan-id=//' | grep -oE '^[0-9]+' | sort -n -u | tr '\n' ' ' | sed 's/ $//'
+	lldp_tagged_vlans "$(lldpctl -f keyvalue "$i" 2>/dev/null)"
 }
 
 detect_iface() { # IFACE -> union of enabled detection methods

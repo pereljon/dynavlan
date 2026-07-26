@@ -52,7 +52,8 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 | `tags_var` / `iface_tags` | Sanitized per-iface tag-stash variable name and its reader (no eval injection surface) |
 | `prep_iface` / `has_carrier` | Admin-up + promisc on; carrier probe |
 | `detect_sniff` | Passive 802.1Q capture (tcpdump, minimal snaplen, no disk) → VLAN ids |
-| `detect_lldp` | lldpctl-advertised VLAN ids |
+| `lldp_tagged_vlans` | Pure: tagged VLAN ids from `lldpctl -f keyvalue` text; drops the native VLAN (`pvid=yes`), stateful adjacency parse (FR-7a) |
+| `detect_lldp` | lldpctl-advertised VLAN ids, PVID excluded |
 | `detect_iface` | Union of enabled methods for one iface |
 | `run_detection` | Orchestrate: prep all, ONE shared carrier deadline, concurrent per-iface detection, select trunk → TRUNK_IFACE/DETECTED_VLANS |
 

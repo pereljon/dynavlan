@@ -127,6 +127,20 @@ Trunk selection stability underwrites AC-7/NFR-2; a flapping choice causes repea
 
 `netplan_version` itself is impure (shells out) and is exercised in Layer 3, not here: the parse is what is unit-testable. The source order it must honor is `netplan --version` (netplan >= 1.0 only) then `dpkg-query -W netplan.io` (the 0.10x fleet), stdout only, never stderr.
 
+### 1i. `lldp_tagged_vlans` (FR-7a native/pvid exclusion)
+Input is `lldpctl -f keyvalue` text. The key carries no per-VLAN index, so `vlan-id` and its `pvid` are correlated by adjacency; these cases pin that the parse stays stateful.
+
+| Input shape | Expected |
+|---|---|
+| `vlan-id=100` + `pvid=yes` (the validated Meraki trunk) | "" (sole advertised VLAN is the native one) |
+| `vlan-id=100 pvid=yes`, `vlan-id=21 pvid=no`, `vlan-id=22 pvid=no` | "21 22" (native dropped, tagged kept, sorted) |
+| named blocks (`vlan=Voice` / `vlan=Native`) around the id/pvid pairs | "30" (a `vlan=` name line must not be read as an id) |
+| `vlan-id=100`, `vlan-id=21`, no `pvid` key at all | "21 100" (absent flag is not evidence of native) |
+| non-VLAN keyvalue text (`chassis.name=sw1`) | "" |
+| "" | "" |
+
+`detect_lldp` is impure (shells out to `lldpctl`) and stays a Layer 3 concern; `lldp_tagged_vlans` holds all the logic worth unit-testing. The exclusion must NOT reach the sniff's contribution: `detect_iface` unions the two sources, and a VLAN genuinely carried tagged must survive even when LLDP names it the PVID.
+
 Note: 1d/1e require `reconcile_boot` and `detect_union` to expose these as pure helpers. This is a deliberate testability constraint on the implementation (see design §5). 1f's helpers feed `gate_vlan_count` (refuse vs fill per `VLAN_LIMIT_MODE`). 1g's helpers feed `apply_change`'s FR-37 branch (assignment + up-front uplink-conflict refusal).
 
 ## Layer 2 - `--dry-run` decision-path verification (real inputs)
@@ -161,6 +175,7 @@ Run on the **actual Protectli/Ubuntu appliance plugged into the live Meraki trun
 | L3-12 | Atomic write kill (FR-16) | `kill -9` during config generation (repeatedly, or via a temp/rename test hook) | `90-dynavlan.yaml` is always either the old complete file or the new complete file, never truncated; next run proceeds | AC-6 |
 | L3-13 | No usable `netplan try` → refuse (FR-0) | Stub/mask `netplan try` capability or report an old netplan version | Refuse to run, `err` logged, NO fallback to bare `netplan apply`, no change | AC-5 |
 | L3-13a | Version probe resolves on the real box (FR-0) | On the target appliance run `dynavlan --dry-run` and confirm it gets past the version precondition; cross-check against `dpkg-query -W netplan.io` | Version is determined (0.10x boxes resolve via dpkg, since `netplan --version` does not exist there) and the run proceeds; a probe that cannot determine a version logs the distinct "cannot determine netplan version" refusal, not "required (found unknown)" | AC-5 |
+| L3-13b | Native/pvid VLAN never provisioned (FR-7a) | On a trunk whose switch advertises the native VLAN via LLDP (`lldpctl -f keyvalue <iface>` shows `pvid=yes`), run `--dry-run`, then `--boot` | The pvid VLAN is absent from `detected` unless the sniff saw it tagged; no `<trunk>.<pvid>` interface is created; no "acquired no lease" warning for it. On a box that already owns one from a pre-fix run, `--boot` removes it after accept | AC-3, AC-8 |
 | L3-14 | Empty-snapshot accept (AC-12) | Boot with trunk up but uplink DHCP delayed (no default route at snapshot); apply an isolated-VLAN add | Change is ACCEPTED (not reverted); isolated VLANs come up; box is not left a no-op | AC-12 |
 | L3-15 | Slow-apply accept race (§9) | Add many VLANs at once (slow apply) with a change that breaks the uplink route (test hook), so health would PASS pre-apply and FAIL post-apply | ACCEPT is NOT written before the apply completes (probe-iface evidence); health samples post-apply state; change REVERTS. Verify in the journal that the accept loop waited for the probe | AC-6 |
 | L3-16 | FAIL path rides netplan's own revert | Force a health FAIL; observe the fifo/write-end lifecycle and netplan try's exit | dynavlan writes nothing and holds the fifo open until netplan try exits on its own timer; revert occurs; no stdin-EOF early-close is exercised; clean err log | AC-6, AC-11 |

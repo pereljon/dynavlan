@@ -32,6 +32,89 @@ Approach agreed: single cohesive bash implementation (NOT subagent fan-out - the
 
 - [x] HARDWARE BUG 1 (found + fixed 2026-07-25, first real run): `sudo dynavlan --dry-run` refused on the box with `netplan >= 0.106 required (found unknown)`. `netplan_version` probed `netplan --version`, a flag that only exists on netplan >= 1.0; the fleet runs 0.10x (box: netplan.io 0.107.1-3ubuntu0.22.04.4), so the probe returned empty on EVERY target box and FR-0 refused unconditionally. Fixed: pure `parse_version` helper + source chain `netplan --version` then `dpkg-query -W netplan.io`, stdout only; "cannot determine version" now logged as a refusal distinct from "below the minimum". Tests 1h added RED->GREEN (74/74). See decisions.md 2026-07-25. NOT yet re-run on the box - Step 5 restarts at the `--dry-run` step.
 
+## Hardware session 2026-07-25 (first real runs on the box) - live state
+
+Box: `ssh -i ~/.ssh/domotz m18admin@192.168.101.39` (root via sudo). Ubuntu 22.04, kernel 5.15.0-177,
+netplan.io 0.107.1-3ubuntu0.22.04.4. NICs: enp1s0 (trunk, carrier up), enp2s0 (no carrier).
+Installed: /usr/local/sbin/dynavlan (has the netplan-probe fix), /etc/dynavlan.conf (exists, EVERY key
+commented = all defaults), units enabled. APPLIED as of 2026-07-25: /etc/netplan/90-dynavlan.yaml exists,
+owned = [18 21 22 100 101], steady state (--dry-run reports additions/removals both [none]).
+/etc/netplan holds 00-installer-config.yaml + 01-netcfg.yaml (both ethernets-only) + 90-dynavlan.yaml.
+
+- [x] FR-0 netplan probe fix CONFIRMED WORKING ON HARDWARE (2026-07-25): --dry-run now gets past
+      preconditions and completes. Committed 92cddc5.
+- [x] First successful dry-run output: trunk enp1s0, detected [1 18 21 22 100 101], additions [18 100],
+      count gate OK, validate OK.
+- [x] **FIRST REAL APPLY SUCCEEDED (2026-07-25 01:36-01:41 box time, unattended via boot service).**
+      User rebooted; orphan links cleared; dynavlan.service ran --boot. Journal evidence:
+      pass1=pass2=[1 18 21 22 100 101] (2-pass agreement, no removals), `netplan try ACCEPTED`,
+      `reconcile applied on enp1s0: added [18 21 22 100 101] removed [none]`, rc=0. Wrote
+      /etc/netplan/90-dynavlan.yaml with all 5 VLANs as `enp1s0.<id>`, use-routes/dns/ntp/domains all false.
+      - **NEW SUBNET DISCOVERED AND LEASED: VLAN 18 -> 192.168.18.6/24.** Never configured by hand;
+        found on the wire. This is the product thesis validated on hardware.
+      - Isolation held: `ip route show default` is exactly one line (uplink enp1s0 metric 10). Five VLANs
+        up, zero routes/DNS/NTP injected. The hand-tuned metric 100/200/300 defaults are gone as expected.
+      - SSH survived the interface rename (vlan101 -> enp1s0.101); DHCP returned 192.168.101.39.
+      - Duration 4m06s: two detection passes x (30s carrier wait on dead enp2s0 + 60s sniff) = ~3m of waiting.
+- [x] **HARDWARE BUG 2 (FR-7a): LLDP ingested the native/pvid VLAN as tagged. FIXED IN REPO, NOT YET
+      DEPLOYED.** Symptom: `enp1s0.100` came up with link-local only, "VLAN 100 acquired no lease within
+      30s". Root cause verified on the box: `lldpctl -f keyvalue enp1s0` returns exactly
+      `vlan.vlan-id=100` + `vlan.pvid=yes`, i.e. LLDP was the ONLY source for 100 and flagged it native.
+      The native VLAN is untagged on the wire, so an interface carrying that tag can never receive a frame.
+      (My first explanation - DHCP server refusing a second lease for the same MAC on 192.168.100.0/24 -
+      was a guess and was WRONG. The interface is dead, not duplicated.)
+      - `VLAN_IGNORE="100"` was considered and REJECTED: it is a per-site manual step for something the
+        tool can discover, and contradicts "no hardcoded native VLAN". The conf edit was attempted and
+        BLOCKED by the permission classifier; /etc/dynavlan.conf on the box is still all-defaults.
+      - Fix: new pure helper `lldp_tagged_vlans` (stateful adjacency parse of the keyvalue blocks) drops
+        `pvid=yes`; `detect_lldp` now calls it. Scoped to the LLDP source only, so a VLAN the sniff sees
+        tagged still counts. TDD RED->GREEN, 6 new asserts in section 1i, suite now 80/80.
+      - NOTE FR-7 already recorded "Meraki advertised only pvid 100" and SKELETON.md:32 said the same.
+        The observation existed; nothing acted on it. Worth a second look for other noted-but-unhandled facts.
+- [ ] **DEPLOY the FR-7a fix to the box and confirm.** The box still runs the pre-fix script and still
+      owns [18 21 22 100 101] incl. the dead `enp1s0.100`. After deploying, `--boot` (not `--rescan`,
+      which is add-only) removes VLAN 100 post-accept. This is checklist row L3-13b.
+- [ ] ~~OPEN Q: the base netplan config no longer declares the VLANs.~~ RESOLVED by the apply above:
+      dynavlan now owns 18/21/22/100/101. Historical detail retained below.
+- [x] **(resolved) the base netplan config no longer declares the VLANs.** During this session
+      the user edited `/etc/netplan/01-netcfg.yaml`, removing its whole `vlans:` block (vlan1/21/22/101 with
+      route-metrics 100/200/300/300) and saving the original as `/etc/netplan/01-netcfg.yaml.bak`. The live
+      file is now ethernets-only (enp1s0 metric 10, enp2s0 metric 20). Consequences, all verified:
+      - `netplan get network.vlans` returns `null`, and `/run/systemd/network/` holds ONLY
+        10-netplan-enp1s0.network + 10-netplan-enp2s0.network. netplan no longer generates those VLANs.
+      - vlan1/vlan21/vlan22/vlan101 are STILL UP in the kernel as ORPHANS: created by an earlier apply,
+        never torn down (netplan apply does not delete virtual devices it has stopped managing).
+      - So `backend_list_managed_vlans` currently excludes 21/22/101 via its LIVE-KERNEL source only
+        (`ip -d link show type vlan`), not via its netplan-config source. VLAN 1 is excluded by VLAN_MIN=2.
+      - **Therefore the current dry-run is not what a rebooted box would show.** Once the orphan links go
+        away (reboot, or `ip link del`), additions become [18 21 22 100 101], and dynavlan would adopt the
+        VLANs the user had hand-tuned. Decide the intended end state before --boot:
+        (a) restore the vlans block from the .bak and let dynavlan add only new VLANs; or
+        (b) keep them out and let dynavlan own all of them - but note the hand-assigned default routes
+            (metrics 100/200/300) disappear unless VLAN_ROUTES=true is set (uplink is metric 10, so the
+            default VLAN_ROUTE_METRIC_START=100 clears the conflict check).
+      - [x] 2026-07-25: user removed `/etc/netplan/01-netcfg.yaml.bak`. /etc/netplan now holds only
+        00-installer-config.yaml (subiquity: enp1s0 critical + dhcp4 + nameservers 192.168.41.1) and
+        01-netcfg.yaml (ethernets-only, enp1s0 metric 10 / enp2s0 metric 20). Neither declares vlans;
+        `netplan get network.vlans` is still `null`. This CLOSES option (a): the hand-tuned vlans block
+        no longer exists anywhere on the box, so the only remaining path is (b), dynavlan owning them.
+        The four orphan kernel links (vlan1/21/22/101 on enp1s0) are STILL UP, so the exclusion described
+        above is unchanged until a reboot or `ip link del`.
+- [ ] **BLOCKER before --boot: RESTART_SNAPS is empty** (all-defaults config) while the
+      `domotzpro-agent-publicstore` snap IS installed. As-is, --boot would provision VLANs and never restart
+      the agent, so it would never enumerate the new subnets. Set
+      `RESTART_SNAPS="domotzpro-agent-publicstore"` in /etc/dynavlan.conf first.
+- [ ] UX gap, user-reported, fix NOT yet approved: `--dry-run` prints one line then goes silent for ~90s
+      (CARRIER_WAIT_SECONDS=30, burned in full because enp2s0 has no carrier and the loop at dynavlan:590
+      only breaks early when ALL ifaces are up, then SNIFF_SECONDS=60). Looks wedged. Proposed: log when
+      the carrier wait starts and when the sniff starts, so output appears roughly every 30s.
+- [ ] install.sh upgrade hardening written + verified, NOT COMMITTED. Also uncommitted: README.md and
+      docs/deployment-guide.md now say `sudo bash install.sh` (mode-dropping transfers strip the exec bit;
+      the box's whole repo dir arrived 664, dynavlan included - harmless, install -m 0755 sets the
+      destination mode, but ./install.sh itself fails). Pending user approval: run the real install.sh on
+      the box end-to-end (fresh path is safe now, timer inactive; the UPGRADE path needs the timer running,
+      i.e. a live rescan and a real network change - console only).
+
 ## State snapshot (2026-07-25, pre-context-clear)
 - Build COMPLETE through review round 4 + FR-37 routed mode. Script 1445 lines, 74/74 unit asserts green (1a-1h). PRD v3.3.
 - Repo PUBLIC at github.com/pereljon/dynavlan (MIT license), synced at 2771e7c. Working tree clean except this todo.md edit.

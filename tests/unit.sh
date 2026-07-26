@@ -188,6 +188,42 @@ ver_ge "0.106"   "0.106" "1h equal versions satisfy the floor"
 ver_lt "0.105"   "0.106" "1h 0.105 below floor rejected"
 
 # ---------------------------------------------------------------------------
+# 1i. lldp_tagged_vlans - PVID exclusion (FR-4)
+#     `lldpctl -f keyvalue` emits one flat block per advertised VLAN, and the
+#     native VLAN is flagged pvid=yes. The native VLAN is UNTAGGED on the wire,
+#     so a VLAN interface for it can never receive a frame; LLDP must not offer
+#     it as a tagged candidate. Blocks are correlated by adjacency only, so the
+#     parse is stateful: vlan-id opens a block, the following pvid closes it.
+# ---------------------------------------------------------------------------
+
+lldp_meraki='lldp.enp1s0.vlan.vlan-id=100
+lldp.enp1s0.vlan.pvid=yes'
+
+lldp_mixed='lldp.eth0.vlan.vlan-id=100
+lldp.eth0.vlan.pvid=yes
+lldp.eth0.vlan.vlan-id=21
+lldp.eth0.vlan.pvid=no
+lldp.eth0.vlan.vlan-id=22
+lldp.eth0.vlan.pvid=no'
+
+lldp_named='lldp.eth0.vlan=Voice
+lldp.eth0.vlan.vlan-id=30
+lldp.eth0.vlan.pvid=no
+lldp.eth0.vlan=Native
+lldp.eth0.vlan.vlan-id=1
+lldp.eth0.vlan.pvid=yes'
+
+lldp_no_pvid='lldp.eth0.vlan.vlan-id=100
+lldp.eth0.vlan.vlan-id=21'
+
+call lldp_tagged_vlans "$lldp_meraki";   ok "1i Meraki trunk: sole VLAN is the PVID -> empty" ""
+call lldp_tagged_vlans "$lldp_mixed";    ok "1i PVID dropped, tagged VLANs kept"    "21 22"
+call lldp_tagged_vlans "$lldp_named";    ok "1i named blocks, PVID dropped"         "30"
+call lldp_tagged_vlans "$lldp_no_pvid";  ok "1i absent pvid key -> treated tagged"  "21 100"
+call lldp_tagged_vlans "lldp.eth0.chassis.name=sw1"; ok "1i no vlan lines -> empty" ""
+call lldp_tagged_vlans "";               ok "1i empty input -> empty"               ""
+
+# ---------------------------------------------------------------------------
 
 printf '\n%s tests, %s failures\n' "$tests" "$fails"
 [ "$fails" -eq 0 ]
