@@ -14,6 +14,15 @@ set -o pipefail
 
 ver="0.1.0"
 
+# Build provenance (FR-38). Semver alone cannot identify what is on a box: every
+# build of an unreleased version self-reports the same string, so "which code is
+# actually running" becomes unanswerable exactly when it matters. install.sh
+# rewrites this line with the source checkout's commit (plus `-dirty` when the
+# tree had uncommitted changes, which is not an edge case: it is how a
+# half-finished change reaches a box). "source" means running straight from a
+# checkout, unstamped.
+build="source"
+
 # --- constants (the ONLY hardcoded paths; everything else is discovered) ---
 CONF_FILE="/etc/dynavlan.conf"
 NETPLAN_FILE="/etc/netplan/90-dynavlan.yaml"   # FR-13: the one file we own
@@ -320,7 +329,14 @@ log() {
 }
 
 usage() {
-	printf 'usage: dynavlan --boot|--rescan|--dry-run|--status|--reconfigure\n' >&2
+	printf 'usage: dynavlan --boot|--rescan|--dry-run|--status|--reconfigure|--version (-V)\n' >&2
+}
+
+# Pure: the full build identity, e.g. "0.1.0 (build 18a6ea2-dirty)". An empty
+# build renders "unknown" rather than "(build )", so a failed install-time stamp
+# reads as missing provenance instead of passing for a real identity.
+version_string() { # VER BUILD -> identity string
+	printf '%s (build %s)' "$1" "${2:-unknown}"
 }
 
 # ---------------------------------------------------------------------------
@@ -587,17 +603,26 @@ detect_sniff() { # IFACE -> distinct 802.1Q VLAN ids seen (minimal snaplen, no d
 # one flat block per VLAN with no index in the key, so vlan-id and its pvid are
 # correlated by ADJACENCY only and the parse has to be stateful. A block with no
 # pvid key is treated as tagged: absence of the flag is not evidence of native.
+#
+# The patterns anchor on `.vlan.` - the VLAN TLV's own subtree - NOT on anything
+# ending in `.vlan-id=`. lldpd's full key set is not documented here, and matching
+# loosely makes this parse depend on assuming what else it emits. Two ways that
+# bites, both reproduced in tests (1i): a foreign `.vlan-id=` key landing between
+# a VLAN's vlan-id and its pvid flushes that id as "tagged" before the pvid is
+# seen, rebuilding the dead native-VLAN interface FR-7a exists to prevent; and the
+# foreign key's own VALUE becomes a candidate, so dynavlan would build an
+# interface for a VLAN that is not on the trunk at all.
 lldp_tagged_vlans() {
 	printf '%s\n' "$1" | awk '
-		/\.vlan-id=/ {
+		/\.vlan\.vlan-id=/ {
 			if (pending != "") print pending
 			pending = ""
 			v = $0
-			sub(/.*\.vlan-id=/, "", v)
+			sub(/.*\.vlan\.vlan-id=/, "", v)
 			if (v ~ /^[0-9]+/) { sub(/[^0-9].*/, "", v); pending = v }
 			next
 		}
-		/\.pvid=yes/ { pending = ""; next }
+		/\.vlan\.pvid=yes/ { pending = ""; next }
 		END { if (pending != "") print pending }
 	' | sort -n -u | tr '\n' ' ' | sed 's/ $//'
 }
@@ -725,7 +750,7 @@ backend_generate_config() { # TARGET_IDS - write our file atomically (FR-13/14/1
 	# unpredictable name; mktemp also creates it 0600 from the start.
 	tmp=$(mktemp "$(dirname "$NETPLAN_FILE")/.dynavlan.XXXXXX") || return 1
 	{
-		printf '# Managed by dynavlan %s - do not edit; regenerated on each change.\n' "$ver"
+		printf '# Managed by dynavlan %s - do not edit; regenerated on each change.\n' "$(version_string "$ver" "$build")"
 		printf 'network:\n  version: 2\n'
 		if [ -n "$ids" ]; then
 			printf '  vlans:\n'
@@ -1178,7 +1203,7 @@ gate_vlan_count() { # KEPT ADDITIONS - echoes the (possibly reduced) additions; 
 # ---------------------------------------------------------------------------
 
 do_boot() {
-	log info "run start: mode=boot detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}] reset_on_boot=$RESET_ON_BOOT"
+	log info "run start: dynavlan $(version_string "$ver" "$build") mode=boot detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}] reset_on_boot=$RESET_ON_BOOT"
 	if ! run_detection || [ -z "$DETECTED_VLANS" ]; then
 		log err "boot reconcile aborted: no carrier / no tags / zero VLANs detected. Changing nothing (FR-22 zero-detection guard)"
 		return 0
@@ -1268,7 +1293,7 @@ do_boot() {
 }
 
 do_rescan() {
-	log info "run start: mode=rescan detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}]"
+	log info "run start: dynavlan $(version_string "$ver" "$build") mode=rescan detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}]"
 	if ! run_detection; then
 		log info "rescan: no trunk detected; nothing to add"
 		return 0
@@ -1379,7 +1404,7 @@ do_status() { # FR-35
 	local owned trunk managed
 	owned=$(backend_owned_vlans)
 	trunk=$(owned_parent)
-	printf 'dynavlan %s\n' "$ver"
+	printf 'dynavlan %s\n' "$(version_string "$ver" "$build")"
 	printf '  configured (owned): [%s] on %s\n' "${owned:-none}" "${trunk:-none}"
 	printf '  detect_method: %s   range: %s-%s   ignore: [%s]\n' "$DETECT_METHOD" "$VLAN_MIN" "$VLAN_MAX" "${IGNORE_SET:-none}"
 	log info "status: running a ${SNIFF_SECONDS}s detection pass..."
@@ -1443,6 +1468,14 @@ main() {
 	local mode="${1:-}" rc
 	case "$mode" in
 	--boot | --rescan | --dry-run | --status | --reconfigure) ;;
+	--version | -V)
+		# Answered before the config load and the root check on purpose: "what is
+		# installed here" must stay answerable when the config is invalid or the
+		# caller is unprivileged, since those are exactly the moments the question
+		# gets asked. Goes to stdout, not the log.
+		printf 'dynavlan %s\n' "$(version_string "$ver" "$build")"
+		return 0
+		;;
 	'' | -h | --help)
 		usage
 		return 2

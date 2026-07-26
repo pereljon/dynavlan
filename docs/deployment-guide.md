@@ -52,6 +52,14 @@ Set `RESTART_SNAPS`/`RESTART_SERVICES` to whatever agent should re-enumerate int
 
 ## 4. First run (attended, at the console)
 
+0. **Confirm what you just installed** - after every deploy, before drawing any conclusion from behavior:
+
+   ```
+   dynavlan --version
+   ```
+
+   Prints `dynavlan <version> (build <commit>)`. A `-dirty` suffix means the source tree had uncommitted changes and the build matches NO commit; `unknown` means it was installed from something other than a git checkout. Worth ten seconds: a deploy that lands mid-edit is indistinguishable from a failed fix unless you can name the running build. The same identity appears on every `run start:` line in the journal, so it is also recoverable after the fact.
+
 1. **Preview** - detection plus the intended diff, zero changes:
 
    ```
@@ -95,6 +103,7 @@ Set `RESTART_SNAPS`/`RESTART_SERVICES` to whatever agent should re-enumerate int
 
 | Task | Command |
 |------|---------|
+| Check which build is installed | `dynavlan --version` (no root needed) |
 | See owned vs detected VLANs | `sudo dynavlan --status` |
 | Preview what a reconcile would do | `sudo dynavlan --dry-run` |
 | Force an add-only rescan now | `sudo systemctl start dynavlan-rescan.service` |

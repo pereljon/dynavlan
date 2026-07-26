@@ -107,7 +107,20 @@ After any code change, check whether these need updating:
 - `context/` files (todo, decisions, open questions) - keep current; stale context compounds errors downstream
 - `CLAUDE.md` (if conventions or guardrails changed)
 - `CHANGELOG.md` (new features, fixes, removals per release)
-- version in the `dynavlan` script (`ver=` variable) bump if needed (semver: patch/minor/major)
+- version in the `dynavlan` script (`ver=` variable) - see **Version and build identity** below; this is a gate, not a judgement call
 - systemd units (`dynavlan.service`/`dynavlan-rescan.service`/`dynavlan.timer`) and `install.sh` if artifacts change
 
 When making multiple changes, consider logical ordering: some changes should come before others (e.g. move code before updating references to it; validate inputs before using them).
+
+### Version and build identity (FR-38) - MANDATORY
+
+A box must always be able to answer "what code is running here." That guarantee is cheap to maintain and was expensive to lack: on 2026-07-25 a deploy landed between two edits, and because nothing could distinguish the running build from the intended one, a working fix was diagnosed as broken. Do not let it decay.
+
+**Every change to the `dynavlan` script:**
+
+1. **Bump `ver=`** whenever behavior, output, config surface, or generated YAML changes. Patch for fixes, minor for new behavior or config keys, major for breaking changes. If you genuinely believe no bump applies (comments, docs, tests only), say so explicitly in the commit message rather than leaving it unstated - an unbumped version must be a decision on the record, never an omission.
+2. **Never touch the `build=` line.** `install.sh` stamps it by matching `/^build=/`. It must stay a single, unindented, literal assignment at column 0. Do not rename it, indent it, compute it, or add a second one. `tests/unit.sh` section 1l enforces this and will fail loudly - if it does, fix the script, never the test.
+3. **Never gate `--version` behind root or a valid config.** It is dispatched before `load_config` and before the root check on purpose: an unprivileged shell or a broken config are exactly when the question gets asked.
+4. **Run `bash tests/unit.sh`** before proposing a commit. Sections 1k/1l cover the identity helper and the cross-file stamp contract.
+
+**Every deploy to a box:** run `dynavlan --version` first and confirm the build is the one you intended, BEFORE drawing any conclusion from its behavior. A `-dirty` suffix means the tree had uncommitted changes and the build matches no commit. Never infer which code is running from whether a symptom persists; that inference has already been wrong once.

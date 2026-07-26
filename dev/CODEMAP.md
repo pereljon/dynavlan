@@ -34,6 +34,7 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 |----------|------------------|
 | `level_num` / `log` | Leveled logging to stderr → journald (identifier `dynavlan`), gated by LOG_LEVEL |
 | `usage` | One-line usage to stderr |
+| `version_string` | Pure: `<ver> (build <id>)`; empty build renders `unknown`, never `(build )` (FR-38) | 1k |
 | `load_config` | Defaults, then source /etc/dynavlan.conf (root-owned, not group/other-writable, else refuse), then strict-validate every key |
 
 ## Preconditions (FR-0)
@@ -112,7 +113,7 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 | `do_status` | Owned vs detected-now vs managed-elsewhere report (root; runs a detection pass) |
 | `render_timer_dropin` | Pure: timer drop-in text for an interval; restates ALL monotonic triggers, since the reset clears the whole list (FR-21a) |
 | `do_reconfigure` | Write the rendered drop-in to `dynavlan.timer.d/interval.conf` + daemon-reload |
-| `main` | Mode dispatch: config → (status/reconfigure) → preconditions → dry-run (non-blocking lock try) → boot/rescan under the fd-held flock |
+| `main` | Mode dispatch: `--version` (pre-config, pre-root) → config → (status/reconfigure) → preconditions → dry-run (non-blocking lock try) → boot/rescan under the fd-held flock |
 
 ## Non-script artifacts
 
@@ -122,5 +123,5 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 | `dynavlan.service` | Boot oneshot (`--boot`), After=networkd, TimeoutStartSec=600 |
 | `dynavlan-rescan.service` | Timer-invoked oneshot (`--rescan`) |
 | `dynavlan.timer` | OnBootSec/OnUnitActiveSec → rescan service; interval via `--reconfigure` drop-in |
-| `install.sh` | Root installer: script/config/units, deps, persistent journald, enables service+timer for NEXT boot (never applies) |
+| `install.sh` | Root installer: stamps the build id into the script (FR-38, awk + verify + `bash -n`), script/config/units, deps, persistent journald, enables service+timer for NEXT boot (never applies); ONE EXIT trap (`cleanup`) does temp-file removal and timer restore |
 | `tests/unit.sh` | Layer-1 pure-helper asserts (1a-1g), sources the script |

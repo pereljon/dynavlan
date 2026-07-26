@@ -221,6 +221,25 @@ call lldp_tagged_vlans "$lldp_mixed";    ok "1i PVID dropped, tagged VLANs kept"
 call lldp_tagged_vlans "$lldp_named";    ok "1i named blocks, PVID dropped"         "30"
 call lldp_tagged_vlans "$lldp_no_pvid";  ok "1i absent pvid key -> treated tagged"  "21 100"
 call lldp_tagged_vlans "lldp.eth0.chassis.name=sw1"; ok "1i no vlan lines -> empty" ""
+
+# Key-shape isolation (review 2026-07-25). The patterns must anchor on the VLAN
+# TLV's own keys (`.vlan.vlan-id=` / `.vlan.pvid=yes`), not on any key that merely
+# ENDS in `.vlan-id=`. Matching loosely, a foreign key landing between a VLAN's
+# vlan-id and its pvid flushes that vlan-id as "tagged" before the pvid arrives -
+# and the pvid then clears the WRONG pending id. That reintroduces FR-7a exactly:
+# a dead interface built for the untagged native VLAN. lldpd's full key set is not
+# documented here, so the parse must not depend on assuming what else it emits.
+lldp_foreign_key='"'"'lldp.eth0.vlan.vlan-id=100
+lldp.eth0.mgmt.vlan-id=999
+lldp.eth0.vlan.pvid=yes'"'"'
+call lldp_tagged_vlans "$lldp_foreign_key"; ok "1i foreign .vlan-id= key must not flush the pvid block" ""
+
+lldp_med_policy='"'"'lldp.eth0.vlan.vlan-id=30
+lldp.eth0.vlan.pvid=no
+lldp.eth0.med.policy.vlan-id=200
+lldp.eth0.vlan.vlan-id=100
+lldp.eth0.vlan.pvid=yes'"'"'
+call lldp_tagged_vlans "$lldp_med_policy"; ok "1i foreign key does not leak an id nor unmask the native VLAN" "30"
 call lldp_tagged_vlans "";               ok "1i empty input -> empty"               ""
 
 # ---------------------------------------------------------------------------
@@ -254,6 +273,84 @@ case "$OUT" in
 	printf 'FAIL - %s\n       no first-fire trigger; timer would never elapse\n' "1j first-fire trigger is always present (regression guard)"
 	;;
 esac
+
+# ---------------------------------------------------------------------------
+# 1k. version_string - build provenance (FR-38)
+#
+# The format is asserted, not just the content: this string is what a journal
+# line and `--version` both print, and it is the only way to tell two builds of
+# the same unreleased semver apart. An empty build must degrade to "unknown"
+# rather than render "(build )", so a botched install-time stamp is visible
+# instead of looking like a legitimate identity.
+# ---------------------------------------------------------------------------
+
+call version_string "0.1.0" "source"
+ok "1k version + source build" "0.1.0 (build source)"
+
+call version_string "0.1.0" "18a6ea2"
+ok "1k version + commit build" "0.1.0 (build 18a6ea2)"
+
+call version_string "0.1.0" "18a6ea2-dirty"
+ok "1k dirty build is carried verbatim" "0.1.0 (build 18a6ea2-dirty)"
+
+call version_string "0.1.0" ""
+ok "1k empty build degrades to unknown, never '(build )'" "0.1.0 (build unknown)"
+
+# ---------------------------------------------------------------------------
+# 1l. Build-stamp contract (FR-38) - guards a CROSS-FILE invariant
+#
+# install.sh rewrites the `build=` line at install time by matching /^build=/.
+# That coupling is invisible from either file alone: rename the variable, indent
+# it, compute it, or add a second `build=` line, and the stamp silently targets
+# the wrong line or no line. The installer would still succeed, and every box
+# installed afterwards would misreport which code it runs - the exact failure
+# FR-38 exists to prevent, reintroduced by a tidy-up.
+#
+# So this asserts the contract itself rather than any function: the line exists,
+# exactly once, at column 0, and the real stamping transform still produces a
+# script that parses and differs by that one line only.
+# ---------------------------------------------------------------------------
+
+src="${here}/../dynavlan"
+
+assert_eq() { # actual expected desc
+	tests=$((tests + 1))
+	if [ "$1" = "$2" ]; then
+		printf 'ok   - %s\n' "$3"
+	else
+		fails=$((fails + 1))
+		printf 'FAIL - %s\n       expected [%s], got [%s]\n' "$3" "$2" "$1"
+	fi
+}
+
+assert_eq "$(grep -c '^build=' "$src")" "1" "1l exactly one column-0 build= line (install.sh stamps /^build=/)"
+assert_eq "$(grep -c '^ver=' "$src")" "1" "1l exactly one column-0 ver= line"
+
+# Apply the installer's exact transform and verify the result end to end.
+stamp_tmp="$(mktemp)"
+awk -v b="0000000-test" '
+	!stamped && /^build=/ { printf "build=\"%s\"\n", b; stamped = 1; next }
+	{ print }
+' "$src" >"$stamp_tmp"
+
+assert_eq "$(grep -c '^build="0000000-test"$' "$stamp_tmp")" "1" "1l stamping transform substitutes the build line"
+assert_eq "$(diff "$src" "$stamp_tmp" | grep -c '^[<>]')" "2" "1l stamping changes exactly one line (one < and one >)"
+assert_eq "$(wc -l <"$stamp_tmp" | tr -d ' ')" "$(wc -l <"$src" | tr -d ' ')" "1l stamping preserves line count"
+
+if bash -n "$stamp_tmp" 2>/dev/null; then
+	tests=$((tests + 1))
+	printf 'ok   - %s\n' "1l stamped script still parses"
+else
+	tests=$((tests + 1))
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       stamped script fails bash -n\n' "1l stamped script still parses"
+fi
+
+# The stamped script must report the stamped identity, not the source default.
+assert_eq "$(bash "$stamp_tmp" --version)" "dynavlan $ver (build 0000000-test)" "1l stamped script reports its stamped build via --version"
+assert_eq "$(bash "$src" --version)" "dynavlan $ver (build source)" "1l unstamped checkout reports 'source'"
+
+rm -f "$stamp_tmp"
 
 # ---------------------------------------------------------------------------
 

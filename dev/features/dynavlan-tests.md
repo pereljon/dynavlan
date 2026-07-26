@@ -139,6 +139,15 @@ Input is `lldpctl -f keyvalue` text. The key carries no per-VLAN index, so `vlan
 | non-VLAN keyvalue text (`chassis.name=sw1`) | "" |
 | "" | "" |
 
+
+Key-shape isolation (added after the 2026-07-25 review round):
+
+| Input shape | Expected | Why |
+|---|---|---|
+| a foreign `.mgmt.vlan-id=999` line between a VLAN's `vlan-id=100` and its `pvid=yes` | `` (empty) | loose matching flushes 100 as tagged before the pvid arrives, rebuilding the dead native interface FR-7a exists to prevent |
+| a foreign `.med.policy.vlan-id=200` line among real VLAN blocks | `30` | the foreign key's VALUE must not leak in as a VLAN candidate; pre-fix output was `30 200` |
+
+These pin that the patterns anchor on `.vlan.vlan-id=` / `.vlan.pvid=yes` (the VLAN TLV's own subtree), so the parse does not depend on assuming what else lldpd emits.
 ### 1j. `render_timer_dropin` (FR-21a rescan timer actually elapses)
 The assert is an exact whole-file match, which pins content AND ordering: the reset line must precede the re-assignments or it wipes them too.
 
@@ -148,6 +157,35 @@ The assert is an exact whole-file match, which pins content AND ordering: the re
 | any interval | output always contains a first-fire trigger (`OnActiveSec=`) - the regression guard for the dead-timer bug |
 
 The failure this pins is silent: a drop-in carrying only `OnUnitActiveSec` yields a timer that is `active` and `Result=success` but has no anchor to elapse from, so it never runs and never errors. Unit tests can only assert the rendered text; that the timer actually elapses is L3-24.
+
+### 1k. `version_string` - build provenance (FR-38)
+
+| Case | Expected |
+|---|---|
+| `version_string 0.1.0 source` | `0.1.0 (build source)` |
+| `version_string 0.1.0 18a6ea2` | `0.1.0 (build 18a6ea2)` |
+| `version_string 0.1.0 18a6ea2-dirty` | `0.1.0 (build 18a6ea2-dirty)` (dirty marker carried verbatim) |
+| `version_string 0.1.0 ""` | `0.1.0 (build unknown)` - never `(build )` |
+
+The format is pinned deliberately: this string is what `--version`, every `run start:` journal line, and the generated netplan header all print, so log-scraping and after-the-fact provenance depend on it. The empty case matters most - a failed install-time stamp must read as missing provenance, not pass for an identity.
+
+The stamping itself is install-time, not runtime; `install.sh` self-verifies with a `grep` for the stamped line plus `bash -n` and refuses to install otherwise. L3-27 covers it on a box.
+
+### 1l. Build-stamp contract (FR-38) - a cross-file invariant, not a function
+
+`install.sh` rewrites the `build=` line by matching `/^build=/`. That coupling is invisible from either file alone: rename the variable, indent it, compute it, or add a second `build=` line, and the stamp silently hits the wrong line or none. The installer still succeeds, and every box installed afterwards misreports which code it runs - FR-38's exact failure, reintroduced by a tidy-up. So these asserts pin the contract itself:
+
+| Assertion | Why |
+|---|---|
+| exactly one `^build=` line, column 0 | what `install.sh` matches on |
+| exactly one `^ver=` line | same, for the version bump gate |
+| the installer's awk transform substitutes it | the real transform, not a paraphrase of it |
+| exactly one line differs; line count preserved | catches a transform that mangles the rest |
+| stamped script passes `bash -n` | a botched stamp must never run as root |
+| stamped script's `--version` reports the stamp | end-to-end, not just textual |
+| unstamped checkout reports `source` | the dev-box default stays honest |
+
+Verified to FAIL when the contract is broken (indenting the line, or adding a second one) - a guard that cannot fail is decoration. If 1l fails, fix the script, never the test.
 
 `detect_lldp` is impure (shells out to `lldpctl`) and stays a Layer 3 concern; `lldp_tagged_vlans` holds all the logic worth unit-testing. The exclusion must NOT reach the sniff's contribution: `detect_iface` unions the two sources, and a VLAN genuinely carried tagged must survive even when LLDP names it the PVID.
 
@@ -198,6 +236,7 @@ Run on the **actual Protectli/Ubuntu appliance plugged into the live Meraki trun
 | L3-24 | Rescan timer actually elapses (FR-21a) | After install and after an upgrade-path install (timer running, so it is stopped/restarted), run `systemctl list-timers dynavlan.timer` and `systemctl show dynavlan.timer -p TimersMonotonic -p NextElapseUSecMonotonic -p LastTriggerUSec` | NEXT/LEFT show a real time, never `n/a`; `TimersMonotonic` lists a first-fire trigger AND the interval; `NextElapseUSecMonotonic` is finite. Then wait past the interval and confirm `--rescan` runs appear in `journalctl -t dynavlan`. A timer that is `active` with `Result=success` proves nothing: the dead-timer bug had both | AC-7 |
 | L3-25 | Sniff ignores our own egress (FR-5a) | With VLANs owned and leased, run `sudo tcpdump -i <trunk> -e -nn -Q out vlan` and `-Q in` side by side; then remove a VLAN from the switch trunk and run `--boot` | Outbound shows our tagged DHCP for owned VLANs; `detected` must NOT include a VLAN whose only traffic is ours. The de-trunked VLAN is absent from both boot passes and IS removed. Pre-fix behavior to guard against: the VLAN stays detected forever on its own DHCP retries and removal never fires | AC-3 |
 | L3-23 | Routed-mode conflict refusal (FR-37) | VLAN_ROUTES=true with VLAN_ROUTE_METRIC_START at or below the uplink default's metric; run --boot | Refuses BEFORE any disk change: err names the uplink metric and the assigned map, nothing applied, owned set untouched | AC-14 |
+| L3-27 | Build provenance (FR-38) | `dynavlan --version` as a NON-root user and again with a deliberately invalid `/etc/dynavlan.conf`; `sudo bash install.sh` from a clean checkout, then from one with an uncommitted edit; then `journalctl -t dynavlan | grep 'run start'` | `--version` prints `dynavlan <ver> (build <id>)` and exits 0 in BOTH cases (no root needed, config never loaded). Installer echoes the build id; the dirty tree installs `<hash>-dirty` and prints the uncommitted-changes WARNING. Every run-start line carries the identity. Confirm the installed `/usr/local/sbin/dynavlan` differs from the source only in the `build=` line | AC-7 |
 | L3-26 | IPv6 RA declined on VLANs (FR-14a) | On a trunk carrying at least one RA-sending VLAN (validated: VLAN 22), run `--dry-run` first (proves netplan accepts the key), then `--boot`. After apply: `ip -6 addr show dev <trunk>.<id>`, `ip -6 route show default`, `resolvectl dns <trunk>.<id>`, and `networkctl status <trunk>.<id>` | No global (SLAAC) IPv6 address on any owned VLAN; NO IPv6 default route via any owned VLAN; no RA-sourced (RDNSS) resolvers on them; `IPv6AcceptRA=no` in the rendered `.network`. The `fe80` link-local address REMAINS (link-local is deliberately untouched). Also record whether a pre-existing SLAAC address survives the apply: networkd did not clean up orphaned VLAN links, so it may need a one-time `ip -6 addr flush`. Re-run under VLAN_ROUTES=true and confirm the key is still emitted | AC-4, AC-11 |
 
 Several of these (netplan-try accept/revert, promisc sniff of an unconfigured VLAN, isolation stanza, explicit `ip link delete`) were already validated once by hand on the lab box; this codifies them as repeatable.

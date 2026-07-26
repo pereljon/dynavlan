@@ -45,11 +45,18 @@ Timer HEALTHY and chaining: 5-min interval, LAST 02:37:01 / NEXT 02:42:01 box ti
 Live: enp1s0.18 -> 192.168.18.6, .21 -> 192.168.21.39, .22 -> 192.168.22.39, .101 -> 192.168.101.39
 (the SSH path), .100 -> link-local ONLY (dead, pending removal). One default route: enp1s0 metric 10.
 
-**The single next action: deploy the two UNCOMMITTED/UNDEPLOYED changes below, then `sudo dynavlan --boot`.**
+**The single next action: deploy the THREE undeployed changes below, then `sudo dynavlan --boot`.**
 The box is still at 2803e89 and does NOT yet have either of them:
   1. VLAN_MIN default 2 -> 1, so VLAN 1 (192.168.255.0/24, tagged and live on this trunk) is finally a
      candidate. /etc/dynavlan.conf has VLAN_MIN commented, so the new default applies with no config edit.
-  2. FR-14a `accept-ra: false` on every VLAN.
+  2. FR-14a `accept-ra: false` on every VLAN. CONFIRMED STILL NEEDED as of 2026-07-25 20:07: the box
+     currently holds an IPv6 default route `via fe80::af1:b3ff:fe6b:15eb dev enp1s0.1 proto ra metric 100`
+     and a live SLAAC address on enp1s0.22 that is still being refreshed. netplan's acceptance of the
+     `accept-ra` key is STILL UNVERIFIED - the earlier "netplan try ACCEPTED" proved nothing, because the
+     YAML it validated never contained the key (the deploy predated the fix).
+  3. FR-38 `--version` + install-time build stamp. After deploying, `dynavlan --version` must report the
+     installed commit; if it says `-dirty`, the tree had uncommitted changes and matches no commit.
+     ALWAYS run it before concluding anything from behavior - see the FR-38 lesson below.
 After deploying, `--boot` should show additions [1] AND removals [100] in one apply. That run exercises
 L3-7 (post-accept ip link delete), L3-13b (FR-7a on the wire), L3-25 (FR-5a removal) and L3-26 (FR-14a)
 at once, and - if RESTART_SNAPS got set - fires the first real agent restart. It is also the FIRST time
@@ -226,3 +233,28 @@ What to actually do with that:
 
 ## Docs
 - [x] README generalized for v0.1.0 pre-release (done 2026-07-23) - repositioned around vendor-agnostic dynamic VLAN discovery + service-restart integration; Domotz/Protectli demoted to reference deployment; pre-release/initial-testing banner added. See decisions.md 2026-07-23 README entry.
+
+- [x] Review round 5 (done 2026-07-25) - FIRST review since hardware; three parallel reviewers over the
+      268 unreviewed script lines (code / bash-correctness / security). No CRITICAL, no HIGH from the
+      reviewers. One MEDIUM raised to HIGH on evidence and fixed (`lldp_tagged_vlans` key-shape matching:
+      loose patterns both rebuilt the dead native-VLAN interface AND leaked a foreign key's value as a
+      VLAN candidate). Four LOW fixed. 96/96 asserts. See decisions.md round-5 entry.
+
+### FR-38 lesson (2026-07-25) - the one that changed the workflow
+
+A deployed fix looked like it had failed. It had never been installed: the deploy landed in the
+two-minute gap between two edits, so the box ran a tree with one change and not the other. Nothing on
+the box could tell "present and ineffective" apart from "absent", and the wrong branch was taken. The
+correction came only from noticing that the netplan file dynavlan writes ITSELF lacked the key.
+
+Now enforced, so it cannot recur:
+- `dynavlan --version` prints `<ver> (build <commit>[-dirty])`, works unprivileged and with a broken
+  config, and the same string is on every `run start:` journal line (retroactive provenance).
+- `install.sh` stamps the commit and WARNS when the tree is dirty.
+- `tests/unit.sh` 1l pins the cross-file `^build=` contract install.sh depends on; verified to fail when
+  broken. If 1l fails, fix the script, never the test.
+- CLAUDE.md "Version and build identity" is a MANDATORY gate: bump `ver` or state on the record why not;
+  never touch the `build=` line; run `--version` before drawing conclusions from a deploy.
+
+The general rule, which is what the whole session keeps teaching: never infer which code is running from
+whether a symptom persists. Verify the artifact, not the behavior.
