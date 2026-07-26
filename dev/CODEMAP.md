@@ -65,7 +65,7 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 | `backend_owned_metrics` | Persisted id:metric map read back from our file (FR-37 discovery-mode state) |
 | `owned_parent` | Parent iface of our VLANs = previously-selected trunk (stickiness source) |
 | `backend_list_managed_vlans` | VLAN ids managed OUTSIDE our namespace (netplan merge + kernel, minus our own) |
-| `backend_generate_config` | Write our file atomically (same-dir mktemp 0600, fsync, rename); isolation stanza, or routes+metric per FR-37 |
+| `backend_generate_config` | Write our file atomically (same-dir mktemp 0600, fsync, rename); isolation stanza (incl. `accept-ra: false` in both modes, FR-14a), or routes+metric per FR-37 |
 | `backend_validate` | `netplan generate`; on failure classify VALIDATE_ERRSRC ours-vs-base (base = freeze) |
 | `backend_apply_with_revert` | The accept primitive: netplan try + fifo, apply-evidence + liveness + consecutive-health + window-bound accept; FAIL holds fifo open for try's own revert timer |
 | `backend_remove_vlan` | `ip link delete` of a removed VLAN interface (only ever called after ACCEPT) |

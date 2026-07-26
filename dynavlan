@@ -329,7 +329,7 @@ usage() {
 
 load_config() {
 	DETECT_METHOD="both"
-	VLAN_MIN=2
+	VLAN_MIN=1
 	VLAN_MAX=1000
 	VLAN_IGNORE=""
 	VLAN_WARN=32
@@ -734,6 +734,19 @@ backend_generate_config() { # TARGET_IDS - write our file atomically (FR-13/14/1
 				printf '      id: %s\n' "$id"
 				printf '      link: %s\n' "$TRUNK_IFACE"
 				printf '      dhcp4: true\n'
+				# The four use-* keys below are dhcp4-overrides: they constrain DHCPv4
+				# and nothing else. IPv6 Router Advertisement is a separate channel that
+				# arrives unasked, and networkd accepts RAs by default on a non-router
+				# link - so without this key a VLAN can hand us a SLAAC address, RDNSS
+				# resolvers, and a default route, none of which any use-* key declines.
+				# That would break the FR-18 dependency outright: the health check reads
+				# `ip route show default` (v4 only), so an RA default installed via a
+				# monitored VLAN is invisible to it and could never trigger a revert.
+				# Stays false in routed mode too: FR-37 reasons about metrics IT assigns,
+				# and an RA route carries a metric we never chose, bypassing that guard.
+				# Hardware-observed (2026-07-25): enp1s0.22 held a global SLAAC address
+				# from a VLAN RA while every DHCPv4 decline was in force.
+				printf '      accept-ra: false\n'
 				printf '      dhcp4-overrides:\n'
 				if [ "$VLAN_ROUTES" = true ]; then
 					# FR-37: accept DHCP routes on this VLAN at its assigned metric

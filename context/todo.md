@@ -45,11 +45,18 @@ Timer HEALTHY and chaining: 5-min interval, LAST 02:37:01 / NEXT 02:42:01 box ti
 Live: enp1s0.18 -> 192.168.18.6, .21 -> 192.168.21.39, .22 -> 192.168.22.39, .101 -> 192.168.101.39
 (the SSH path), .100 -> link-local ONLY (dead, pending removal). One default route: enp1s0 metric 10.
 
-**The single next action: `sudo dynavlan --boot`.** detected is now [1 18 21 22 101] while owned still
-has 100, so boot will remove it. That run exercises L3-7 (post-accept ip link delete), L3-13b (FR-7a on
-the wire) and L3-25 (FR-5a removal) at once, and - if RESTART_SNAPS got set - fires the first real
-agent restart. Preview with --dry-run first; expect `removals: [100]`. Takes ~4 min (two detection
-passes, each paying the full 30s carrier wait on the dead enp2s0 plus a 60s sniff).
+**The single next action: deploy the two UNCOMMITTED/UNDEPLOYED changes below, then `sudo dynavlan --boot`.**
+The box is still at 2803e89 and does NOT yet have either of them:
+  1. VLAN_MIN default 2 -> 1, so VLAN 1 (192.168.255.0/24, tagged and live on this trunk) is finally a
+     candidate. /etc/dynavlan.conf has VLAN_MIN commented, so the new default applies with no config edit.
+  2. FR-14a `accept-ra: false` on every VLAN.
+After deploying, `--boot` should show additions [1] AND removals [100] in one apply. That run exercises
+L3-7 (post-accept ip link delete), L3-13b (FR-7a on the wire), L3-25 (FR-5a removal) and L3-26 (FR-14a)
+at once, and - if RESTART_SNAPS got set - fires the first real agent restart. It is also the FIRST time
+the removal path and `ip link delete` will ever have run. Preview with --dry-run first: it doubles as
+proof that netplan 0.107 accepts the `accept-ra` key (backend_validate runs `netplan generate` in a
+throwaway tree), which is UNVERIFIED from the dev box. Takes ~4 min (two detection passes, each paying
+the full 30s carrier wait on the dead enp2s0 plus a 60s sniff).
 
 - [x] FR-0 netplan probe fix CONFIRMED WORKING ON HARDWARE (2026-07-25): --dry-run now gets past
       preconditions and completes. Committed 92cddc5.
@@ -204,6 +211,15 @@ What to actually do with that:
 - [x] dev/CODEMAP.md rewritten for dynavlan (done 2026-07-23, user-requested): per-function one-liners grouped by script section (pure helpers w/ test refs, seam, health, backups, gates, modes) + non-script artifacts table. CLAUDE.md Development-Workflow "not yet implemented" staleness fixed in the same pass. Both dev/ docs now current.
 
 ## Open items (off critical path - see context/open_questions.md)
+- [ ] IPv6 arm for the health check (deferred from FR-14a, 2026-07-25). `default_routes_tokens` runs
+      `ip route show default` with no `-6`, so it cannot see an IPv6 default route at all. Safe today
+      only because FR-14a bars VLANs from installing one; the PRD's FR-18 dependency clause now REQUIRES
+      this arm to land in the same change as any future IPv6 route acceptance. Deliberately not bundled
+      with the accept-ra fix: it touches the safety-critical rollback primitive.
+- [ ] Audit the remaining stated guarantees against live platform state, the way FR-14a was found.
+      Six defects in two days, every one a documented guarantee never confronted with the platform.
+      Named suspects still unchecked: the journald drop-in (FR-31), dynavlan.service ordering vs
+      networkd, and the `netplan try` capability probe.
 - [x] IR-1: minimum netplan version (resolved 2026-07-23, user-approved) - keep pinned at 0.106 (validated floor). See decisions.md / open_questions.md IR-1.
 - [ ] G-4: per-VLAN MAC derivation function (only if PER_VLAN_MAC enabled; default off).
 - [ ] Non-Meraki switch detection (post-v0.1 future) - LLDP VLAN-table advertisement varies by vendor; sniff-primary proven only on Meraki; low-traffic VLANs invisible to sniff regardless of vendor. See open_questions.md "non-Meraki switches".

@@ -40,7 +40,7 @@ Every key in `/etc/dynavlan.conf` is shipped commented at its built-in default; 
 The keys most deployments touch:
 
 ```
-# VLAN_MIN=2 / VLAN_MAX=1000       # discovery range (default skips VLAN 1)
+# VLAN_MIN=1 / VLAN_MAX=1000       # discovery range (VLAN 1 included; skip IDs via VLAN_IGNORE)
 # VLAN_IGNORE=""                   # VLANs never to configure, e.g. "5,20-25"
 # RESTART_SNAPS="..."              # snaps to restart after a VLAN change
 # RESTART_SERVICES=""              # systemd services to restart after a VLAN change
