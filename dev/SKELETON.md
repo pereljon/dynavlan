@@ -43,6 +43,8 @@ All three modes funnel into the same `apply_change`; they differ only in how the
 
 Count gate (FR-12/36): warn above VLAN_WARN; above VLAN_LIMIT either refuse loudly (default) or fill lowest-ids into the remaining slots. Removals-only changes always pass the gate (the cap gates growth, never a shrink).
 
+**The timer drop-in must restate EVERY monotonic trigger** (FR-21a). In systemd an empty assignment to any `On*Sec=` resets the WHOLE monotonic timer list, not the single option assigned, so `render_timer_dropin`'s leading `OnUnitActiveSec=` also clears the base unit's first-fire trigger and has to put one back. A timer left with only `OnUnitActiveSec` anchors on the previous activation of `dynavlan-rescan.service`; with no prior activation there is nothing to anchor on and it NEVER elapses. Hardware-validated failure (2026-07-25): timer `active`, `Result=success`, `LastTriggerUSec` empty, `next_elapse=0`, `NextElapseUSecMonotonic=infinity`. Nothing logs an error - periodic discovery is simply absent, and `systemctl list-timers` showing `n/a` in every column is the only tell. First fire is `OnActiveSec` (timer activation) rather than only `OnBootSec` (kernel boot), because `install.sh` stops and restarts the timer on upgrade, long after any boot deadline has passed.
+
 ## Apply/rollback state machine (the safety-critical chain)
 
 ```

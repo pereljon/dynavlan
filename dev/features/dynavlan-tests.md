@@ -139,6 +139,16 @@ Input is `lldpctl -f keyvalue` text. The key carries no per-VLAN index, so `vlan
 | non-VLAN keyvalue text (`chassis.name=sw1`) | "" |
 | "" | "" |
 
+### 1j. `render_timer_dropin` (FR-21a rescan timer actually elapses)
+The assert is an exact whole-file match, which pins content AND ordering: the reset line must precede the re-assignments or it wipes them too.
+
+| Case | Expected |
+|---|---|
+| `render_timer_dropin 7` | exact drop-in text: reset, then `OnActiveSec=2min`, then `OnUnitActiveSec=7min` |
+| any interval | output always contains a first-fire trigger (`OnActiveSec=`) - the regression guard for the dead-timer bug |
+
+The failure this pins is silent: a drop-in carrying only `OnUnitActiveSec` yields a timer that is `active` and `Result=success` but has no anchor to elapse from, so it never runs and never errors. Unit tests can only assert the rendered text; that the timer actually elapses is L3-24.
+
 `detect_lldp` is impure (shells out to `lldpctl`) and stays a Layer 3 concern; `lldp_tagged_vlans` holds all the logic worth unit-testing. The exclusion must NOT reach the sniff's contribution: `detect_iface` unions the two sources, and a VLAN genuinely carried tagged must survive even when LLDP names it the PVID.
 
 Note: 1d/1e require `reconcile_boot` and `detect_union` to expose these as pure helpers. This is a deliberate testability constraint on the implementation (see design §5). 1f's helpers feed `gate_vlan_count` (refuse vs fill per `VLAN_LIMIT_MODE`). 1g's helpers feed `apply_change`'s FR-37 branch (assignment + up-front uplink-conflict refusal).
@@ -185,6 +195,7 @@ Run on the **actual Protectli/Ubuntu appliance plugged into the live Meraki trun
 | L3-20 | Mid-revert false-accept guard (§9 window bound) | Force a health FAIL throughout the window (uplink-breaking change); let netplan try's timer fire and revert; watch the accept loop across the revert | dynavlan stops sampling at the confirmation-window bound BEFORE the revert restores routing; no accept is written even though post-revert health PASSes while try is still alive; err "confirmation window elapsed" logged; FAIL path holds the fifo open to try's exit | AC-6, AC-11 |
 | L3-21 | Reverted-addition ghost netdev | After an L3-6/L3-20 revert of an ADD, run --rescan and inspect exclusion logs | Known residual: the revert does not delete the created netdev, so the id may classify as "managed elsewhere" (via ip link) and be excluded until reboot. Record actual behavior; decide if a cleanup pass is needed | AC-11 |
 | L3-22 | Routed mode happy path (FR-37/AC-14) | VLAN_ROUTES=true, VLAN_ROUTE_METRIC_START above the uplink metric; run --boot; then a later --rescan that adds one more VLAN | Each VLAN's DHCP default route present at its assigned metric; uplink stays the lowest-metric default; health PASSes; on the rescan, prior VLANs keep their exact metrics (discovery mode), the new one takes the next | AC-14 |
+| L3-24 | Rescan timer actually elapses (FR-21a) | After install and after an upgrade-path install (timer running, so it is stopped/restarted), run `systemctl list-timers dynavlan.timer` and `systemctl show dynavlan.timer -p TimersMonotonic -p NextElapseUSecMonotonic -p LastTriggerUSec` | NEXT/LEFT show a real time, never `n/a`; `TimersMonotonic` lists a first-fire trigger AND the interval; `NextElapseUSecMonotonic` is finite. Then wait past the interval and confirm `--rescan` runs appear in `journalctl -t dynavlan`. A timer that is `active` with `Result=success` proves nothing: the dead-timer bug had both | AC-7 |
 | L3-23 | Routed-mode conflict refusal (FR-37) | VLAN_ROUTES=true with VLAN_ROUTE_METRIC_START at or below the uplink default's metric; run --boot | Refuses BEFORE any disk change: err names the uplink metric and the assigned map, nothing applied, owned set untouched | AC-14 |
 
 Several of these (netplan-try accept/revert, promisc sniff of an unconfigured VLAN, isolation stanza, explicit `ip link delete`) were already validated once by hand on the lab box; this codifies them as repeatable.

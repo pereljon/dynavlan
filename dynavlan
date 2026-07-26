@@ -1364,17 +1364,39 @@ do_status() { # FR-35
 	return 0
 }
 
+# Pure: the timer drop-in text for a given rescan interval (minutes).
+#
+# The reset line is load-bearing and so is its blast radius: an empty assignment
+# to ANY On*Sec= clears the ENTIRE monotonic timer list, not just the option
+# being assigned. Clearing OnUnitActiveSec therefore also drops the base unit's
+# first-fire trigger, and this drop-in has to restate it. Rendering the interval
+# alone left the timer anchored solely on OnUnitActiveSec, which needs a PREVIOUS
+# activation to anchor on; with none it never elapses. Hardware-validated failure
+# (2026-07-25): timer active, Result=success, never triggered, next_elapse=0,
+# NextElapseUSecMonotonic=infinity - a rescan timer that silently never runs.
+#
+# First fire is OnActiveSec (relative to timer activation), not OnBootSec
+# (relative to kernel boot): install.sh stops and restarts the timer on upgrade,
+# by which point any boot-relative deadline is already in the past. OnActiveSec
+# covers both cases, since at boot the timer activates at roughly boot time.
+render_timer_dropin() { # RESCAN_MINUTES -> drop-in file contents
+	local first_fire=2 # minutes after timer activation before the first rescan
+	printf '# Rendered by dynavlan --reconfigure from RESCAN_MINUTES. Do not edit.\n'
+	printf '[Timer]\n'
+	printf '# An empty On*Sec= resets the ENTIRE monotonic timer list (not just the option\n'
+	printf '# assigned), so every trigger the base unit declares must be restated here.\n'
+	printf 'OnUnitActiveSec=\n'
+	printf 'OnActiveSec=%smin\n' "$first_fire"
+	printf 'OnUnitActiveSec=%smin\n' "$1"
+}
+
 do_reconfigure() { # render the timer interval drop-in from RESCAN_MINUTES
 	local dropdir="/etc/systemd/system/dynavlan.timer.d"
 	mkdir -p "$dropdir" 2>/dev/null || {
 		log err "cannot create $dropdir"
 		return 1
 	}
-	{
-		printf '[Timer]\n'
-		printf 'OnUnitActiveSec=\n' # reset: OnUnitActiveSec accumulates across drop-ins, so clear the base value first
-		printf 'OnUnitActiveSec=%smin\n' "$RESCAN_MINUTES"
-	} >"$dropdir/interval.conf" || {
+	render_timer_dropin "$RESCAN_MINUTES" >"$dropdir/interval.conf" || {
 		log err "failed to write $dropdir/interval.conf"
 		return 1
 	}

@@ -3,12 +3,22 @@ Description=Periodic dynavlan rescan (add-only VLAN discovery)
 Documentation=file:/usr/local/sbin/dynavlan
 
 [Timer]
-# Monotonic (OnBootSec/OnUnitActiveSec) so it survives RTC/NTP drift on headless boxes.
+# Monotonic (never calendar) so it survives RTC/NTP drift on headless boxes.
+# OnActiveSec as well as OnBootSec: install.sh stops and restarts this timer on
+# upgrade, by which point a boot-relative deadline is already in the past.
 OnBootSec=2min
+OnActiveSec=2min
 OnUnitActiveSec=5min
 Unit=dynavlan-rescan.service
-# OnUnitActiveSec is overridden by /etc/systemd/system/dynavlan.timer.d/interval.conf,
-# rendered from RESCAN_MINUTES by `dynavlan --reconfigure` (run at install and on change).
+#
+# WARNING - cross-file invariant. The interval drop-in rendered by
+# `dynavlan --reconfigure` (/etc/systemd/system/dynavlan.timer.d/interval.conf)
+# opens with an empty `OnUnitActiveSec=`, and in systemd an empty assignment to
+# ANY On*Sec= resets the ENTIRE monotonic timer list above - not just the option
+# assigned. The drop-in must therefore restate EVERY trigger declared here.
+# Adding a trigger here without adding it to render_timer_dropin() silently
+# drops it: that is exactly how the first-fire trigger was lost, leaving the
+# rescan timer active, healthy, and never elapsing.
 
 [Install]
 WantedBy=timers.target

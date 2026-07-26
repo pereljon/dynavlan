@@ -224,6 +224,38 @@ call lldp_tagged_vlans "lldp.eth0.chassis.name=sw1"; ok "1i no vlan lines -> emp
 call lldp_tagged_vlans "";               ok "1i empty input -> empty"               ""
 
 # ---------------------------------------------------------------------------
+# 1j. render_timer_dropin - FR-21 timer interval drop-in
+#     An empty assignment to ANY On*Sec= resets the ENTIRE monotonic timer
+#     list, so the drop-in must restate every trigger, not just the interval.
+#     Rendering only OnUnitActiveSec left the timer with no first-fire anchor
+#     and it never elapsed (hardware-validated dead timer, 2026-07-25). The
+#     exact-match assert pins both the content AND the ordering: the reset has
+#     to come before the re-assignments or it wipes them too.
+# ---------------------------------------------------------------------------
+
+read -r -d '' expect_dropin <<'EOF' || true
+# Rendered by dynavlan --reconfigure from RESCAN_MINUTES. Do not edit.
+[Timer]
+# An empty On*Sec= resets the ENTIRE monotonic timer list (not just the option
+# assigned), so every trigger the base unit declares must be restated here.
+OnUnitActiveSec=
+OnActiveSec=2min
+OnUnitActiveSec=7min
+EOF
+
+call render_timer_dropin 7; ok "1j drop-in restates first-fire + interval, reset first" "$expect_dropin"
+
+call render_timer_dropin 5
+tests=$((tests + 1))
+case "$OUT" in
+*"OnActiveSec="*) printf 'ok   - %s\n' "1j first-fire trigger is always present (regression guard)" ;;
+*)
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       no first-fire trigger; timer would never elapse\n' "1j first-fire trigger is always present (regression guard)"
+	;;
+esac
+
+# ---------------------------------------------------------------------------
 
 printf '\n%s tests, %s failures\n' "$tests" "$fails"
 [ "$fails" -eq 0 ]

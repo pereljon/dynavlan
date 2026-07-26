@@ -110,7 +110,8 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 | `do_rescan` | Add-only timer reconcile, pinned to the owned parent, never relocates/removes |
 | `do_dryrun` | Preview: same pinning/candidate math, throwaway-tree validate, diff + count gate + FR-37 metric/conflict preview; never applies |
 | `do_status` | Owned vs detected-now vs managed-elsewhere report (root; runs a detection pass) |
-| `do_reconfigure` | Render the timer drop-in from RESCAN_MINUTES + daemon-reload |
+| `render_timer_dropin` | Pure: timer drop-in text for an interval; restates ALL monotonic triggers, since the reset clears the whole list (FR-21a) |
+| `do_reconfigure` | Write the rendered drop-in to `dynavlan.timer.d/interval.conf` + daemon-reload |
 | `main` | Mode dispatch: config → (status/reconfigure) → preconditions → dry-run (non-blocking lock try) → boot/rescan under the fd-held flock |
 
 ## Non-script artifacts

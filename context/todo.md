@@ -71,7 +71,18 @@ owned = [18 21 22 100 101], steady state (--dry-run reports additions/removals b
         tagged still counts. TDD RED->GREEN, 6 new asserts in section 1i, suite now 80/80.
       - NOTE FR-7 already recorded "Meraki advertised only pvid 100" and SKELETON.md:32 said the same.
         The observation existed; nothing acted on it. Worth a second look for other noted-but-unhandled facts.
-- [ ] **DEPLOY the FR-7a fix to the box and confirm.** The box still runs the pre-fix script and still
+- [x] **HARDWARE BUG 3 (FR-21a): the rescan timer had NEVER fired, on any install. FIXED IN REPO,
+      NOT YET DEPLOYED.** `systemctl list-timers` = n/a in every column; `TimersMonotonic={ OnUnitActiveUSec
+      =5min ; next_elapse=0 }`, NextElapseUSecMonotonic=infinity, LastTriggerUSec empty, yet unit active and
+      Result=success. The rendered drop-in's `OnUnitActiveSec=` reset wiped the base unit's OnBootSec too
+      (an empty On*Sec= resets the WHOLE monotonic list), leaving no first-fire anchor. FR-21 periodic
+      discovery has never worked; every VLAN seen so far came from the boot reconcile. Fix: pure
+      `render_timer_dropin` restates all triggers, first fire via OnActiveSec (survives install.sh's
+      stop/restart). Suite 80 -> 82 (section 1j). Hardware row L3-24 added.
+- [ ] **DEPLOY the FR-7a + FR-21a fixes to the box and confirm.** After install, `systemctl list-timers
+      dynavlan.timer` MUST show a real NEXT (never n/a) - that is the only proof; active + Result=success
+      proved nothing. Then confirm a rescan actually appears in `journalctl -t dynavlan` after the interval.
+- [ ] (superseded, kept for the record) DEPLOY the FR-7a fix to the box and confirm. The box still runs the pre-fix script and still
       owns [18 21 22 100 101] incl. the dead `enp1s0.100`. After deploying, `--boot` (not `--rescan`,
       which is add-only) removes VLAN 100 post-accept. This is checklist row L3-13b.
 - [ ] ~~OPEN Q: the base netplan config no longer declares the VLANs.~~ RESOLVED by the apply above:

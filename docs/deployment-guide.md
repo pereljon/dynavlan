@@ -83,6 +83,14 @@ Set `RESTART_SNAPS`/`RESTART_SERVICES` to whatever agent should re-enumerate int
    sudo systemctl start dynavlan.timer
    ```
 
+5. **Confirm the timer will actually fire.** A systemd timer can sit `active` and `Result=success` forever without ever elapsing, and nothing logs an error when it does:
+
+   ```
+   systemctl list-timers dynavlan.timer
+   ```
+
+   `NEXT` and `LEFT` must show a real time. `n/a` in every column means the timer has no scheduled elapse and periodic rescans will never run; re-run `sudo dynavlan --reconfigure` and restart the timer. Confirm properly by waiting past `RESCAN_MINUTES` and checking a rescan appears in `journalctl -t dynavlan`.
+
 ## 5. Ongoing operation
 
 | Task | Command |
