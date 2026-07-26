@@ -34,36 +34,22 @@ Approach agreed: single cohesive bash implementation (NOT subagent fan-out - the
 
 ## Hardware session 2026-07-25 (first real runs on the box) - live state
 
-Box: `ssh -i ~/.ssh/domotz m18admin@192.168.101.39` (root via sudo). Ubuntu 22.04, kernel 5.15.0-177,
-netplan.io 0.107.1-3ubuntu0.22.04.4. NICs: enp1s0 (trunk, carrier up), enp2s0 (no carrier).
-Installed: /usr/local/sbin/dynavlan at commit 2803e89 (ALL FOUR code fixes: FR-0, FR-7a, FR-21a, FR-5a).
-/etc/dynavlan.conf: all keys commented = DEFAULTS, except RESTART_SNAPS if the user ran the sed one-liner
-(unverified at handoff - CHECK `grep ^RESTART_SNAPS /etc/dynavlan.conf` before assuming either way).
-APPLIED: /etc/netplan/90-dynavlan.yaml owns [18 21 22 100 101]. /etc/netplan also holds
-00-installer-config.yaml + 01-netcfg.yaml (both ethernets-only; no vlans anywhere but our file).
-Timer HEALTHY and chaining: 5-min interval, LAST 02:37:01 / NEXT 02:42:01 box time.
-Live: enp1s0.18 -> 192.168.18.6, .21 -> 192.168.21.39, .22 -> 192.168.22.39, .101 -> 192.168.101.39
-(the SSH path), .100 -> link-local ONLY (dead, pending removal). One default route: enp1s0 metric 10.
+Box: `ssh -i ~/.ssh/domotz m18admin@192.168.101.39` (root via passwordless sudo). Ubuntu 22.04,
+netplan.io 0.107.1. NICs: enp1s0 (trunk, carrier up), enp2s0 (no carrier - costs 30s per detection pass).
+INSTALLED: /usr/local/sbin/dynavlan build **e225a1c** (clean, not -dirty). Confirm with `dynavlan --version`
+before concluding ANYTHING from behavior.
+/etc/dynavlan.conf: defaults except RESTART_SNAPS="domotzpro-agent-publicstore" (verified set).
+OWNED = [1 18 21 22 101], all leased: .1 -> 192.168.255.39, .18 -> 192.168.18.6, .21 -> 192.168.21.39,
+.22 -> 192.168.22.39, .101 -> 192.168.101.39 (the SSH path). One default route: enp1s0 metric 10.
+Domotz agent unit is `snap.domotzpro-agent-publicstore.domotzpro-agent-deamon.service` (NOTE the
+misspelling "deamon" - it is in the snap, not a typo here); active running.
 
-**The single next action: deploy the THREE undeployed changes below, then `sudo dynavlan --boot`.**
-The box is still at 2803e89 and does NOT yet have either of them:
-  1. VLAN_MIN default 2 -> 1, so VLAN 1 (192.168.255.0/24, tagged and live on this trunk) is finally a
-     candidate. /etc/dynavlan.conf has VLAN_MIN commented, so the new default applies with no config edit.
-  2. FR-14a `accept-ra: false` on every VLAN. CONFIRMED STILL NEEDED as of 2026-07-25 20:07: the box
-     currently holds an IPv6 default route `via fe80::af1:b3ff:fe6b:15eb dev enp1s0.1 proto ra metric 100`
-     and a live SLAAC address on enp1s0.22 that is still being refreshed. netplan's acceptance of the
-     `accept-ra` key is STILL UNVERIFIED - the earlier "netplan try ACCEPTED" proved nothing, because the
-     YAML it validated never contained the key (the deploy predated the fix).
-  3. FR-38 `--version` + install-time build stamp. After deploying, `dynavlan --version` must report the
-     installed commit; if it says `-dirty`, the tree had uncommitted changes and matches no commit.
-     ALWAYS run it before concluding anything from behavior - see the FR-38 lesson below.
-After deploying, `--boot` should show additions [1] AND removals [100] in one apply. That run exercises
-L3-7 (post-accept ip link delete), L3-13b (FR-7a on the wire), L3-25 (FR-5a removal) and L3-26 (FR-14a)
-at once, and - if RESTART_SNAPS got set - fires the first real agent restart. It is also the FIRST time
-the removal path and `ip link delete` will ever have run. Preview with --dry-run first: it doubles as
-proof that netplan 0.107 accepts the `accept-ra` key (backend_validate runs `netplan generate` in a
-throwaway tree), which is UNVERIFIED from the dev box. Takes ~4 min (two detection passes, each paying
-the full 30s carrier wait on the dead enp2s0 plus a 60s sniff).
+ALL FIXES ARE NOW LIVE AND VERIFIED ON THE WIRE. The IPv6 hole is CLOSED:
+  accept-ra in live config 5/5; `IPv6AcceptRA=no` x5 in /run/systemd/network/; `ip -6 route show
+  default` EMPTY; 0 global SLAAC on every owned VLAN; fe80 present 5/5; all IPv4 leases intact.
+
+**Next action: nothing is blocking. Remaining before release: the revert/rollback path (L3-6/L3-20)
+has still NEVER fired on hardware - no apply has ever failed - and a --boot has not run since FR-39.**
 
 - [x] FR-0 netplan probe fix CONFIRMED WORKING ON HARDWARE (2026-07-25): --dry-run now gets past
       preconditions and completes. Committed 92cddc5.
