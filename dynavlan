@@ -461,7 +461,21 @@ load_config() {
 # Preconditions (FR-0): refuse to run (change nothing) if any fail
 # ---------------------------------------------------------------------------
 
-netplan_version() { netplan --version 2>&1 | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1; }
+# First N.N[.N] in a version string; empty (exit 0) when there is none.
+parse_version() { printf '%s\n' "$1" | grep -oE '[0-9]+\.[0-9]+(\.[0-9]+)?' | head -1 || true; }
+
+# `netplan --version` only exists on netplan >= 1.0; the Ubuntu 22.04 fleet ships
+# 0.10x, where the flag is unrecognized and only the package manager knows the
+# version. Sources are tried in order, first hit wins. stderr is never parsed:
+# the 0.10x usage dump would otherwise be scraped for anything resembling a version.
+netplan_version() {
+	local v
+	v=$(parse_version "$(netplan --version 2>/dev/null)")
+	[ -n "$v" ] && { printf '%s\n' "$v"; return 0; }
+	v=$(parse_version "$(dpkg-query -W -f='${Version}' netplan.io 2>/dev/null)")
+	[ -n "$v" ] && { printf '%s\n' "$v"; return 0; }
+	return 1
+}
 
 version_ge() { # A B -> 0 if A >= B
 	[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]
@@ -477,9 +491,13 @@ check_preconditions() {
 		return 1
 	}
 	local v
-	v=$(netplan_version)
-	if [ -z "$v" ] || ! version_ge "$v" "$MIN_NETPLAN"; then
-		log err "netplan >= $MIN_NETPLAN required (found ${v:-unknown})"
+	v=$(netplan_version) || true
+	if [ -z "$v" ]; then
+		log err "cannot determine netplan version (tried 'netplan --version', dpkg-query netplan.io); refusing"
+		return 1
+	fi
+	if ! version_ge "$v" "$MIN_NETPLAN"; then
+		log err "netplan >= $MIN_NETPLAN required (found $v)"
 		return 1
 	fi
 	# Non-mutating capability probe (FR-0): introspection only, never a live apply.

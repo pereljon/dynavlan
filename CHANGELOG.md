@@ -4,6 +4,7 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ## Unreleased
 
+- Fixed: the FR-0 netplan version precondition refused to run on every target box. It probed `netplan --version`, a flag that only exists on netplan >= 1.0, while the validated Ubuntu 22.04 baseline ships 0.10x and rejects it; the empty parse surfaced as the misleading `netplan >= 0.106 required (found unknown)`. Version discovery now falls back to `dpkg-query -W netplan.io`, and "cannot determine version" is logged as a refusal distinct from "version below the minimum". Found on hardware (netplan.io 0.107.1-3ubuntu0.22.04.4, Ubuntu 22.04).
 - Changed: `RESTART_SNAPS` default is now empty (was `domotzpro-agent-publicstore`); the Domotz agent snap is the documented example, not a baked-in default. Set it explicitly per deployment.
 - Removed: the Domotz-on-Ubuntu deployment runbook and base-deployment spec (`docs/deployment-guide.md` rewritten as the dynavlan deployment guide; `dev/IMPLEMENTATION-SPEC.md` deleted). The project is dynavlan; Domotz remains only as the restart-target example.
 

@@ -6,7 +6,7 @@ How to deploy dynavlan on a netplan/systemd-networkd Ubuntu box. This covers ins
 
 ## 1. Prerequisites
 
-- Ubuntu (or compatible) using **netplan with the systemd-networkd renderer**; netplan >= 0.106 (dynavlan checks and refuses below it).
+- Ubuntu (or compatible) using **netplan with the systemd-networkd renderer**; netplan >= 0.106 (dynavlan checks and refuses below it). The check reads `netplan --version` where it exists (netplan >= 1.0) and otherwise falls back to `dpkg-query -W netplan.io`, which is how the Ubuntu 22.04 line (netplan 0.10x) reports itself.
 - Root access.
 - The box's trunk-facing NIC patched to a switch port carrying tagged VLANs. No switch-side configuration is required beyond the trunk itself.
 - `tcpdump` (sniff detection, default) and `lldpd` (LLDP detection). `install.sh` installs both if missing.

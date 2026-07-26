@@ -40,7 +40,8 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 
 | function | one-line purpose |
 |----------|------------------|
-| `netplan_version` / `version_ge` | Extract and compare netplan version against MIN_NETPLAN (sort -V) |
+| `parse_version` | Pure: first `N.N[.N]` in a version string, empty when none (handles dpkg epoch/revision) |
+| `netplan_version` / `version_ge` | Probe netplan version (`netplan --version` on 1.x, else dpkg-query on 0.10x) and compare against MIN_NETPLAN (sort -V) |
 | `check_preconditions` | root; netplan >= min; non-mutating `netplan try` capability probe; tcpdump/lldpctl per DETECT_METHOD |
 
 ## Discovery + detection (FR-1..5)

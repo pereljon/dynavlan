@@ -31,7 +31,7 @@ A restart that fails is logged and non-fatal; the VLAN change still stands. This
 ## Requirements
 
 - Ubuntu (or any distro) using **netplan with the systemd-networkd renderer**
-- **netplan >= 0.106** (validated baseline; refuses to run below it, and capability-probes `netplan try` - no silent fallback to an un-revertable `netplan apply`)
+- **netplan >= 0.106** (validated baseline; refuses to run below it, and capability-probes `netplan try` - no silent fallback to an un-revertable `netplan apply`). netplan only grew a `--version` flag in 1.0, so on the 0.10x line the version is read from the package database (`dpkg-query`); a netplan 0.10x box with no dpkg cannot be version-checked and is refused.
 - root
 - `tcpdump` when sniff detection is enabled (default), `lldpd`/`lldpctl` for LLDP detection
 

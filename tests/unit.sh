@@ -27,6 +27,26 @@ ok() { # desc expected  (asserts exit 0 and OUT == expected)
 	fi
 }
 
+ver_ge() { # A B desc  (asserts version_ge A B is true)
+	tests=$((tests + 1))
+	if version_ge "$1" "$2"; then
+		printf 'ok   - %s\n' "$3"
+	else
+		fails=$((fails + 1))
+		printf 'FAIL - %s\n       expected %s >= %s\n' "$3" "$1" "$2"
+	fi
+}
+
+ver_lt() { # A B desc  (asserts version_ge A B is false)
+	tests=$((tests + 1))
+	if version_ge "$1" "$2"; then
+		fails=$((fails + 1))
+		printf 'FAIL - %s\n       expected %s < %s\n' "$3" "$1" "$2"
+	else
+		printf 'ok   - %s\n' "$3"
+	fi
+}
+
 err() { # desc  (asserts non-zero exit)
 	tests=$((tests + 1))
 	if [ "$STATUS" -ne 0 ]; then
@@ -147,6 +167,25 @@ call metric_conflict 10  "21:100 22:101";  ok "1g uplink below all -> OK"       
 call metric_conflict 100 "21:100 22:101";  ok "1g tie with uplink -> CONFLICT"   "CONFLICT"
 call metric_conflict 300 "21:100 22:101";  ok "1g uplink above -> CONFLICT"      "CONFLICT"
 call metric_conflict 100 "";               ok "1g empty map -> OK"               "OK"
+
+# ---------------------------------------------------------------------------
+# 1h. parse_version / version_ge - netplan version probe (FR-0)
+#     `netplan --version` only exists on netplan >= 1.0; the 0.10x fleet is
+#     identified through the package manager, so the parser must survive both
+#     a bare "N.N" and a full Debian revision string.
+# ---------------------------------------------------------------------------
+
+call parse_version "netplan   1.0";               ok "1h netplan --version output"      "1.0"
+call parse_version "0.107.1-3ubuntu0.22.04.4";    ok "1h dpkg revision suffix stripped" "0.107.1"
+call parse_version "1:0.107.1-3ubuntu0.22.04.4";  ok "1h dpkg epoch prefix skipped"     "0.107.1"
+call parse_version "0.106";                       ok "1h bare two-component version"    "0.106"
+call parse_version "usage: /usr/sbin/netplan  [-h] [--debug]"; ok "1h help text -> empty" ""
+call parse_version "";                            ok "1h empty input -> empty"          ""
+
+ver_ge "1.0"     "0.106" "1h 1.0 >= 0.106 (sort -V, not string order)"
+ver_ge "0.107.1" "0.106" "1h 0.107.1 >= 0.106"
+ver_ge "0.106"   "0.106" "1h equal versions satisfy the floor"
+ver_lt "0.105"   "0.106" "1h 0.105 below floor rejected"
 
 # ---------------------------------------------------------------------------
 

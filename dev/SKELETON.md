@@ -11,7 +11,7 @@ Every invocation follows the same spine; the mode decides the reconcile policy.
 main(mode)
   load_config            # source /etc/dynavlan.conf, strict-validate every key; any bad value = refuse-to-run
   [--status/--reconfigure: root check, run, exit]
-  check_preconditions    # root; netplan >= MIN_NETPLAN; `netplan try` capability probe (non-mutating); tcpdump/lldpctl per DETECT_METHOD
+  check_preconditions    # root; netplan >= MIN_NETPLAN (--version on 1.x, else dpkg; undeterminable = its own refusal); `netplan try` capability probe (non-mutating); tcpdump/lldpctl per DETECT_METHOD
   [--dry-run: try the flock non-blocking (hold if free; warn + proceed read-only if held), preview, exit]
   [--boot/--rescan: take fd-held flock (non-blocking; busy = "skipped", rc 0), dispatch]
 ```

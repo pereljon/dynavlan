@@ -108,6 +108,25 @@ Trunk selection stability underwrites AC-7/NFR-2; a flapping choice causes repea
 
 `map_filter` keeps only listed ids' tokens (drops removed VLANs' metrics before reassignment).
 
+### 1h. `parse_version` + `version_ge` (FR-0 netplan version probe)
+| parse_version input | Expected |
+|---|---|
+| "netplan   1.0" | 1.0 (netplan >= 1.0 `--version` output) |
+| "0.107.1-3ubuntu0.22.04.4" | 0.107.1 (dpkg revision suffix must not leak in) |
+| "1:0.107.1-3ubuntu0.22.04.4" | 0.107.1 (dpkg epoch prefix skipped) |
+| "0.106" | 0.106 (bare two-component) |
+| "usage: /usr/sbin/netplan  [-h] [--debug]" | "" (help text is not a version) |
+| "" | "" |
+
+| version_ge: A / B | Expected |
+|---|---|
+| 1.0 / 0.106 | true (sort -V; a string compare gets this backwards) |
+| 0.107.1 / 0.106 | true |
+| 0.106 / 0.106 | true (floor is inclusive) |
+| 0.105 / 0.106 | false |
+
+`netplan_version` itself is impure (shells out) and is exercised in Layer 3, not here: the parse is what is unit-testable. The source order it must honor is `netplan --version` (netplan >= 1.0 only) then `dpkg-query -W netplan.io` (the 0.10x fleet), stdout only, never stderr.
+
 Note: 1d/1e require `reconcile_boot` and `detect_union` to expose these as pure helpers. This is a deliberate testability constraint on the implementation (see design §5). 1f's helpers feed `gate_vlan_count` (refuse vs fill per `VLAN_LIMIT_MODE`). 1g's helpers feed `apply_change`'s FR-37 branch (assignment + up-front uplink-conflict refusal).
 
 ## Layer 2 - `--dry-run` decision-path verification (real inputs)
@@ -141,6 +160,7 @@ Run on the **actual Protectli/Ubuntu appliance plugged into the live Meraki trun
 | L3-11 | flock death-release (FR-30) | While a `--boot` run holds the lock inside the `netplan try` window, `kill -9` it from the console | Kernel releases the fd-flock; `netplan try` reverts on timeout; uplink intact; a subsequent `--rescan` acquires the lock and runs (NOT permanently "skipped, run in progress") | AC-6 |
 | L3-12 | Atomic write kill (FR-16) | `kill -9` during config generation (repeatedly, or via a temp/rename test hook) | `90-dynavlan.yaml` is always either the old complete file or the new complete file, never truncated; next run proceeds | AC-6 |
 | L3-13 | No usable `netplan try` → refuse (FR-0) | Stub/mask `netplan try` capability or report an old netplan version | Refuse to run, `err` logged, NO fallback to bare `netplan apply`, no change | AC-5 |
+| L3-13a | Version probe resolves on the real box (FR-0) | On the target appliance run `dynavlan --dry-run` and confirm it gets past the version precondition; cross-check against `dpkg-query -W netplan.io` | Version is determined (0.10x boxes resolve via dpkg, since `netplan --version` does not exist there) and the run proceeds; a probe that cannot determine a version logs the distinct "cannot determine netplan version" refusal, not "required (found unknown)" | AC-5 |
 | L3-14 | Empty-snapshot accept (AC-12) | Boot with trunk up but uplink DHCP delayed (no default route at snapshot); apply an isolated-VLAN add | Change is ACCEPTED (not reverted); isolated VLANs come up; box is not left a no-op | AC-12 |
 | L3-15 | Slow-apply accept race (§9) | Add many VLANs at once (slow apply) with a change that breaks the uplink route (test hook), so health would PASS pre-apply and FAIL post-apply | ACCEPT is NOT written before the apply completes (probe-iface evidence); health samples post-apply state; change REVERTS. Verify in the journal that the accept loop waited for the probe | AC-6 |
 | L3-16 | FAIL path rides netplan's own revert | Force a health FAIL; observe the fifo/write-end lifecycle and netplan try's exit | dynavlan writes nothing and holds the fifo open until netplan try exits on its own timer; revert occurs; no stdin-EOF early-close is exercised; clean err log | AC-6, AC-11 |
