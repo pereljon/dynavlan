@@ -169,6 +169,49 @@ call metric_conflict 300 "21:100 22:101";  ok "1g uplink above -> CONFLICT"     
 call metric_conflict 100 "";               ok "1g empty map -> OK"               "OK"
 
 # ---------------------------------------------------------------------------
+# 1g-bis. plan_route_metrics + map_ids - the FR-37 migration defect
+#
+# The bug this pins (found 2026-07-25, live in committed code): apply_change fed
+# assign_route_metrics the ADDITIONS as the set needing metrics. The correct set
+# is "target ids that do not already have one". Going isolated -> routed, EVERY
+# owned id lacks a metric while additions is empty or partial, so generation hit
+# "internal: no route metric assigned for VLAN N" and refused - permanently, and
+# for every subsequent run, blocking new VLANs too. Routed mode only ever worked
+# greenfield.
+#
+# Pinned as ONE function rather than a call sequence on purpose: --reapply (and
+# any later drift check) must compute the map the SAME way apply_change does. Two
+# call sites reimplementing this is how they silently diverge.
+# ---------------------------------------------------------------------------
+
+call map_ids "1:100 18:101"; ok "1g map_ids extracts ids" "1 18"
+call map_ids ""; ok "1g map_ids of empty map -> empty" ""
+
+# THE DEFECT: isolated -> routed on a box that already owns VLANs, no VLAN churn.
+call plan_route_metrics "" "1 18 21" "" 100 discovery
+ok "1g migration: every owned id gets a metric when none has one" "1:100 18:101 21:102"
+
+# Same migration, with one genuinely new VLAN in the same run.
+call plan_route_metrics "" "1 18 21 22" "22" 100 discovery
+ok "1g migration + addition: all four assigned" "1:100 18:101 21:102 22:103"
+
+# Steady state must be unchanged by the fix: kept metrics preserved verbatim.
+call plan_route_metrics "1:100 18:101" "1 18 22" "22" 100 discovery
+ok "1g steady state: kept verbatim, addition continues" "1:100 18:101 22:102"
+
+# A reapply (zero additions, every id already has a metric) must NOT renumber.
+call plan_route_metrics "1:100 18:101" "1 18" "" 100 discovery
+ok "1g reapply with no churn does not renumber" "1:100 18:101"
+
+# A removed VLAN's persisted metric is dropped, survivors keep theirs.
+call plan_route_metrics "1:100 18:101 21:102" "1 18" "" 100 discovery
+ok "1g removed VLAN's metric dropped, survivors verbatim" "1:100 18:101"
+
+# id mode is stateless: START + id regardless of history.
+call plan_route_metrics "" "18 22" "" 100 id
+ok "1g id mode is stateless" "18:118 22:122"
+
+# ---------------------------------------------------------------------------
 # 1h. parse_version / version_ge - netplan version probe (FR-0)
 #     `netplan --version` only exists on netplan >= 1.0; the 0.10x fleet is
 #     identified through the package manager, so the parser must survive both

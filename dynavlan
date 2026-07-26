@@ -237,6 +237,42 @@ assign_route_metrics() {
 	return 0
 }
 
+# map_ids MAP
+#   Ids of an "id:metric" map, as a sorted set.
+map_ids() {
+	local map="$1" tok out=""
+	for tok in $map; do out="$out ${tok%%:*}"; done
+	emit_set $out
+	return 0
+}
+
+# plan_route_metrics OWNED_MAP TARGET ADDITIONS START MODE
+#   The single decision point for FR-37 metric assignment: given the map persisted
+#   in our own YAML, produce the full "id:metric" map for TARGET.
+#
+#   The set needing a NEW metric is "target ids that do not already have one", NOT
+#   the additions. Those differ whenever an owned VLAN has no persisted metric,
+#   which is exactly what an isolated -> routed migration looks like: the operator
+#   sets VLAN_ROUTES=true on a box that already owns VLANs, so every owned id
+#   lacks a metric while additions is empty or covers only a new VLAN. Assigning
+#   for additions alone left the rest unassigned, and backend_generate_config
+#   refuses to generate an unassigned id - permanently, on every subsequent run,
+#   which also blocked adding any new VLAN while VLAN_ROUTES stayed true. Routed
+#   mode therefore only ever worked greenfield (found 2026-07-25).
+#
+#   Kept ids keep their persisted metric verbatim, so this is idempotent: calling it
+#   with no churn returns the same map and never renumbers a live VLAN's priority.
+#   Every caller MUST use this rather than composing the pieces itself - a second
+#   call site reimplementing the sequence is how the two silently diverge.
+plan_route_metrics() {
+	local owned="$1" target="$2" adds="$3" start="$4" mode="$5"
+	local kept needs
+	kept=$(map_filter "$owned" "$(set_minus "$target" "$adds")")
+	needs=$(set_minus "$target" "$(map_ids "$kept")")
+	assign_route_metrics "$kept" "$needs" "$start" "$mode"
+	return 0
+}
+
 # map_filter MAP IDS
 #   Keep only the "id:metric" tokens of MAP whose id is in the IDS set (used to
 #   drop removed VLANs' persisted metrics before reassignment). Order preserved.
@@ -1086,9 +1122,8 @@ apply_change() { # TARGET_IDS ADDITIONS REMOVALS
 	# would out-prioritize or tie the uplink (a guaranteed health-FAIL revert loop).
 	ROUTE_METRICS=""
 	if [ "$VLAN_ROUTES" = true ]; then
-		local kept_map snap_metric
-		kept_map=$(map_filter "$(backend_owned_metrics)" "$(set_minus "$target" "$additions")")
-		ROUTE_METRICS=$(assign_route_metrics "$kept_map" "$additions" "$VLAN_ROUTE_METRIC_START" "$VLAN_ROUTE_METRIC_MODE")
+		local snap_metric
+		ROUTE_METRICS=$(plan_route_metrics "$(backend_owned_metrics)" "$target" "$additions" "$VLAN_ROUTE_METRIC_START" "$VLAN_ROUTE_METRIC_MODE")
 		snap_metric=$(snapshot_default_metric)
 		if [ "$(metric_conflict "$snap_metric" "$ROUTE_METRICS")" = CONFLICT ]; then
 			log err "VLAN_ROUTES metric conflict: uplink default (${snap_iface:-?}) has metric ${snap_metric} but assigned VLAN metrics [${ROUTE_METRICS}] would match or beat it; raise VLAN_ROUTE_METRIC_START above the uplink metric. Refusing to apply, changing nothing"

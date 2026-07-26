@@ -18,6 +18,8 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 | `limit_fill` | Lowest-N subset of additions for fill mode (deterministic across a fleet) | 1f |
 | `assign_route_metrics` | FR-37 id:metric map: discovery = kept verbatim + next-free ascending for new; id = START+id stateless | 1g |
 | `map_filter` | Keep only listed ids' tokens of an id:metric map (drops removed VLANs' metrics) | 1g |
+| `map_ids` | Ids of an id:metric map, as a sorted set | 1g |
+| `plan_route_metrics` | THE FR-37 assignment decision point: owned map + target + additions -> full id:metric map; assigns for target ids LACKING a metric (not additions). Every caller must use this | 1g |
 | `metric_conflict` | CONFLICT if any assigned metric <= uplink default's metric (tie counts), else OK | 1g |
 | `compute_candidates` | detected ∩ [MIN,MAX] − ignore − managed-elsewhere − owned | 1b |
 

@@ -218,6 +218,54 @@ What to actually do with that:
 - [x] dev/CODEMAP.md rewritten for dynavlan (done 2026-07-23, user-requested): per-function one-liners grouped by script section (pure helpers w/ test refs, seam, health, backups, gates, modes) + non-script artifacts table. CLAUDE.md Development-Workflow "not yet implemented" staleness fixed in the same pass. Both dev/ docs now current.
 
 ## Open items (off critical path - see context/open_questions.md)
+- [ ] Automatic config-drift detection - DEFERRED 2026-07-25 until a second box exists.
+      SCOPE RULE SET BY THE OPERATOR: dynavlan is installed on ONE box (the test appliance at
+      192.168.101.39, locally accessible). Fleet is THEORETICAL until the operator says otherwise.
+      The whole trigger-policy debate (should an upgrade cause unattended applies across many boxes
+      within one timer interval?) was weighing a risk that does not exist yet, so per "smallest thing
+      that works", automatic drift detection is NOT being built. Only the manual `--reapply` is.
+      Deferred pieces, already designed and reviewed so this is cheap to resume:
+        - drift detection on --rescan (the 288/day unattended path) and on --boot
+        - the header-vs-content hybrid. The header check existed ONLY to make the frequent rescan
+          path cheap; with no rescan check there is no cost argument, and content comparison is
+          strictly more correct (it catches a config-driven change like toggling VLAN_ROUTES, which
+          the header cannot see, and cannot be fooled by an input nobody remembered to fingerprint)
+        - downgrade detection as a DECISION input (drift is direction-blind: an older build over a
+          newer one would rewrite the file backwards). Currently just a log line.
+        - install.sh performing its own drift check and printing the remedy
+        - a REAPPLY_ON_DRIFT config key (rejected on YAGNI + it splits fleet behavior)
+      REJECTED for this purpose: md5 of the file (detects hand-edits only, cannot see that what we
+      WOULD write differs) and hashing generation INPUTS (cheap, but a forgotten input is a SILENT
+      false negative - the exact failure mode behind this session's six defects; comparing the
+      artifact cannot forget an input).
+      WHEN RESUMING: the reviewed design is in the architect + silent-failure-hunter findings
+      recorded against FR-39; the key correction to the first draft was that "unattended applies are
+      a surprise" is a WRONG argument (do_rescan already applies unattended when a VLAN appears).
+      The real argument is common-mode correlation plus the health check's blindness: FR-18 watches
+      only the lowest-metric IPv4 default, so a generated-config change that kills VLAN monitoring
+      or installs an IPv6 default PASSES health and gets ACCEPTED.
+- [ ] Git hooks to enforce the version gate mechanically (proposed 2026-07-25, not built).
+      WHY: the FR-38 "Version and build identity" gate in CLAUDE.md is currently enforced only by
+      remembering to follow it. That is the same class of weakness that produced this session's defects.
+      NOTE the split, it changes what needs enforcing:
+        - `build` is NEVER committed by design (stays `build="source"` in the repo; install.sh stamps it
+          at install time). Nothing to check pre-commit; what matters is that the `^build=` line stays
+          stampable, and tests/unit.sh 1l already pins that.
+        - `ver` is the manual one, and the only thing needing a commit-time gate.
+      NOT a Claude Code PreToolUse hook: that binds only this agent in this harness, so a hand commit,
+      another tool, or a session without the hook loaded bypasses it silently. A git hook binds every
+      path into the repo, and composes with the environment's existing block on bypassing hooks.
+      PLAN: commit `hooks/` to the repo, wired with `git config core.hooksPath hooks`.
+        1. `pre-commit`: run `bash tests/unit.sh`, block on failure (catches a broken ^build= contract
+           via 1l, plus every other regression, before it lands).
+        2. `commit-msg`: if `dynavlan` is in the staged diff but its `ver=` line is unchanged, require an
+           explicit `ver-unchanged: <reason>` line in the message. Turns CLAUDE.md's "state it on the
+           record" from a request into a condition; a real bump satisfies it silently.
+      KNOWN WEAKNESS: core.hooksPath must be set once per clone, so a fresh clone starts unprotected.
+      Mitigate with an assert in tests/unit.sh that fails (or at minimum warns) when it is unset - the
+      suite then enforces its own enforcement.
+      ACCEPTANCE: each hook must be observed BLOCKING a real violating commit before it is called done.
+      A guard nobody has watched fail is not a guard (the 1l lesson).
 - [ ] IPv6 arm for the health check (deferred from FR-14a, 2026-07-25). `default_routes_tokens` runs
       `ip route show default` with no `-6`, so it cannot see an IPv6 default route at all. Safe today
       only because FR-14a bars VLANs from installing one; the PRD's FR-18 dependency clause now REQUIRES

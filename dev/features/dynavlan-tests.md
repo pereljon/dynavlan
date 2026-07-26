@@ -108,6 +108,19 @@ Trunk selection stability underwrites AC-7/NFR-2; a flapping choice causes repea
 
 `map_filter` keeps only listed ids' tokens (drops removed VLANs' metrics before reassignment).
 
+`plan_route_metrics` (added 2026-07-25) is the single decision point callers must use; these cases pin the migration defect it fixes:
+
+| owned map / target / additions / start / mode | Expected |
+|---|---|
+| `""` / `1 18 21` / `""` / 100 / discovery | `1:100 18:101 21:102` - **the defect**: isolated -> routed, every owned id lacks a metric while additions is empty |
+| `""` / `1 18 21 22` / `22` / 100 / discovery | `1:100 18:101 21:102 22:103` - migration plus a real addition in one run |
+| `1:100 18:101` / `1 18 22` / `22` / 100 / discovery | `1:100 18:101 22:102` - steady state unchanged by the fix |
+| `1:100 18:101` / `1 18` / `""` / 100 / discovery | `1:100 18:101` - zero churn must NOT renumber (the `--reapply` case) |
+| `1:100 18:101 21:102` / `1 18` / `""` / 100 / discovery | `1:100 18:101` - removed VLAN's metric dropped, survivors verbatim |
+| `""` / `18 22` / `""` / 100 / id | `18:118 22:122` - stateless |
+
+Pre-fix, `apply_change` passed `additions` as the set needing metrics. Those sets differ whenever an owned VLAN has no persisted metric, so enabling `VLAN_ROUTES=true` on a box that already owned VLANs made `backend_generate_config` refuse (`internal: no route metric assigned for VLAN N`) on every run thereafter, blocking new VLANs too. Pinned as one function rather than a call sequence because `--reapply` and any later drift check must compute the map the same way `apply_change` does; two call sites recomposing it is how they silently diverge.
+
 ### 1h. `parse_version` + `version_ge` (FR-0 netplan version probe)
 | parse_version input | Expected |
 |---|---|
