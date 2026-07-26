@@ -251,6 +251,11 @@ assign_route_metrics() {
 #   The skip is POSITIONAL (exactly line 1), deliberately not a pattern match on
 #   header text: a pattern match would silently stop matching if the header format
 #   ever changed, and the resulting failure is an apply loop rather than an error.
+#
+#   Known limit: command substitution strips trailing newlines, so two bodies that
+#   differ ONLY in trailing blank lines compare SAME. Harmless as used - both sides
+#   come from backend_generate_config, which never emits them - but do not reuse
+#   this to compare against a file written by anything else without revisiting it.
 config_body_differs() {
 	local a b
 	a=$(printf '%s\n' "$1" | tail -n +2)
@@ -1514,6 +1519,15 @@ do_reapply() {
 	generated=$(cat "$NETPLAN_FILE" 2>/dev/null)
 	NETPLAN_FILE="$saved"
 	rm -rf "$tmpdir"
+	# An unreadable candidate is not evidence of drift. Without this, a failed
+	# read-back leaves $generated empty, which compares DIFFERENT against any
+	# non-empty live file and applies - a change with no reason behind it, on the
+	# one operation that can strand the box. Same stance as the FR-5a `-Q in`
+	# probe: refuse loudly rather than degrade into a silent wrong answer.
+	if [ -z "$generated" ]; then
+		log err "reapply: generated a candidate config but could not read it back; refusing, nothing applied"
+		return 1
+	fi
 
 	if [ "$(config_body_differs "$generated" "$live")" = SAME ]; then
 		log notice "reapply: on-disk config already matches what this build generates; no change, nothing applied"
