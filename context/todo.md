@@ -30,16 +30,26 @@ Approach agreed: single cohesive bash implementation (NOT subagent fan-out - the
 - [x] VLAN_ROUTES routed mode (FR-37, done 2026-07-23, user-approved, landed pre-hardware by user choice): VLAN_ROUTES=false default, VLAN_ROUTE_METRIC_START=100, VLAN_ROUTE_METRIC_MODE=discovery|id. TDD'd (tests 1g, 17 asserts RED->GREEN); metric map persisted in the owned YAML; up-front uplink-metric conflict refusal in apply_change; dry-run previews map+conflict. 64/64 green. PRD v3.3 (FR-37/AC-14); L3-22/23 added to the hardware checklist. See decisions.md FR-37 entry. NOT yet committed.
 - [ ] Step 5 - NEXT ACTION. Run the hardware integration checklist (dynavlan-tests.md Layer 3, L3-1..L3-23) on the actual Protectli appliance on the live Meraki trunk, with console access (user has it). No VM. Install runbook (given to user 2026-07-23): (1) scp dynavlan, dynavlan.conf, 3 units, install.sh to the box; (2) `sudo ./install.sh` (installs deps/script/config/units, persistent journald, enables service+timer for NEXT boot, changes nothing on the network); (3) `sudo dynavlan --dry-run` and sanity-check the diff vs a manual tcpdump; (4) first `sudo dynavlan --boot` AT THE CONSOLE, watch `journalctl -t dynavlan -f`, then `--status` + `ip addr` to verify isolated leases; timer arms on reboot or `systemctl start dynavlan.timer`. Priority checklist rows beyond the happy path: L3-15/L3-20 (accept race + mid-revert guard), L3-16 (FAIL path rides netplan's own revert), L3-17 (dead-try), L3-18 (cross-NIC relocation), L3-21 (reverted-add ghost netdev probe).
 
-- [x] HARDWARE BUG 1 (found + fixed 2026-07-25, first real run): `sudo dynavlan --dry-run` refused on the box with `netplan >= 0.106 required (found unknown)`. `netplan_version` probed `netplan --version`, a flag that only exists on netplan >= 1.0; the fleet runs 0.10x (box: netplan.io 0.107.1-3ubuntu0.22.04.4), so the probe returned empty on EVERY target box and FR-0 refused unconditionally. Fixed: pure `parse_version` helper + source chain `netplan --version` then `dpkg-query -W netplan.io`, stdout only; "cannot determine version" now logged as a refusal distinct from "below the minimum". Tests 1h added RED->GREEN (74/74). See decisions.md 2026-07-25. NOT yet re-run on the box - Step 5 restarts at the `--dry-run` step.
+- [x] HARDWARE BUG 1 (found + fixed 2026-07-25, first real run): `sudo dynavlan --dry-run` refused on the box with `netplan >= 0.106 required (found unknown)`. `netplan_version` probed `netplan --version`, a flag that only exists on netplan >= 1.0; the fleet runs 0.10x (box: netplan.io 0.107.1-3ubuntu0.22.04.4), so the probe returned empty on EVERY target box and FR-0 refused unconditionally. Fixed: pure `parse_version` helper + source chain `netplan --version` then `dpkg-query -W netplan.io`, stdout only; "cannot determine version" now logged as a refusal distinct from "below the minimum". Tests 1h added RED->GREEN (74/74 at the time; 82/82 now). See decisions.md 2026-07-25. CONFIRMED on the box the same day (committed 92cddc5).
 
 ## Hardware session 2026-07-25 (first real runs on the box) - live state
 
 Box: `ssh -i ~/.ssh/domotz m18admin@192.168.101.39` (root via sudo). Ubuntu 22.04, kernel 5.15.0-177,
 netplan.io 0.107.1-3ubuntu0.22.04.4. NICs: enp1s0 (trunk, carrier up), enp2s0 (no carrier).
-Installed: /usr/local/sbin/dynavlan (has the netplan-probe fix), /etc/dynavlan.conf (exists, EVERY key
-commented = all defaults), units enabled. APPLIED as of 2026-07-25: /etc/netplan/90-dynavlan.yaml exists,
-owned = [18 21 22 100 101], steady state (--dry-run reports additions/removals both [none]).
-/etc/netplan holds 00-installer-config.yaml + 01-netcfg.yaml (both ethernets-only) + 90-dynavlan.yaml.
+Installed: /usr/local/sbin/dynavlan at commit 2803e89 (ALL FOUR code fixes: FR-0, FR-7a, FR-21a, FR-5a).
+/etc/dynavlan.conf: all keys commented = DEFAULTS, except RESTART_SNAPS if the user ran the sed one-liner
+(unverified at handoff - CHECK `grep ^RESTART_SNAPS /etc/dynavlan.conf` before assuming either way).
+APPLIED: /etc/netplan/90-dynavlan.yaml owns [18 21 22 100 101]. /etc/netplan also holds
+00-installer-config.yaml + 01-netcfg.yaml (both ethernets-only; no vlans anywhere but our file).
+Timer HEALTHY and chaining: 5-min interval, LAST 02:37:01 / NEXT 02:42:01 box time.
+Live: enp1s0.18 -> 192.168.18.6, .21 -> 192.168.21.39, .22 -> 192.168.22.39, .101 -> 192.168.101.39
+(the SSH path), .100 -> link-local ONLY (dead, pending removal). One default route: enp1s0 metric 10.
+
+**The single next action: `sudo dynavlan --boot`.** detected is now [1 18 21 22 101] while owned still
+has 100, so boot will remove it. That run exercises L3-7 (post-accept ip link delete), L3-13b (FR-7a on
+the wire) and L3-25 (FR-5a removal) at once, and - if RESTART_SNAPS got set - fires the first real
+agent restart. Preview with --dry-run first; expect `removals: [100]`. Takes ~4 min (two detection
+passes, each paying the full 30s carrier wait on the dead enp2s0 plus a 60s sniff).
 
 - [x] FR-0 netplan probe fix CONFIRMED WORKING ON HARDWARE (2026-07-25): --dry-run now gets past
       preconditions and completes. Committed 92cddc5.
@@ -91,7 +101,12 @@ owned = [18 21 22 100 101], steady state (--dry-run reports additions/removals b
       capture: 1 outbound VID-100 DHCP Request from our own MAC, 0 inbound. Every owned VLAN transmits
       tagged DHCP, so every owned VLAN self-detects and FR-23 removal is dead in general. Fix: `-Q in`
       plus a refuse-to-run probe (`tcpdump -Q in -d vlan`, non-mutating). Hardware row L3-25.
-- [ ] **DEPLOY the FR-5a fix, then `--boot` to finally clear the dead `enp1s0.100`.** Until then the box
+- [x] **FR-5a DEPLOYED AND CONFIRMED ON THE WIRE (2026-07-25 02:38 box time).** Timer rescan logged
+      `detected=[1 18 21 22 101]` - 100 is GONE from detection, while owned still lists it. That gap is
+      exactly what lets --boot remove it. Rescan correctly did nothing (add-only). Timer also proved the
+      FR-21a fix survives an upgrade: install.sh's stop/start re-armed it via OnActiveSec (NEXT was real
+      immediately after install), which is the case that used to leave a permanently dead timer.
+- [ ] (superseded) DEPLOY the FR-5a fix, then `--boot` to finally clear the dead `enp1s0.100`. Until then the box
       still owns it and a reboot will NOT clear it (the config recreates the interface, it transmits, the
       sniff sees itself, removal is suppressed). Confirm afterwards that `detected` drops 100. After install, `systemctl list-timers
       dynavlan.timer` MUST show a real NEXT (never n/a) - that is the only proof; active + Result=success
@@ -140,13 +155,49 @@ owned = [18 21 22 100 101], steady state (--dry-run reports additions/removals b
       the box end-to-end (fresh path is safe now, timer inactive; the UPGRADE path needs the timer running,
       i.e. a live rescan and a real network change - console only).
 
+### Session lessons (2026-07-25) - carry these forward
+
+Five defects found in one hardware session, ALL of them invisible to 82 unit asserts and four rounds of
+code review, because every one lived in the seam between the script and the platform rather than in the
+script's logic. Four of the five were SILENT: no error, no log line, the box reporting healthy.
+
+- FR-0: `netplan --version` does not exist below netplan 1.0 (loud, but misleading message).
+- FR-7a: `lldpctl` flags the native VLAN `pvid=yes`; ingesting it built an interface for a tag that is
+  untagged on the wire. Silent apart from a "no lease" warning.
+- FR-21a: an empty `On*Sec=` resets the ENTIRE systemd monotonic timer list, not the assigned option.
+  Timer active + Result=success + never fires. Completely silent; FR-21 had NEVER worked.
+- FR-5a: tcpdump captures egress, so an owned VLAN self-detects on its own DHCP and FR-23 removal can
+  never fire. Completely silent.
+- install.sh: could rewrite the script under a live run (bash reads by file offset).
+
+What to actually do with that:
+1. **Docs recording an observation is not the same as code acting on it.** FR-7 and SKELETON.md:32 both
+   already said "Meraki advertises only the pvid". Written twice, acted on never. Re-scan the docs for
+   other noted-but-unhandled facts.
+2. **Verify deploys against live platform state, never against "the command exited 0".** FR-21a was
+   found only because `systemctl list-timers` got read after an install that reported success.
+3. **A negative result from a window shorter than the phenomenon's period is not evidence of absence.**
+   A 15s capture appeared to refute the (correct) egress-self-detection theory; the sniff window is 60s,
+   so the probe had to be at least that long. Nearly recorded the wrong conclusion.
+4. **Do not assert a plausible mechanism before reading the evidence.** The VLAN-100 no-lease cause was
+   confidently explained as DHCP-server refusal for a duplicate MAC. Wrong; it was an untagged-on-wire
+   interface. The lldpctl output settled it in one command and should have been step one.
+5. Remaining untested platform seams, same risk class, worth a deliberate pass before release: the
+   journald drop-in (FR-31), dynavlan.service boot ordering vs networkd, and the `netplan try`
+   capability probe.
+
 ## State snapshot (2026-07-25, pre-context-clear)
-- Build COMPLETE through review round 4 + FR-37 routed mode. Script 1445 lines, 74/74 unit asserts green (1a-1h). PRD v3.3.
-- Repo PUBLIC at github.com/pereljon/dynavlan (MIT license), synced at 2771e7c. Working tree clean except this todo.md edit.
-- Session model: Fable 5 (claude-fable-5), switched 2026-07-23 for review rounds; saved as default.
+- Build COMPLETE through review round 4 + FR-37 routed mode + 5 hardware fixes. Script 1505 lines, 82/82 unit asserts green (1a-1j). PRD v3.3 + FR-5a/FR-7a/FR-21a.
+- Repo PUBLIC at github.com/pereljon/dynavlan (MIT license), pushed and synced at 2803e89 (five fix commits from the 2026-07-25 hardware session: 92cddc5 FR-0, 2f09c22 install.sh, 8a57857 FR-7a, c58859d FR-21a, 2803e89 FR-5a).
+- Session model: Opus 5 (claude-opus-5) as of 2026-07-25 (was Fable 5 for the review rounds).
 - PENDING user plan (2026-07-23): (1) user extracts the original Domotz deployment project from git history into a separate project - both files last at commit bed1d35 (`git show bed1d35:docs/deployment-guide.md` and `git show bed1d35:dev/IMPLEMENTATION-SPEC.md`); (2) THEN clean/rewrite git history so the repo starts fresh from the current tree (orphan-branch squash + force push; extraction MUST happen first - rewrite + GC destroys bed1d35). Do not rewrite history until the user confirms the extraction is done.
 - RESTART_SNAPS default is now EMPTY (behavior change 2026-07-23): existing deployments must set RESTART_SNAPS="domotzpro-agent-publicstore" explicitly in /etc/dynavlan.conf.
-- Nothing has ever been exercised on hardware. Layer 2 (--dry-run) and Layer 3 (L3-1..L3-23, now incl. routed-mode L3-22/23) are entirely outstanding; do NOT claim any feature works until exercised on the box.
+- HARDWARE STATUS (2026-07-25): Layer 2 (--dry-run) PASSES on the box. Confirmed working on real hardware:
+  detection, first apply via `netplan try ACCEPTED`, route isolation (one default, uplink metric 10),
+  DHCP leases on discovered VLANs incl. the never-configured VLAN 18, idempotent rescan (zero applies),
+  the rescan timer, and the install.sh upgrade path. Layer 3 rows still OUTSTANDING: L3-1, L3-2, L3-4..L3-25
+  except the pieces noted above - in particular NO removal path, NO revert/rollback case, and NO agent
+  restart has ever run. Do NOT claim those work until exercised on the box.
 - [x] dev/SKELETON.md rewritten for dynavlan (done 2026-07-23, user-requested full rewrite): run lifecycle, detection, reconcile policies, apply/rollback state machine + accept primitive, routed mode, key invariants. Base-deployment content it held lives in docs/deployment-guide.md + dev/IMPLEMENTATION-SPEC.md (nothing lost). CLAUDE.md Start-Here note updated ("not yet built" was stale too).
 - [x] Domotz-content sweep (done 2026-07-23, user directive: only the restart example stays): dev/IMPLEMENTATION-SPEC.md deleted; RESTART_SNAPS default now empty (Domotz snap = example, not default - deployments must set it); PRD/CLAUDE.md/SKELETON/index.md generalized. Validation-record references (Protectli/Meraki) kept deliberately. See decisions.md pivot entry.
 - [x] docs/deployment-guide.md rewritten (done 2026-07-23, user-requested): dynavlan-only deployment guide (install/configure/first-run/operation/removal); Domotz-on-Ubuntu runbook removed (survives in git history at bed1d35 + the internal runbook). Cross-refs fixed in CLAUDE.md, README, PRD §2, IMPLEMENTATION-SPEC, SKELETON. See decisions.md entry.
