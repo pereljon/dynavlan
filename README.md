@@ -2,7 +2,7 @@
 
 Self-configuring VLAN discovery for headless Linux appliances. dynavlan detects the active tagged VLANs on whatever trunk a box is plugged into, brings each one up with DHCP (address only, fully route/DNS-isolated), and restarts the services you nominate so any agent that enumerates interfaces at startup picks up the new subnets. No SSH, no hand-edited YAML.
 
-> **Status: pre-release (v0.1.0), initial testing.** Code-complete and reviewed; not yet exercised end-to-end on hardware. Do not run it on a box you cannot reach at the console. See [Safety](#safety) below.
+> **Status: pre-release (v0.1.0), initial testing.** Code-complete and reviewed, and the safety-critical paths - `netplan try` apply, health-check auto-revert, boot add/remove reconcile, routed mode, and IPv6 isolation - have now been exercised on real hardware (Protectli/igb on a Meraki, then a UniFi trunk). Still pre-release: run the first apply on a box you can reach at the console. See [Safety](#safety) below.
 
 ## The problem
 
@@ -18,6 +18,31 @@ dynavlan removes the human from that loop. It discovers the VLANs from the wire,
 4. **Restart** the services you configure, so the monitoring/discovery agent re-enumerates and starts watching the new VLANs.
 
 It runs at boot and on a timer (systemd), reconciling as VLANs appear and disappear on the trunk.
+
+## Isolated by default, and how to make VLANs routable
+
+By default every discovered VLAN comes up **address-only**: DHCP assigns an IP so the subnet is present and reachable on its own interface, but the VLAN installs **no default route, no DNS, no NTP, no search domains**, and IPv6 Router Advertisements are declined. This is deliberate, and it is the *opposite* of netplan's own `dhcp4: true` default (which accepts routes) - so if "enable a VLAN" makes you expect a fully routable interface, this is the surprising part, on purpose.
+
+The reason is what the tool is for: it provisions VLANs so a monitoring/discovery agent can *see* each subnet, not so the box *routes through* it. Accepting default routes from many VLANs at once does not make them "all routable" - only the lowest-metric default is ever used for outbound traffic, while the rest just clutter the routing table and every site's DNS/NTP pollute the resolver. Isolation keeps the box's uplink and resolver clean, and it is precisely what the auto-revert safety net depends on: a VLAN that installs no default route cannot hijack the uplink, so the health check can treat "the default route moved" as a failure.
+
+**To make the VLAN interfaces routable**, enable routed mode in `/etc/dynavlan.conf`:
+
+```sh
+VLAN_ROUTES=true                  # accept each VLAN's DHCP-provided default route
+VLAN_ROUTE_METRIC_START=100       # first metric assigned; MUST stay above the uplink's metric
+VLAN_ROUTE_METRIC_MODE=discovery  # discovery = order found, metrics stable across runs;
+                                  # id = metric is START + VLAN id (stateless, identical on every box)
+```
+
+then apply it to the VLANs already configured on the box:
+
+```sh
+sudo dynavlan --reapply
+```
+
+In routed mode each VLAN accepts its DHCP default route at a distinct per-VLAN metric, so the table stays deterministic and the lowest-metric route (normally the untagged uplink) still wins. dynavlan **refuses before touching disk** if any assigned metric would match or beat the uplink's, since that would guarantee a health-check revert loop - raise `VLAN_ROUTE_METRIC_START` above the uplink metric if that happens. DNS, NTP, domains, and IPv6 RA stay declined even in routed mode: routed mode changes routes only, never the resolver.
+
+One honest limit: routed mode makes the interfaces routable, but the box still has a single active default path at a time (the lowest metric). It does not independently test or use each VLAN's own gateway; per-VLAN reachability testing (probing every VLAN's gateway in turn) is a separate capability dynavlan does not provide.
 
 ## Service-restart integration
 
@@ -50,9 +75,13 @@ Installs the script to `/usr/local/sbin/dynavlan`, the config template to `/etc/
 ```
 dynavlan --boot         # reconcile at boot (add + remove VLANs to match the trunk)
 dynavlan --rescan       # add-only reconcile (what the timer runs)
+dynavlan --reapply      # regenerate + apply the current VLAN set with this build's config,
+                        #   only if it differs from what's on disk (use after an upgrade or a
+                        #   config change like VLAN_ROUTES; no-ops if nothing changed)
 dynavlan --dry-run      # show the diff without applying anything
 dynavlan --status       # current managed VLANs and their leases
 dynavlan --reconfigure  # rewrite the timer drop-in after changing RESCAN_MINUTES
+dynavlan --version      # print version + build id (works unprivileged; safe with a broken config)
 ```
 
 ## Safety

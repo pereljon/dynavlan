@@ -50,6 +50,34 @@ The keys most deployments touch:
 
 Set `RESTART_SNAPS`/`RESTART_SERVICES` to whatever agent should re-enumerate interfaces after a VLAN change (see README "Service-restart integration"). Leave `VLAN_ROUTES` off unless you specifically want the box routing via discovered VLANs; the default is full route/DNS isolation.
 
+### What "isolated by default" means
+
+By default each discovered VLAN comes up DHCP **address-only**: it gets an IP (so the subnet is present and reachable on its own interface) but installs **no default route, no DNS, no NTP, no search domains**, and declines IPv6 Router Advertisements. This is intentional and it overrides netplan's own `dhcp4: true` behaviour (which would accept routes). The box's single uplink stays the only default route, and its resolver stays clean. It is also what makes the auto-revert safe: because a dynavlan VLAN installs no default route, "the default route moved" is an unambiguous failure the health check can revert on.
+
+### Making the VLAN interfaces routable (opt-in)
+
+If this box should actually route via the discovered VLANs, enable routed mode:
+
+```
+VLAN_ROUTES=true                  # accept each VLAN's DHCP default route
+VLAN_ROUTE_METRIC_START=100       # first metric; MUST stay above the uplink's metric
+VLAN_ROUTE_METRIC_MODE=discovery  # discovery = order found, stable across runs; id = START + VLAN id
+```
+
+Then push the change to the VLANs already on the box:
+
+```
+sudo dynavlan --reapply
+```
+
+`--reapply` regenerates the owned VLAN set with the current settings and applies it through the same `netplan try` + health-check path, but only if the generated config actually differs from what is on disk (so it is a safe no-op if nothing changed). Preview first with `sudo dynavlan --dry-run`, which prints the assigned id:metric map and flags any conflict.
+
+Each VLAN then accepts its DHCP default route at a distinct metric (100, 101, 102, ... in discovery mode), so the table is deterministic and the lowest-metric route - normally the untagged uplink at its own metric - still wins. If any assigned metric would match or beat the uplink's, dynavlan **refuses before touching disk** and names the remedy (raise `VLAN_ROUTE_METRIC_START`); applying it would guarantee a revert loop. DNS/NTP/domains and IPv6 RA stay declined even here - routed mode changes routes only.
+
+To go back to isolation: set `VLAN_ROUTES=false` and `sudo dynavlan --reapply` again.
+
+Caveat: routed mode makes the interfaces routable, but the box still has one active default path at a time (lowest metric). It does not test or use each VLAN's gateway independently; that (per-VLAN reachability testing) is not something dynavlan does today.
+
 ## 4. First run (attended, at the console)
 
 0. **Confirm what you just installed** - after every deploy, before drawing any conclusion from behavior:

@@ -32,24 +32,38 @@ Approach agreed: single cohesive bash implementation (NOT subagent fan-out - the
 
 - [x] HARDWARE BUG 1 (found + fixed 2026-07-25, first real run): `sudo dynavlan --dry-run` refused on the box with `netplan >= 0.106 required (found unknown)`. `netplan_version` probed `netplan --version`, a flag that only exists on netplan >= 1.0; the fleet runs 0.10x (box: netplan.io 0.107.1-3ubuntu0.22.04.4), so the probe returned empty on EVERY target box and FR-0 refused unconditionally. Fixed: pure `parse_version` helper + source chain `netplan --version` then `dpkg-query -W netplan.io`, stdout only; "cannot determine version" now logged as a refusal distinct from "below the minimum". Tests 1h added RED->GREEN (74/74 at the time; 82/82 now). See decisions.md 2026-07-25. CONFIRMED on the box the same day (committed 92cddc5).
 
-## Hardware session 2026-07-25 (first real runs on the box) - live state
+## Hardware session (first real runs on the box) - live state (updated 2026-07-27)
 
-Box: `ssh -i ~/.ssh/domotz m18admin@192.168.101.39` (root via passwordless sudo). Ubuntu 22.04,
+Box: `ssh -i ~/.ssh/domotz m18admin@192.168.101.39` (root via passwordless sudo). Ubuntu 22.04.5,
 netplan.io 0.107.1. NICs: enp1s0 (trunk, carrier up), enp2s0 (no carrier - costs 30s per detection pass).
-INSTALLED: /usr/local/sbin/dynavlan build **e225a1c** (clean, not -dirty). Confirm with `dynavlan --version`
-before concluding ANYTHING from behavior.
-/etc/dynavlan.conf: defaults except RESTART_SNAPS="domotzpro-agent-publicstore" (verified set).
-OWNED = [1 18 21 22 101], all leased: .1 -> 192.168.255.39, .18 -> 192.168.18.6, .21 -> 192.168.21.39,
-.22 -> 192.168.22.39, .101 -> 192.168.101.39 (the SSH path). One default route: enp1s0 metric 10.
+INSTALLED: /usr/local/sbin/dynavlan build **e225a1c** (clean). Confirm with `dynavlan --version`
+before concluding ANYTHING from behavior. NOTE: local repo is one commit ahead (7e52fd5, a defensive
+guard + comments, no generated-config change) - the box does not need it; a reapply after deploying it
+would be a no-op.
+/etc/dynavlan.conf: defaults except RESTART_SNAPS="domotzpro-agent-publicstore"; VLAN_ROUTES=false.
 Domotz agent unit is `snap.domotzpro-agent-publicstore.domotzpro-agent-deamon.service` (NOTE the
 misspelling "deamon" - it is in the snap, not a typo here); active running.
 
-ALL FIXES ARE NOW LIVE AND VERIFIED ON THE WIRE. The IPv6 hole is CLOSED:
-  accept-ra in live config 5/5; `IPv6AcceptRA=no` x5 in /run/systemd/network/; `ip -6 route show
-  default` EMPTY; 0 global SLAAC on every owned VLAN; fe80 present 5/5; all IPv4 leases intact.
+SWITCH MOVED 2026-07-27: box is now on a UniFi switch (L2) next to the operator's computer for serial
+access; Meraki still does DHCP + routing. New topology: native VLAN is 101 (uplink 192.168.101.39 is
+UNTAGGED on enp1s0 now, not tagged .101). OWNED = [1 18 20 21 22 100 200] (VLAN 101 dropped as the new
+native; VLANs 20/200 and now-tagged 100 adopted). All 7 leased. IPv6 hole CLOSED (accept-ra 7/7,
+IPv6AcceptRA=no, 0 v6 default routes, 0 SLAAC). Isolated mode, 1 default route (enp1s0 metric 10).
 
-**Next action: nothing is blocking. Remaining before release: the revert/rollback path (L3-6/L3-20)
-has still NEVER fired on hardware - no apply has ever failed - and a --boot has not run since FR-39.**
+SERIAL CONSOLE set up 2026-07-27: GRUB_TERMINAL="console serial", GRUB_SERIAL_COMMAND @115200,
+GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200n8" (both HDMI and serial work; serial is primary).
+serial-getty@ttyS0 active. An iTerm `screen` to the USB-serial lives in a tmux session "Serial Console"
+ON THE MAC - reachable from here via `tmux send-keys -t "Serial Console"` + `tmux capture-pane`, which
+is how the revert drill was driven (SSH used only for read-only polling).
+
+**Release status: the last blocker is CLEARED.** The FR-18 revert/rollback path was exercised end to end
+on hardware 2026-07-27 (serial-driven) and passed the full contract (health FAIL -> netplan try revert ->
+uplink preserved, no deletes, no restarts, rc=1, restore_prior converged disk). Routed mode (FR-37) also
+validated on the box in the same session. See decisions.md 2026-07-27 and tests L3-6/L3-20/L3-22.
+- [x] Revert/rollback drill on hardware (L3-6/L3-20) - DONE 2026-07-27, serial-driven, full contract passed.
+- [x] Routed mode happy path on hardware (L3-22) - DONE 2026-07-27 (metrics 100-106, uplink stays primary).
+- [ ] Release v0.1.0 when ready (operator-authorized only): tag, push tag, gh release on pereljon/dynavlan.
+      Retitle CHANGELOG "## Unreleased" -> "## [0.1.0] - <date>". Everything material is now hardware-verified.
 
 - [x] FR-0 netplan probe fix CONFIRMED WORKING ON HARDWARE (2026-07-25): --dry-run now gets past
       preconditions and completes. Committed 92cddc5.
@@ -204,6 +218,13 @@ What to actually do with that:
 - [x] dev/CODEMAP.md rewritten for dynavlan (done 2026-07-23, user-requested): per-function one-liners grouped by script section (pure helpers w/ test refs, seam, health, backups, gates, modes) + non-script artifacts table. CLAUDE.md Development-Workflow "not yet implemented" staleness fixed in the same pass. Both dev/ docs now current.
 
 ## Open items (off critical path - see context/open_questions.md)
+- [ ] Strip the bogus `Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>` trailer from this
+      session's commits (2803e89..7e52fd5, the 2026-07-25/27 run). Wrong on two counts: the model was
+      Opus, not Fable, and the trailer should not name a model at all (correct form is plain
+      `Co-Authored-By: Claude <noreply@anthropic.com>`). Commit CONTENT is accurate; only the attribution
+      line is wrong. Fix is a history rewrite + force-push of main, so ORDER MATTERS: do the Domotz-docs
+      extraction from git history FIRST (git show bed1d35:... per the note below), THEN rewrite. Sequence:
+      `git rebase` or `git filter-branch` over 2803e89..HEAD editing the trailer, then force-push.
 - [ ] Automatic config-drift detection - DEFERRED 2026-07-25 until a second box exists.
       SCOPE RULE SET BY THE OPERATOR: dynavlan is installed on ONE box (the test appliance at
       192.168.101.39, locally accessible). Fleet is THEORETICAL until the operator says otherwise.
