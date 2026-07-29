@@ -4,6 +4,37 @@ Owns: open tasks and their status. Does NOT hold permanent facts or decisions (t
 Maintain: update whenever a task is added, changes state, or completes.
 Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 
+## ==> CURRENT WORK (2026-07-28): all-trunks provisioner redesign <==
+
+**STATUS: design APPROVED by operator. NEXT ACTION: invoke the `writing-plans` skill against the
+approved spec to produce the implementation plan, then implement with TDD.**
+
+Design spec (authoritative, read it first): `docs/superpowers/specs/2026-07-28-all-trunks-provisioner-design.md`
+(rev 2 + hardware findings; committed aa816af). It was architect-reviewed (verdict: sound to plan after
+folding 5 gate items, all folded) and the core feasibility was hardware-validated before any code.
+
+What it does: repositions dynavlan from single-trunk monitoring provisioner to a GENERAL provisioner
+that configures detected VLANs on EVERY carrier-up trunk (not one selected). Locked decisions live in
+spec section 2; the load-bearing one is section 3 (**`iface.id` is the universal token for every VLAN
+set** - bare ids alias across parents once two trunks share a VLAN id). Removes select_trunk/hysteresis
+and the relocation branch; drops `id` metric mode; unified single netplan-try apply over the whole box.
+
+Brainstorm decisions (all in the spec): all trunks; overlapping ids -> both interfaces; trunk goes
+dark -> preserve (remove only carrier-up + non-empty-detection + absent-both-passes); isolated +
+discovery-routed together, id mode dropped; metrics keyed iface.id discovery-order; unified apply;
+stale interfaces on a vacated trunk accepted+documented; health check UNCHANGED (multi-uplink is normal,
+watching lowest uplink suffices for never-strand).
+
+REQUIRED deliverable of the implementation (do not forget): reframe README + PRD + deployment-guide to
+the general-provisioner positioning (they still say single-trunk/monitoring, correctly, because the code
+still is). The docs reframe lands WITH the code, never before (don't document unbuilt behavior). Also
+resolve the deferred positioning question in open_questions.md (monitoring-origin vs general) as part of it.
+
+Pre-implementation validations already banked (2026-07-28, see spec section 10): netplan 0.107 accepts
+multi-parent + overlapping VLAN id (distinct netdevs); per-trunk detection reads each trunk's tagged set;
+per-trunk native excluded for free (untagged native is never sniffed). Remaining hardware tests are
+post-implementation (dual leasing, carrier-pull-preserve, routed multi-trunk, unified revert w/ 2 trunks).
+
 ## Planning phase - COMPLETE (2026-07-14)
 
 - [x] dynavlan design planned, locked, hardware-validated on a real Protectli/igb lab box - see context/decisions.md, context/open_questions.md
@@ -35,20 +66,25 @@ Approach agreed: single cohesive bash implementation (NOT subagent fan-out - the
 ## Hardware session (first real runs on the box) - live state (updated 2026-07-27)
 
 Box: `ssh -i ~/.ssh/domotz m18admin@192.168.101.39` (root via passwordless sudo). Ubuntu 22.04.5,
-netplan.io 0.107.1. NICs: enp1s0 (trunk, carrier up), enp2s0 (no carrier - costs 30s per detection pass).
-INSTALLED: /usr/local/sbin/dynavlan build **e225a1c** (clean). Confirm with `dynavlan --version`
-before concluding ANYTHING from behavior. NOTE: local repo is one commit ahead (7e52fd5, a defensive
-guard + comments, no generated-config change) - the box does not need it; a reapply after deploying it
-would be a no-op.
+netplan.io 0.107.1.
+INSTALLED: /usr/local/sbin/dynavlan build **e225a1c** (single-trunk, the current released-line code).
+Confirm with `dynavlan --version` before concluding ANYTHING from behavior. Local repo is ahead of the
+box (7e52fd5 defensive guard + the all-trunks DESIGN commits, none of which change the installed
+single-trunk behavior). The all-trunks code does NOT exist yet - it is designed, not built.
 /etc/dynavlan.conf: defaults except RESTART_SNAPS="domotzpro-agent-publicstore"; VLAN_ROUTES=false.
-Domotz agent unit is `snap.domotzpro-agent-publicstore.domotzpro-agent-deamon.service` (NOTE the
-misspelling "deamon" - it is in the snap, not a typo here); active running.
+Domotz agent unit `snap.domotzpro-agent-publicstore.domotzpro-agent-deamon.service` ("deamon" misspelled
+in the snap, not here); active running.
 
-SWITCH MOVED 2026-07-27: box is now on a UniFi switch (L2) next to the operator's computer for serial
-access; Meraki still does DHCP + routing. New topology: native VLAN is 101 (uplink 192.168.101.39 is
-UNTAGGED on enp1s0 now, not tagged .101). OWNED = [1 18 20 21 22 100 200] (VLAN 101 dropped as the new
-native; VLANs 20/200 and now-tagged 100 adopted). All 7 leased. IPv6 hole CLOSED (accept-ra 7/7,
-IPv6AcceptRA=no, 0 v6 default routes, 0 SLAAC). Isolated mode, 1 default route (enp1s0 metric 10).
+**TWO TRUNKS ACTIVE as of 2026-07-28** (operator plugged a second trunk into enp2s0 for multi-trunk
+testing). Both carrier-up, each with a DIFFERENT native VLAN - this is the concrete L3 fixture in the
+spec (section 10):
+  enp1s0  tagged: 1 18 20 21 22 100 200   native/untagged 101 -> 192.168.101.39  default metric 10
+  enp2s0  tagged: 1 18 20 21 22 101 200   native/untagged 100 -> 192.168.100.118 default metric 20
+So VLAN 100 is tagged on enp1s0 but native on enp2s0, and 101 the reverse. TWO default routes now (the
+"multi-uplink is normal" finding). LLDP empty on the UniFi -> detection is sniff-only here.
+The installed SINGLE-trunk build owns [1 18 20 21 22 100 200] on enp1s0 only (it picks one trunk; enp1s0
+wins the tie). It is stable: the rescan timer is add-only + pinned to enp1s0, so it will not touch enp2s0.
+Do NOT run --boot on the single-trunk build now expecting multi-trunk behavior - it only does enp1s0.
 
 SERIAL CONSOLE set up 2026-07-27: GRUB_TERMINAL="console serial", GRUB_SERIAL_COMMAND @115200,
 GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200n8" (both HDMI and serial work; serial is primary).
