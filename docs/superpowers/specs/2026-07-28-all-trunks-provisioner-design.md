@@ -25,7 +25,7 @@ Isolation stays the default (address-only, route/DNS/NTP/RA declined); routed mo
 6. **Routed metrics: discovery-order, keyed by full interface name** (`enp1s0.100`), never renumbered.
 7. **Unified single apply.** All trunks' VLANs live in the one owned netplan file, applied in ONE `netplan try` with ONE health check and ONE revert - the existing atomic-apply model, box-wide.
 8. **Stale interfaces on a vacated trunk: accept + document** (operator decision). When a cable moves off a trunk, that port goes carrier-down and its VLANs are PRESERVED (decision 4); the dead sub-interfaces linger (no lease, no route - harmless) until the port regains carrier with tags that exclude them, or indefinitely. No cleanup path, no remove-on-carrier-loss heuristic.
-9. **Health-check posture for multi-uplink: document + accept** (operator decision). The check still watches the single lowest-metric default route. dynavlan never creates a competing lower default (isolated installs none; routed guards every VLAN metric above the uplink), so the base-config uplink stays the lowest default by construction. A base config with multiple co-equal uplinks is an untested, documented edge - not engineered for now. No health-check change.
+9. **Health-check posture for multi-uplink: document + accept** (operator decision). The check still watches the single lowest-metric default route, and this is correct for the never-strand guarantee: losing a *secondary* uplink does not strand the box, so watching only the lowest-metric (primary) uplink is sufficient. **Multi-uplink is the NORMAL case for a multi-trunk box, not a rare edge** - each trunk's native VLAN is an untagged uplink that leases its own default route (hardware-observed 2026-07-28: two trunks -> `enp1s0` default metric 10 + `enp2s0` default metric 20). dynavlan never creates a competing lower default (isolated installs none; routed guards every VLAN metric above the uplink), and adding isolated VLAN children does not disturb a parent's default (hardware-validated). The only genuinely untested edge is **co-equal-metric** uplinks (two defaults at the same metric, where iteration-order could flip which is "lowest"); distinct metrics (the normal DHCP case) have no such issue. No health-check change.
 
 ## 3. THE CANONICAL KEY (load-bearing - read first)
 
@@ -76,9 +76,18 @@ This is **safer** (no strand) but **not equivalent** to AC-3, which explicitly r
 
 ## 7. Health check (H2) - unchanged, with a stated assumption
 
-No change to `health_check_eval` / `snapshot_default_route`. Rationale: uplinks are base-config; dynavlan never creates a competing lower default (isolated installs none; routed's metric-conflict guard keeps every VLAN metric above the uplink), so the lowest-metric default remains the base uplink across a dynavlan apply. Hardware-validated: adding isolated VLANs left the uplink default stable.
+No change to `health_check_eval` / `snapshot_default_route`. It watches the single lowest-metric default route; that is sufficient for never-strand, because losing a *secondary* uplink does not strand the box - only the lowest-metric (primary) uplink must survive.
 
-**Stated assumption (documented limitation):** the health check assumes a single lowest-metric base uplink. A base config with multiple co-equal-metric uplinks could, in principle, tie-break-flip which one is "lowest" and trip a spurious (safe) revert. This is an untested edge, not engineered for; single-uplink boxes (the common case) are unaffected.
+**Multi-uplink is normal here, not a rare edge.** A multi-trunk box where trunks have native VLANs gets one untagged uplink (and one DHCP default route) per trunk. Hardware-observed 2026-07-28 with two active trunks:
+
+```
+default via 192.168.101.1 dev enp1s0 metric 10   # enp1s0 native = VLAN 101
+default via 192.168.100.1 dev enp2s0 metric 20   # enp2s0 native = VLAN 100
+```
+
+The check watches the lowest (enp1s0, metric 10). This stays correct because: uplinks are base-config (dynavlan never defines them); dynavlan never creates a competing lower default (isolated installs none; routed's metric-conflict guard keeps every VLAN metric above the uplink); and adding isolated VLAN children does not disturb a parent's default (hardware-validated). Distinct DHCP metrics (10 vs 20 here) mean no tie-break ambiguity.
+
+**Stated assumption (documented limitation):** the only untested edge is **co-equal-metric** uplinks - two defaults at the *same* metric, where `ip route show` iteration order could flip which is "lowest" and trip a spurious (safe) revert. Not observed on real hardware (DHCP hands out distinct metrics); not engineered for now.
 
 ## 8. Data flow (boot)
 
@@ -120,6 +129,18 @@ apply_change(target, additions, removals)   # ONE netplan try, ONE health check
 - **Dry-run:** two-trunk fixture; per-trunk additions/removals; multi-parent target; routed `iface.id:metric` map; `--status` reporting all trunks.
 - **Hardware (box has enp1s0 + enp2s0):** plug a second trunk into enp2s0; VLANs up on both; overlapping-id case; pull one trunk cable -> other trunk untouched, pulled trunk's VLANs preserved (dead netdevs linger, not removed); routed multi-trunk metrics; unified revert still works. **Migration fixture:** an existing single-parent owned file (from the current single-trunk build) upgraded in place - confirm it reads back correctly (single-parent is the degenerate multi-parent case), including routed-mode metric read-back keyed by the new `iface.id`.
 
+  **Concrete L3 fixture (validated live 2026-07-28, both trunks active):**
+  ```
+  enp1s0 tagged: 1 18 20 21 22 100 200   native/untagged: 101 (192.168.101.x uplink, default metric 10)
+  enp2s0 tagged: 1 18 20 21 22 101 200   native/untagged: 100 (192.168.100.x uplink, default metric 20)
+  ```
+  Expected all-trunks result: both trunks get `{1,18,20,21,22,200}`, plus `enp1s0.100` and `enp2s0.101`. VLAN 100 is configured on enp1s0 (tagged) but NOT enp2s0 (native there); 101 is the reverse. 14 interfaces total. This is the overlapping-id + per-trunk-native case in one fixture.
+
+  **Pre-implementation validations already done (2026-07-28, before any code):**
+  - netplan 0.107 `generate --root-dir` ACCEPTS multi-parent + overlapping VLAN id: `enp1s0.100` and `enp2s0.100` emit distinct netdevs (`Name=<iface>.100 Id=100`). The core feasibility assumption holds.
+  - Per-trunk detection reads each trunk's distinct tagged set on the wire (concurrent inbound sniff).
+  - Per-trunk native handled for free: each trunk's native VLAN is untagged, so the sniff never sees it and the design never configures it on that trunk - no LLDP needed (LLDP is empty on the UniFi). Validated by the cross case: 100 tagged-on-enp1s0 / native-on-enp2s0.
+
 ## 11. Version / compatibility
 
 Changes core behavior (single -> multi trunk) and removes a config key. 0.1.0 is unreleased. Recommend **0.2.0** for a clean behavioral boundary. Existing single-trunk owned files remain readable (single-parent = degenerate multi-parent), so boxes upgrade without a wipe.
@@ -130,7 +151,7 @@ Changes core behavior (single -> multi trunk) and removes a config key. 0.1.0 is
 - **B2 (which pass's carrier set is authoritative):** ACCEPTED -> section 4 (two-pass carrier authority + flap semantics).
 - **B3 (zero-detection contradicts decision-4 wording):** ACCEPTED -> decision 4 corrected (non-empty detection required; zero-tags preserves).
 - **H1 (relocation removal not equivalent; stale interfaces):** ACCEPTED as accept+document -> decision 8, section 6.
-- **H2 (multi-uplink health-check weakness):** ACCEPTED as document+accept, reframed -> decision 9, section 7. NO health-check change: dynavlan never creates a competing lower default, so the concern is a base-config edge, not something dynavlan causes.
+- **H2 (multi-uplink health-check weakness):** ACCEPTED as document+accept, reframed -> decision 9, section 7. NO health-check change: dynavlan never creates a competing lower default, and watching the lowest (primary) uplink is sufficient for never-strand. CORRECTED 2026-07-28 with live two-trunk data: multi-uplink is the NORMAL case (two natives -> two defaults, metrics 10/20), not a rare edge; the actual untested edge is narrower - co-equal-metric uplinks only.
 - **M1 (parse stanza header):** ACCEPTED -> section 5.
 - **M2 (fill determinism, one-trunk-blocks-all):** ACCEPTED -> section 9.
 - **M3 (additions on since-darkened trunk):** ACCEPTED -> sections 4, 9.
