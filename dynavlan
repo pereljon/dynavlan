@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.2.0"
+ver="0.2.1"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -777,10 +777,16 @@ backend_owned_metrics() { # "iface.id:metric" map persisted in OUR file (FR-37 s
 backend_list_managed_vlans() { # IFACE - bare VLAN ids managed elsewhere on THIS iface
 	local iface="$1" all owned_ids
 	all=$({
+		# netplan get emits id: before link: (verified on netplan 0.107); collect
+		# both per stanza and emit at the next header or EOF.
 		netplan get network.vlans 2>/dev/null | awk -v iface="$iface" '
-			/^[[:space:]]+[a-zA-Z0-9_.-]+:/ { cur = 1; found = 0 }
-			/^[[:space:]]+link:/ { if ($2 == iface) found = 1 }
-			/^[[:space:]]+id:/ && found { print $2; found = 0 }
+			/^[a-zA-Z0-9_.-]+\.[0-9]+:/ {
+				if (vid != "" && lnk == iface) print vid
+				vid = ""; lnk = ""
+			}
+			/^[[:space:]]+id:/ { vid = $2 }
+			/^[[:space:]]+link:/ { gsub(/"/, "", $2); lnk = $2 }
+			END { if (vid != "" && lnk == iface) print vid }
 		'
 		ip -d link show type vlan 2>/dev/null | awk -v p="@${iface}:" '
 			$0 ~ p { getit = 1; next }
@@ -806,6 +812,8 @@ backend_generate_config() { # TARGET_TOKENS - write our file atomically (FR-13/1
 				printf '      id: %s\n' "$id"
 				printf '      link: %s\n' "$iface"
 				printf '      dhcp4: true\n'
+				# RA would hand the VLAN a SLAAC address + default route that bypasses
+				# every DHCPv4 decline and is invisible to the FR-18 IPv4 health check.
 				printf '      accept-ra: false\n'
 				printf '      dhcp4-overrides:\n'
 				if [ "$VLAN_ROUTES" = true ]; then
@@ -1147,6 +1155,8 @@ apply_change() { # TARGET_TOKENS ADDITION_TOKENS REMOVAL_TOKENS [LEASE_TOKENS]
 	if backend_apply_with_revert "$snap_iface" "$probe"; then
 		log notice "netplan try ACCEPTED"
 		prune_backups
+		# ip link delete only AFTER accept; on revert the stale links are harmless
+		# but deleting them would lose monitoring on VLANs the revert just restored.
 		for tok in $removals; do backend_remove_vlan "$tok"; done
 		wait_leases "$lease_set"
 		restart_targets

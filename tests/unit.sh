@@ -588,6 +588,45 @@ call backend_owned_vlans;   ok "1o no file -> empty owned" ""
 call backend_owned_metrics; ok "1o no file -> empty metrics" ""
 NETPLAN_FILE="$_saved_npf"
 
+# backend_list_managed_vlans netplan-get awk parse: id: appears BEFORE link:
+# in real netplan 0.107 output (verified on hardware 2026-07-30). The awk must
+# handle either order; this fixture uses the real id-before-link order.
+read -r -d '' _np_get_fixture <<'YAML' || true
+enp1s0.1:
+  dhcp4: true
+  dhcp4-overrides:
+    use-dns: false
+  accept-ra: false
+  id: 1
+  link: "enp1s0"
+enp1s0.100:
+  dhcp4: true
+  accept-ra: false
+  id: 100
+  link: "enp1s0"
+enp2s0.18:
+  dhcp4: true
+  accept-ra: false
+  id: 18
+  link: "enp2s0"
+YAML
+
+_np_get_awk() {
+    local iface="$1"
+    printf '%s' "$_np_get_fixture" | awk -v iface="$iface" '
+        /^[a-zA-Z0-9_.-]+\.[0-9]+:/ {
+            if (vid != "" && lnk == iface) print vid
+            vid = ""; lnk = ""
+        }
+        /^[[:space:]]+id:/ { vid = $2 }
+        /^[[:space:]]+link:/ { gsub(/"/, "", $2); lnk = $2 }
+        END { if (vid != "" && lnk == iface) print vid }
+    ' | sort -n -u | tr '\n' ' ' | sed 's/ $//'
+}
+call _np_get_awk "enp1s0"; ok "1o netplan-get parse: id-before-link order (enp1s0)" "1 100"
+call _np_get_awk "enp2s0"; ok "1o netplan-get parse: id-before-link order (enp2s0)" "18"
+call _np_get_awk "eth99";  ok "1o netplan-get parse: no match -> empty" ""
+
 # ---------------------------------------------------------------------------
 # 1p. Multi-trunk pipeline integration (spec section 8 data flow)
 #
