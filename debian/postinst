@@ -1,0 +1,43 @@
+#!/bin/bash
+set -e
+
+case "$1" in
+configure)
+    # Persistent journald (FR-31)
+    mkdir -p /etc/systemd/journald.conf.d
+    cat >/etc/systemd/journald.conf.d/00-dynavlan-persistent.conf <<'JEOF'
+# Installed by dynavlan (FR-31): guarantee the journal survives reboot.
+[Journal]
+Storage=persistent
+JEOF
+    mkdir -p /var/log/journal
+    systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
+    systemctl restart systemd-journald 2>/dev/null || true
+
+    # Migration from install.sh: it placed units in /etc/systemd/system/ which
+    # shadows the package copies in /lib/systemd/system/. Remove the old ones.
+    for unit in dynavlan.service dynavlan-rescan.service dynavlan.timer; do
+        if [ -f "/etc/systemd/system/$unit" ] && [ -f "/lib/systemd/system/$unit" ]; then
+            rm -f "/etc/systemd/system/$unit"
+        fi
+    done
+
+    # Reload units and render timer interval
+    systemctl daemon-reload
+    /usr/local/sbin/dynavlan --reconfigure 2>/dev/null || true
+
+    # Enable for next boot (never --now: install must not trigger a network change)
+    systemctl enable dynavlan.service 2>/dev/null || true
+    systemctl enable dynavlan.timer 2>/dev/null || true
+
+    # On upgrade, restart the timer if it was running
+    if [ -n "$2" ]; then
+        if systemctl is-enabled --quiet dynavlan.timer 2>/dev/null; then
+            systemctl start dynavlan.timer 2>/dev/null || true
+        fi
+    fi
+    ;;
+esac
+
+#DEBHELPER#
+exit 0

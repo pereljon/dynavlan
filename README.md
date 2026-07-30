@@ -76,6 +76,13 @@ Or a specific version:
 curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v0.2.1
 ```
 
+From a `.deb` (attached to each [GitHub release](https://github.com/pereljon/dynavlan/releases)):
+
+```sh
+sudo dpkg -i dynavlan_0.2.1_all.deb
+sudo apt-get install -f   # if dependencies are missing
+```
+
 From a local clone:
 
 ```sh

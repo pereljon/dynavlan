@@ -1,0 +1,24 @@
+#!/bin/bash
+set -e
+
+LOCK_FILE="/run/dynavlan.lock"
+LOCK_WAIT=300
+
+case "$1" in
+remove|upgrade)
+    # Stop the timer so no new runs start during the swap
+    systemctl stop dynavlan.timer 2>/dev/null || true
+
+    # Wait for any in-flight run to finish (FR-30 lock)
+    if [ -e "$LOCK_FILE" ]; then
+        exec 9>"$LOCK_FILE"
+        if ! flock -w "$LOCK_WAIT" 9; then
+            echo "WARNING: dynavlan run still holds lock after ${LOCK_WAIT}s; proceeding anyway" >&2
+        fi
+        exec 9>&-
+    fi
+    ;;
+esac
+
+#DEBHELPER#
+exit 0

@@ -1,0 +1,17 @@
+#!/bin/bash
+set -e
+
+case "$1" in
+purge)
+    rm -f /etc/dynavlan.conf
+    rm -f /etc/systemd/journald.conf.d/00-dynavlan-persistent.conf
+    rmdir /etc/systemd/journald.conf.d 2>/dev/null || true
+    systemctl daemon-reload 2>/dev/null || true
+    ;;
+remove)
+    systemctl daemon-reload 2>/dev/null || true
+    ;;
+esac
+
+#DEBHELPER#
+exit 0
