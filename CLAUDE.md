@@ -86,6 +86,10 @@ Each step requires explicit user approval. Approval for one step does not imply 
 
 After completing work, ask which steps the user wants: "Want to commit, push, or release?"
 
+## Session Hygiene
+
+Before starting a new task, close out the current one: update `context/` files (todo, decisions, open questions), commit, and compact or clear the session to start fresh. Stale context from a long session compounds errors.
+
 ## Testing Plan
 
 Before coding a new feature or change, review with the user: happy path, edge cases, flag/config conflicts, interface updates. Get confirmation before writing code.
