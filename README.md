@@ -64,6 +64,8 @@ No dependency on NIC names, native VLAN, switch vendor, or the contents/filename
 
 ## Install
 
+Before your first `dynavlan --boot`, read [Safety](#safety): a bad apply can strand a headless box, so run the first attended with an out-of-band console.
+
 One-line install (latest release):
 
 ```sh
