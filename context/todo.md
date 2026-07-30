@@ -6,10 +6,8 @@ Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 
 ## ==> CURRENT WORK (2026-07-29): all-trunks provisioner redesign <==
 
-**STATUS: IMPLEMENTED (code + docs), NOT yet hardware-validated. Script at v0.2.0. NEXT ACTION: run the
-post-implementation hardware checklist (dynavlan-tests.md L3-29..L3-32: dual leasing, carrier-pull-preserve,
-routed multi-trunk, unified revert w/ 2 trunks) on the box, which already has two live trunks wired up for
-exactly this.**
+**STATUS: COMPLETE. Code + docs + hardware-validated. Script at v0.2.1 (0.2.0 redesign + 0.2.1 review fix).
+All four hardware tests passed 2026-07-30 on the Protectli box with two live trunks (enp1s0/enp2s0).**
 
 - [x] Code: `select_trunk` removed, `owned_parent` removed, `TRUNK_IFACE`/`DETECTED_VLANS`/`OLD_TRUNK`
       replaced by `DETECTED_TRUNKS`, `VLAN_ROUTE_METRIC_MODE` config key removed (discovery-only), new
@@ -20,8 +18,12 @@ exactly this.**
       dev/features/dynavlan.md, dev/features/dynavlan-tests.md (new sections 1n/1o/1p, 1e retired,
       new hardware rows L3-29..L3-32), CHANGELOG.md 0.2.0 entry, README.md, docs/dynavlan-PRD.md,
       docs/deployment-guide.md. Positioning question below resolved in the same pass.
-- [ ] Hardware validation of the multi-trunk apply/revert/routed paths - NOT yet run. The box already has
-      two live trunks (enp1s0/enp2s0) wired up as the concrete L3 fixture (see live state below).
+- [x] Hardware validation (done 2026-07-30): L3-29 dual leasing PASS (both trunks provisioned, all VLANs
+      leased), L3-30 carrier-pull preserve PASS (dark trunk VLANs preserved, "skipping removals"), L3-31
+      routed multi-trunk PASS (metrics 100-113 across both trunks, uplink metric 10 preserved), L3-32
+      unified revert PASS (forced health-check failure, netplan try reverted both trunks, 15 VLANs restored).
+- [x] Code review fix (done 2026-07-30): backend_list_managed_vlans awk assumed link: before id: but
+      netplan 0.107 emits id: first. Fixed + 3 tests added. Version bumped to 0.2.1.
 
 Design spec (authoritative, read it first): `docs/superpowers/specs/2026-07-28-all-trunks-provisioner-design.md`
 (rev 2 + hardware findings; committed aa816af). It was architect-reviewed (verdict: sound to plan after

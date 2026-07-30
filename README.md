@@ -2,7 +2,7 @@
 
 A self-configuring VLAN provisioner for headless Linux appliances: designed for monitoring/discovery platforms (which is why isolation is its default), but a general dynamic-VLAN tool at its core. dynavlan detects the active tagged VLANs on every trunk a box is plugged into, brings each one up with DHCP (address only, fully route/DNS-isolated by default), and restarts the services you nominate so any agent that enumerates interfaces at startup picks up the new subnets. No SSH, no hand-edited YAML.
 
-> **Status: pre-release (v0.2.0), initial testing.** The all-trunks provisioner redesign (every carrier-up trunk with detected VLANs gets provisioned, not one selected trunk) is code-complete and doc-complete but not yet hardware-validated on its multi-trunk paths. The prior single-trunk model (v0.1.0) was fully hardware-validated - `netplan try` apply, health-check auto-revert, boot add/remove reconcile, routed mode, IPv6 isolation - on real hardware (Protectli/igb on a Meraki, then a UniFi trunk), but that code is superseded by this redesign. Still pre-release: run the first apply on a box you can reach at the console. See [Safety](#safety) below.
+> **Status: pre-release (v0.2.1), hardware-validated.** The all-trunks provisioner redesign (every carrier-up trunk with detected VLANs gets provisioned, not one selected trunk) is code-complete, doc-complete, and hardware-validated on real hardware (Protectli/igb, dual trunks, Meraki switch): dual leasing, carrier-pull preserve, routed multi-trunk metrics, and unified revert across both trunks all passed 2026-07-30. Still pre-release: run the first apply on a box you can reach at the console. See [Safety](#safety) below.
 
 ## The problem
 
