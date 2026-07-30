@@ -12,6 +12,20 @@ On a fresh session or after a compact: read `context/index.md` first - it owns t
 
 Audience: infrastructure tool for boxes that may be remote, headless, or unattended. Safety and recoverability dominate every decision; a bad apply that breaks the uplink may be unrecoverable without physical access.
 
+## Commands
+
+Single bash script, no build step. Dev loop:
+
+```bash
+bash tests/unit.sh          # Layer-1 unit suite; run before every commit (enforces the FR-38 version/build identity contract, §1k/1l)
+bash -n dynavlan            # syntax-check the script
+./dynavlan --version        # print ver + build id; works with no root and no valid config
+sudo ./dynavlan --dry-run   # preview detection + planned adds/removes, validate, NO apply
+sudo ./dynavlan --status    # report owned vs detected-now trunks
+```
+
+Install/first-run/removal live in `docs/deployment-guide.md`. Hardware testing is console-backed on the real appliance, never SSH-only (a bad apply drops the link).
+
 ## Design Principles
 
 Infrastructure, not a framework. Never surprise the operator; never strand the box.
@@ -67,6 +81,18 @@ Runs as root, typically on a remote, headless, or unattended box. The threat mod
 - Before coding any change: read `dev/SKELETON.md` + `dev/CODEMAP.md` (and `dev/features/dynavlan.md` for design depth) to identify the blast radius, then locate the specific functions. Don't start editing until you know what's affected.
 - New logic: TDD pure helpers in `tests/unit.sh` first (RED before GREEN, per `superpowers:test-driven-development`); wire integration code cohesively - the apply/rollback state machine is too coupled for subagent fan-out.
 - There is no hot-reload: dynavlan installs as a systemd service + timer. Hardware testing happens on the real appliance on the real trunk with console access, never only over SSH (a bad apply drops the connection). No VM.
+
+### Task Tracking Granularity
+
+Three layers, kept distinct - do not conflate them:
+
+- **`context/todo.md` holds milestones only.** A milestone is a project-state unit a fresh session must know to understand where things stand: a feature moving through `designed → planned → code-complete → hardware-validated → released`. One line per milestone. This is the project's source of truth for status (see Documentation Roles).
+- **The plan file** (`docs/superpowers/plans/YYYY-MM-DD-<feature>.md`) holds the task/step decomposition of a single milestone. Plan *tasks* are sized per `superpowers:writing-plans` (Task Right-Sizing: the smallest unit that carries its own test cycle and is worth a fresh reviewer's gate); *steps* are the bite-sized actions inside a task. These live in the plan, never in `context/todo.md`.
+- **The in-session task tool** (TaskCreate/TaskUpdate) tracks plan *tasks* while executing, per `superpowers:executing-plans` ("create todos for the plan items"). Track at task granularity, never per step; it is ephemeral execution scaffolding and is never mirrored into `context/todo.md`.
+
+Placement test: "If I cleared the session now, would a new session need this line to know where the project stands?" Yes -> milestone in `context/todo.md`. No -> a task/step in the plan file.
+
+Coupled work is executed inline, not fanned out: per `superpowers:subagent-driven-development` (tightly-coupled tasks -> manual execution), the apply/rollback state machine is not dispatched to parallel subagents (restates the TDD bullet above).
 
 ### Code Review Before Release
 
