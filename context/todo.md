@@ -29,6 +29,20 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 - [x] .deb packaging: debian/, build-deb.sh, GitHub Actions workflow (done 2026-07-30)
 - [x] GitHub repo description updated for multi-trunk positioning (done 2026-07-30)
 
+## Active: carrier-down VLAN removal (design approved, plan next)
+
+- [ ] Carrier-down VLAN removal (minor bump). Design APPROVED and committed:
+      `docs/superpowers/specs/2026-07-30-carrier-down-vlan-removal-design.md`.
+      Decisions: fire at boot + timer; carrier-down only (carrier-up-no-tags still
+      preserved); minimal in-run two-pass debounce (grace-timer alt recorded as
+      deferred); new `REMOVE_ON_CARRIER_LOSS` knob default true, independent of
+      `RESET_ON_BOOT`. NOTE: this SUPERSEDES the hardware-validated L3-30
+      "carrier-pull preserve" behavior; the hardware checklist and any L3-30
+      reference must be updated to the new prune-on-sustained-carrier-loss result.
+      NEXT STEP: create the implementation plan via the `writing-plans` skill
+      (TDD `carrier_removals` RED first, then `have_routing`, then
+      do_boot/do_rescan/do_dryrun/do_status + config + `ver=` bump + docs sweep).
+
 ## Next steps (not started)
 
 - [ ] Test .deb build end-to-end: trigger by creating a release (or run build-deb.sh on an Ubuntu box)
