@@ -62,14 +62,9 @@ The two-pass removal math is high-consequence (a bug tears down a real VLAN or l
 | {18,21,22} / {18,21,22} / {18,21,22} | {} (all present) |
 | {18,21} / {} / {} | {18,21} (both absent both passes) but gated by FR-22: if BOTH passes empty → zero-detection abort, remove nothing |
 
-### 1e. `detect_union` trunk-selection hysteresis (FR-4, pure inner function)
-Trunk selection stability underwrites AC-7/NFR-2; a flapping choice causes repeated applies. Factor the decision into `select_trunk(candidates, previous)` and test:
-| candidates (iface→tag-count) / previous | Expected trunk |
-|---|---|
-| {enp1s0:5, enp2s0:1} / none | enp1s0 (most tags) |
-| {enp1s0:3, enp2s0:3} / enp1s0 | enp1s0 (tie → stick with previous) |
-| {enp1s0:2, enp2s0:5} / enp1s0 | enp2s0 (clear supersede) |
-| {enp1s0:3, enp2s0:4} / enp1s0 | enp1s0 (marginal lead does not flip; hysteresis margin) |
+### 1e. (removed) trunk-selection hysteresis
+
+Removed in the all-trunks redesign: there is no longer a single selected trunk, so `select_trunk` and its hysteresis margin do not exist. Every carrier-up iface with a non-empty detected tag set is provisioned; stability across rescans falls out of the per-iface detection itself (no cross-iface contest to flap). Section number kept retired rather than reused, so historical references to "1e" in commit messages and review notes stay unambiguous.
 
 ### 1f. `vlan_guard` + `limit_fill` (FR-12/FR-36 count gate)
 | n / warn / limit | Expected |
@@ -89,37 +84,40 @@ Trunk selection stability underwrites AC-7/NFR-2; a flapping choice causes repea
 | "1 5 9" / 0 | {} |
 | "1 5" / 10 | {1,5} |
 
-### 1g. `assign_route_metrics` + `map_filter` + `metric_conflict` (FR-37 routed mode)
-| assign: kept_map / additions / start / mode | Expected |
+### 1g. `assign_route_metrics` + `map_filter` + `metric_conflict` (FR-37 routed mode, `iface.id` token keys)
+
+`VLAN_ROUTE_METRIC_MODE`/`id` mode was removed in the all-trunks redesign (a stateless START+id scheme has no coherent per-trunk meaning once ids are no longer globally unique); discovery order across the whole box is the only mode.
+
+| assign: kept_map / additions / start | Expected |
 |---|---|
-| "" / "21 22" / 100 / discovery | 21:100 22:101 (fresh, ascending) |
-| "21:100 22:101" / "18" / 100 / discovery | 18:102 21:100 22:101 (new id continues; kept verbatim, never renumbered) |
-| "21:100" / "18 30" / 100 / discovery | 18:101 21:100 30:102 (batch ascending) |
-| "21:100" / "25" / 200 / discovery | 21:100 25:200 (raised START wins for new) |
-| "21:250" / "25" / 200 / discovery | 21:250 25:251 (highest kept wins over START) |
-| "21:999" / "18 22" / 100 / id | 18:118 21:121 22:122 (stateless START+id, kept ignored) |
+| "" / "enp1s0.21 enp1s0.22" / 100 | enp1s0.21:100 enp1s0.22:101 (fresh, ascending) |
+| "enp1s0.21:100 enp1s0.22:101" / "enp1s0.18" / 100 | enp1s0.18:102 enp1s0.21:100 enp1s0.22:101 (new token continues; kept verbatim, never renumbered) |
+| "enp1s0.21:100" / "enp1s0.18 enp1s0.30" / 100 | enp1s0.18:101 enp1s0.21:100 enp1s0.30:102 (batch ascending) |
+| "enp1s0.21:100" / "enp1s0.25" / 200 | enp1s0.21:100 enp1s0.25:200 (raised START wins for new) |
+| "enp1s0.21:250" / "enp1s0.25" / 200 | enp1s0.21:250 enp1s0.25:251 (highest kept wins over START) |
+| "enp1s0.21:100" / "enp2s0.21" / 100 | enp1s0.21:100 enp2s0.21:101 (same VLAN id on a different trunk is a distinct token, not a collision) |
 
 | metric_conflict: uplink_metric / map | Expected |
 |---|---|
-| "" / "21:100" | OK (no pre-apply default) |
-| 10 / "21:100 22:101" | OK (uplink below all) |
-| 100 / "21:100 ..." | CONFLICT (tie counts) |
-| 300 / "21:100 ..." | CONFLICT |
+| "" / "enp1s0.21:100" | OK (no pre-apply default) |
+| 10 / "enp1s0.21:100 enp1s0.22:101" | OK (uplink below all) |
+| 100 / "enp1s0.21:100 ..." | CONFLICT (tie counts) |
+| 300 / "enp1s0.21:100 ..." | CONFLICT |
 
-`map_filter` keeps only listed ids' tokens (drops removed VLANs' metrics before reassignment).
+`map_filter` keeps only listed tokens' entries (drops removed VLANs' metrics before reassignment).
 
 `plan_route_metrics` (added 2026-07-25) is the single decision point callers must use; these cases pin the migration defect it fixes:
 
-| owned map / target / additions / start / mode | Expected |
+| owned map / target / additions / start | Expected |
 |---|---|
-| `""` / `1 18 21` / `""` / 100 / discovery | `1:100 18:101 21:102` - **the defect**: isolated -> routed, every owned id lacks a metric while additions is empty |
-| `""` / `1 18 21 22` / `22` / 100 / discovery | `1:100 18:101 21:102 22:103` - migration plus a real addition in one run |
-| `1:100 18:101` / `1 18 22` / `22` / 100 / discovery | `1:100 18:101 22:102` - steady state unchanged by the fix |
-| `1:100 18:101` / `1 18` / `""` / 100 / discovery | `1:100 18:101` - zero churn must NOT renumber (the `--reapply` case) |
-| `1:100 18:101 21:102` / `1 18` / `""` / 100 / discovery | `1:100 18:101` - removed VLAN's metric dropped, survivors verbatim |
-| `""` / `18 22` / `""` / 100 / id | `18:118 22:122` - stateless |
+| `""` / `enp1s0.1 enp1s0.18 enp1s0.21` / `""` / 100 | `enp1s0.1:100 enp1s0.18:101 enp1s0.21:102` - **the defect**: isolated -> routed, every owned token lacks a metric while additions is empty |
+| `""` / `enp1s0.1 enp1s0.18 enp1s0.21 enp1s0.22` / `enp1s0.22` / 100 | `enp1s0.1:100 enp1s0.18:101 enp1s0.21:102 enp1s0.22:103` - migration plus a real addition in one run |
+| `enp1s0.1:100 enp1s0.18:101` / `enp1s0.1 enp1s0.18 enp1s0.22` / `enp1s0.22` / 100 | `enp1s0.1:100 enp1s0.18:101 enp1s0.22:102` - steady state unchanged by the fix |
+| `enp1s0.1:100 enp1s0.18:101` / `enp1s0.1 enp1s0.18` / `""` / 100 | `enp1s0.1:100 enp1s0.18:101` - zero churn must NOT renumber (the `--reapply` case) |
+| `enp1s0.1:100 enp1s0.18:101 enp1s0.21:102` / `enp1s0.1 enp1s0.18` / `""` / 100 | `enp1s0.1:100 enp1s0.18:101` - removed VLAN's metric dropped, survivors verbatim |
+| `""` / `enp1s0.18 enp2s0.18` / `""` / 100 | `enp1s0.18:100 enp2s0.18:101` - same VLAN id on two trunks gets two distinct metrics, one shared sequence |
 
-Pre-fix, `apply_change` passed `additions` as the set needing metrics. Those sets differ whenever an owned VLAN has no persisted metric, so enabling `VLAN_ROUTES=true` on a box that already owned VLANs made `backend_generate_config` refuse (`internal: no route metric assigned for VLAN N`) on every run thereafter, blocking new VLANs too. Pinned as one function rather than a call sequence because `--reapply` and any later drift check must compute the map the same way `apply_change` does; two call sites recomposing it is how they silently diverge.
+Pre-fix, `apply_change` passed `additions` as the set needing metrics. Those sets differ whenever an owned VLAN has no persisted metric, so enabling `VLAN_ROUTES=true` on a box that already owned VLANs made `backend_generate_config` refuse (`internal: no route metric assigned for TOKEN`) on every run thereafter, blocking new VLANs too. Pinned as one function rather than a call sequence because `--reapply` and any later drift check must compute the map the same way `apply_change` does; two call sites recomposing it is how they silently diverge.
 
 ### 1h. `parse_version` + `version_ge` (FR-0 netplan version probe)
 | parse_version input | Expected |
@@ -213,9 +211,49 @@ The skip is positional, never a pattern match on header text: a pattern match wo
 
 Verified to FAIL when the contract is broken (indenting the line, or adding a second one) - a guard that cannot fail is decoration. If 1l fails, fix the script, never the test.
 
-`detect_lldp` is impure (shells out to `lldpctl`) and stays a Layer 3 concern; `lldp_tagged_vlans` holds all the logic worth unit-testing. The exclusion must NOT reach the sniff's contribution: `detect_iface` unions the two sources, and a VLAN genuinely carried tagged must survive even when LLDP names it the PVID.
+### 1n. Token helpers (`emit_tokens` / `tok_iface` / `tok_id` / `tag_tokens` / `untag_tokens` / `tokens_for_iface` / `distinct_ifaces`) - all-trunks canonical key
 
-Note: 1d/1e require `reconcile_boot` and `detect_union` to expose these as pure helpers. This is a deliberate testability constraint on the implementation (see design §5). 1f's helpers feed `gate_vlan_count` (refuse vs fill per `VLAN_LIMIT_MODE`). 1g's helpers feed `apply_change`'s FR-37 branch (assignment + up-front uplink-conflict refusal).
+These convert between the token domain (`iface.id`, every set downstream of detection) and the per-trunk bare-id domain the per-trunk math operates in. A collision case is the load-bearing one: without the token, two trunks sharing a VLAN id would alias in every downstream set.
+
+| Case | Expected |
+|---|---|
+| `tok_iface "enp1s0.100"` | `enp1s0` (split on the LAST dot) |
+| `tok_id "enp1s0.100"` | `100` |
+| `tag_tokens enp1s0 "18 21"` | `enp1s0.18 enp1s0.21` |
+| `untag_tokens "enp1s0.18 enp2s0.18"` | `18` (dedup: same bare id from two trunks collapses to one when queried without iface scope - the reason bare ids are never used as a cross-trunk key) |
+| `tokens_for_iface "enp1s0.18 enp2s0.18 enp1s0.21" enp1s0` | `enp1s0.18 enp1s0.21` |
+| `distinct_ifaces "enp1s0.18 enp2s0.18 enp1s0.21"` | `enp1s0 enp2s0` (sorted, deduped) |
+| `distinct_ifaces ""` | `` (empty; no owned/no trunks case) |
+| `emit_tokens "enp1s0.18 enp1s0.5 enp1s0.18"` | `enp1s0.18 enp1s0.5` (sorted lexicographically as strings and de-duped; "5" sorts after "18" as text, so token sort is lexicographic, not numeric, unlike bare-id sets) |
+
+### 1o. Multi-parent backend parsing (`backend_owned_vlans` / `backend_owned_metrics` / `backend_list_managed_vlans`)
+
+The owned-file parse and the managed-elsewhere query both have to work when the generated YAML spans more than one parent link.
+
+| Case | Expected |
+|---|---|
+| `backend_owned_vlans` against a file with stanzas `enp1s0.18:` and `enp2s0.21:` | `enp1s0.18 enp2s0.21` (both parents' tokens, sorted) |
+| `backend_owned_metrics` against a file with `enp1s0.18:` / `route-metric: 100` and `enp2s0.21:` / `route-metric: 101` | `enp1s0.18:100 enp2s0.21:101` |
+| `backend_list_managed_vlans enp1s0` when `netplan get network.vlans` shows a VLAN on `enp1s0` and a different one on `enp2s0` | only the `enp1s0` one, scoped to the given iface — VLAN ids managed elsewhere on a DIFFERENT trunk must not exclude a same-numbered id on the trunk being queried |
+| `backend_list_managed_vlans enp1s0` where `enp1s0.18` is already owned AND VLAN 18 also exists on `enp2s0` managed elsewhere | `enp1s0`'s own token is excluded via `tokens_for_iface`/`untag_tokens` on that iface only; the `enp2s0` occurrence is irrelevant to this call |
+
+### 1p. Multi-trunk pipeline integration (per-trunk candidates/removals → one combined token set)
+
+Exercises the do_boot/do_rescan/do_dryrun loop-and-combine shape without a live apply: feed two trunks' detected/managed/owned sets through `compute_candidates` per trunk, tag each result, and confirm the combined set is what a unified `apply_change` would receive.
+
+| Setup | Expected combined additions |
+|---|---|
+| enp1s0 detected={18,21} owned={} ; enp2s0 detected={18,22} owned={} | `enp1s0.18 enp1s0.21 enp2s0.18 enp2s0.22` — VLAN 18 tagged on both trunks yields TWO tokens, not one (the collision case the token design exists for) |
+| enp1s0 detected={18} owned={enp1s0.18} ; enp2s0 detected={18} owned={} | `enp2s0.18` only — enp1s0's 18 is already owned on enp1s0, but that does NOT suppress enp2s0's independent 18 (bare-id "owned" must be scoped per trunk, not box-wide) |
+| enp1s0 carrier-down (excluded from the detected-trunk loop), owned={enp1s0.18} ; enp2s0 detected={21} | additions = `enp2s0.21`; enp1s0's owned token is untouched (preserved, not evaluated for removal since it has no carrier this pass) |
+
+Removal-combination case (do_boot only, mirrors 1d but across two trunks):
+
+| owned / enp1s0 pass1,pass2 / enp2s0 pass1,pass2 | Expected combined removals |
+|---|---|
+| `enp1s0.22 enp2s0.30` / {18,21},{18,21} / {18},{18} | `enp1s0.22` (absent both passes on enp1s0; enp2s0.30 absent too but enp2s0's owned set here is empty so nothing to remove there in this fixture) |
+
+Note: 1d requires `boot_removals` to be exposed as a pure helper (per-trunk; the mode functions call it once per trunk and combine). 1f's helpers feed `gate_vlan_count` (refuse vs fill per `VLAN_LIMIT_MODE`, over the combined total). 1g's helpers feed `apply_change`'s FR-37 branch (assignment + up-front uplink-conflict refusal, over the combined target). `detect_lldp` is impure (shells out to `lldpctl`) and stays a Layer 3 concern; `lldp_tagged_vlans` holds all the logic worth unit-testing. The exclusion must NOT reach the sniff's contribution: `detect_iface` unions the two sources, and a VLAN genuinely carried tagged must survive even when LLDP names it the PVID.
 
 ## Layer 2 - `--dry-run` decision-path verification (real inputs)
 
@@ -225,7 +263,7 @@ Note: 1d/1e require `reconcile_boot` and `detect_union` to expose these as pure 
 - **The driver for the manual checklist below** (dry-run first, confirm the plan, then apply).
 - **A per-site sanity check on the intended diff** before trusting the timer. Note: this confirms the *decision and that the config validates*, NOT that the config *applies safely* — apply safety (health check, revert, fifo accept) is Layer 3 only.
 
-Verifies on real inputs: interface discovery, trunk selection, sniff+lldp detection, range/ignore/exclusion filtering, and that the generated config validates. The dry-run validation tree includes the real base netplan files (see design §6), so it DOES surface an FR-17 base-file-freeze condition. Does NOT cover the apply/rollback path (by design) — that is Layer 3.
+Verifies on real inputs: interface discovery, all-trunks detection (every carrier-up iface with tags, not a single selected trunk), sniff+lldp detection, range/ignore/exclusion filtering per trunk, and that the generated config validates. The dry-run validation tree includes the real base netplan files (see design §6), so it DOES surface an FR-17 base-file-freeze condition. Does NOT cover the apply/rollback path (by design) — that is Layer 3.
 
 Lock interaction (round-4): while a `--boot`/`--rescan` holds the FR-30 flock, a concurrent `--dry-run` warns "run in progress; preview may reflect mid-change state" and still completes read-only; conversely, while a dry-run's preview runs, a timer rescan logs "skipped, run in progress" and retries next cycle. Quick check: start `--dry-run` (its sniff window is long enough) and `systemctl start dynavlan-rescan.service` mid-window; confirm the skip line in the journal.
 
@@ -242,7 +280,7 @@ Run on the **actual Protectli/Ubuntu appliance plugged into the live Meraki trun
 | L3-5 | Validate failure | Inject a bad generated stanza (test hook); apply | `netplan generate` fails, no apply, prior file preserved, err logged | AC-5, AC-6 |
 | L3-6 [VALIDATED 2026-07-27] | Health-check revert | Force a config that drops the uplink default route; apply | `netplan try` reverts on timeout, uplink restored, no deletes, no restarts, err logged. Also: the accept-write lands after the pipe closed (EPIPE) without crashing, and the apply-revert err line is still logged cleanly | AC-6, AC-11 |
 | L3-7 | Removal after accept | Remove a VLAN via `--boot` two-pass; confirm | Stanza gone AND `ip link delete` ran (interface gone), only after accept | AC-3 |
-| L3-8 | Relocation | Move the box to a trunk with a different VLAN set (replug to a different Meraki port profile, or change the port's allowed VLANs); `--boot` | Old VLANs removed, new ones added, single reconcile | AC-3 |
+| L3-8 | VLAN set changes on a live trunk | Change the allowed VLANs on the trunk's switch port (same NIC, different set); `--boot` | Old VLANs removed, new ones added on that trunk, single reconcile, other owned trunks untouched | AC-3 |
 | L3-9 | Second untagged NIC | Ensure a second carrier-up untagged NIC exists | Never selected as trunk, gets no VLANs | AC-10 |
 | L3-10 | Log durability | Reboot the box | Prior run's journal entries survive | AC-9 |
 | L3-11 | flock death-release (FR-30) | While a `--boot` run holds the lock inside the `netplan try` window, `kill -9` it from the console | Kernel releases the fd-flock; `netplan try` reverts on timeout; uplink intact; a subsequent `--rescan` acquires the lock and runs (NOT permanently "skipped, run in progress") | AC-6 |
@@ -254,7 +292,11 @@ Run on the **actual Protectli/Ubuntu appliance plugged into the live Meraki trun
 | L3-15 | Slow-apply accept race (§9) | Add many VLANs at once (slow apply) with a change that breaks the uplink route (test hook), so health would PASS pre-apply and FAIL post-apply | ACCEPT is NOT written before the apply completes (probe-iface evidence); health samples post-apply state; change REVERTS. Verify in the journal that the accept loop waited for the probe | AC-6 |
 | L3-16 | FAIL path rides netplan's own revert | Force a health FAIL; observe the fifo/write-end lifecycle and netplan try's exit | dynavlan writes nothing and holds the fifo open until netplan try exits on its own timer; revert occurs; no stdin-EOF early-close is exercised; clean err log | AC-6, AC-11 |
 | L3-17 | Dead-try false-accept guard | Kill netplan try (or trigger "another netplan process running") after launch, before accept | dynavlan does NOT accept, does NOT delete interfaces, does NOT restart the agent; err logged | AC-6, AC-11 |
-| L3-18 | Cross-NIC relocation (AC-3) | With owned VLANs on NIC A, move the trunk cable to NIC B; reboot | Both boot passes see A tagless and B tagged; relocation branch fires: A's VLANs removed (post-accept), B's set provisioned, single reconcile. Also verify the conservative case: single-pass-only evidence on B does NOT relocate | AC-3 |
+| L3-18 | Trunk goes dark, preserved not relocated (AC-3, all-trunks) | With owned VLANs on NIC A, unplug A (or move the cable to NIC B without ever un-owning A); `--boot` | A's owned VLANs are PRESERVED (no carrier / no tags on A in either pass = skip removals on A, per-trunk); if B now carries tags, B is independently provisioned as ADDITIONS on its own trunk, in the SAME reconcile, alongside A's untouched set - there is no relocation branch moving A's set onto B | AC-3 |
+| L3-29 | Second live trunk: independent provisioning + dual leasing | With two carrier-up trunks each carrying tagged VLANs (incl. an overlapping VLAN id tagged on both), run `--boot` | Both trunks provisioned in ONE reconcile via a single `netplan try`; the overlapping id yields two distinct interfaces (`<trunkA>.<id>` and `<trunkB>.<id>`), both lease independently; `--status`/`--dry-run` show both trunks | AC-1, AC-3 |
+| L3-30 | Carrier-pull preserve (two trunks) | With both trunks owned, pull carrier on ONE trunk only; `--boot` | The carrier-down trunk's owned VLANs are preserved (not removed, per the dark-trunk rule); the still-up trunk reconciles normally (adds/removes as its own detection dictates) | AC-3, AC-4 |
+| L3-31 | Routed mode across two trunks (FR-37) | VLAN_ROUTES=true with an overlapping VLAN id tagged on both trunks; `--boot` | Each trunk's copy of the id gets a DISTINCT metric from one shared ascending sequence (not one sequence per trunk); no metric collision; uplink stays lowest | AC-14 |
+| L3-32 | Unified revert across two trunks | Force a health FAIL while both trunks have pending changes | Single `netplan try` reverts BOTH trunks' changes together; neither trunk is left half-applied; no deletes/restarts on either | AC-6, AC-11 |
 | L3-19 | VLAN_LIMIT refuse and fill (FR-36/AC-13) | Set VLAN_LIMIT below the trunk's VLAN count; run --boot in refuse mode, then VLAN_LIMIT_MODE=fill | refuse: nothing new applied, owned set untouched, err names count/limit/remedies. fill: exactly VLAN_LIMIT VLANs (lowest ids), skipped ids named in the journal | AC-13 |
 | L3-20 [VALIDATED 2026-07-27] | Mid-revert false-accept guard (§9 window bound) | Force a health FAIL throughout the window (uplink-breaking change); let netplan try's timer fire and revert; watch the accept loop across the revert | dynavlan stops sampling at the confirmation-window bound BEFORE the revert restores routing; no accept is written even though post-revert health PASSes while try is still alive; err "confirmation window elapsed" logged; FAIL path holds the fifo open to try's exit | AC-6, AC-11 |
 | L3-21 | Reverted-addition ghost netdev | After an L3-6/L3-20 revert of an ADD, run --rescan and inspect exclusion logs | Known residual: the revert does not delete the created netdev, so the id may classify as "managed elsewhere" (via ip link) and be excluded until reboot. Record actual behavior; decide if a cleanup pass is needed | AC-11 |
@@ -276,20 +318,20 @@ Several of these (netplan-try accept/revert, promisc sniff of an unconfigured VL
 |----|--------|
 | AC-1 | L3-1 |
 | AC-2 | L3-1 + concurrent-`--rescan` step (lock forces skip, snap restarts exactly once; ties to FR-26 + FR-30) |
-| AC-3 | L3-7, L3-8 |
+| AC-3 | L3-7, L3-8, L3-18, L3-29, L3-30 |
 | AC-4 | L3-4 + Layer 1 1b empty-detected row |
 | AC-5 | Layer 1 1a (invalid config value) + **L3-13 (missing/insufficient dependency, incl. no usable `netplan try`)** |
-| AC-6 | L3-5 (validate fail), L3-6 (health fail), L3-11 (flock death), L3-12 (atomic write) |
-| AC-7 | L3-3 + Layer 1 1e (trunk hysteresis stability) |
+| AC-6 | L3-5 (validate fail), L3-6 (health fail), L3-11 (flock death), L3-12 (atomic write), L3-32 (unified revert, two trunks) |
+| AC-7 | L3-3 (steady-state idempotency; no per-trunk selection to flap now that all trunks are provisioned independently) |
 | AC-8 | L3-1, L3-2 |
 | AC-9 | L3-10 |
 | AC-10 | L3-9 |
 | AC-11 | L3-6 |
 | AC-12 | Layer 1 1c (evaluator) + **L3-14 (real empty-snapshot accept)** |
 | AC-13 | Layer 1 1f (guard/fill math) + L3-19 (real refuse + fill) |
-| AC-14 | Layer 1 1g (assignment + conflict math) + L3-22 (real routed apply + metric persistence) + L3-23 (real conflict refusal) |
+| AC-14 | Layer 1 1g (assignment + conflict math, token-keyed) + L3-22 (real routed apply + metric persistence) + L3-23 (real conflict refusal) + L3-31 (two-trunk metric sequence, NOT yet run on hardware) |
 
-Note: FR-23 removal-set math is covered by Layer 1 1d; FR-4 hysteresis by 1e; FR-16/FR-30 by L3-11/L3-12.
+Note: FR-23 removal-set math is covered by Layer 1 1d (per-trunk; combined across trunks by 1p); FR-16/FR-30 by L3-11/L3-12. There is no FR-4 hysteresis requirement in the all-trunks model (superseded; see 1e above).
 
 ## Deliberately out of scope (add later if the tool graduates)
 

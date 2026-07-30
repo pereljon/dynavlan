@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.1.0"
+ver="0.2.0"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -40,9 +40,7 @@ LOG_LEVEL="${LOG_LEVEL:-info}"
 
 # Mutable globals set during a run.
 IGNORE_SET=""        # parsed VLAN_IGNORE set
-TRUNK_IFACE=""       # selected trunk this run
-DETECTED_VLANS=""    # VLAN ids on the selected trunk
-OLD_TRUNK=""         # parent iface of our currently-owned VLANs (previous trunk)
+DETECTED_TRUNKS=""   # carrier-up ifaces with >= 1 detected tag (the trunk map)
 LAST_BACKUP=""       # path of the most recent pre-change backup
 VALIDATE_ERRSRC=""   # "ours" | "base" after a failed backend_validate
 VALIDATE_ERRMSG=""
@@ -89,36 +87,6 @@ parse_vlan_ignore() {
 		done
 	done
 	emit_set $out
-	return 0
-}
-
-# select_trunk CANDIDATES PREVIOUS
-#   FR-4 trunk selection with hysteresis. CANDIDATES are "iface:tagcount" tokens; the
-#   port carrying the most distinct tags wins, but a marginal lead over the PREVIOUS
-#   trunk (<= TRUNK_HYSTERESIS) does not flip the choice, so a stable trunk does not
-#   flap between near-equal ports (guards AC-7/NFR-2 against repeated applies).
-#   Ties break on the lexicographically smallest iface for determinism.
-select_trunk() {
-	local cands="$1" previous="$2"
-	local margin=1
-	local tok iface count best="" bestcount=-1 prevcount=""
-	for tok in $cands; do
-		iface="${tok%%:*}"
-		count="${tok#*:}"
-		if ((count > bestcount)); then
-			bestcount="$count"
-			best="$iface"
-		elif ((count == bestcount)) && [[ "$iface" < "$best" ]]; then
-			best="$iface"
-		fi
-		[ "$iface" = "$previous" ] && prevcount="$count"
-	done
-	[ -z "$best" ] && return 0
-	if [ -n "$previous" ] && [ -n "$prevcount" ] && ((bestcount <= prevcount + margin)); then
-		echo "$previous"
-	else
-		echo "$best"
-	fi
 	return 0
 }
 
@@ -187,54 +155,43 @@ vlan_guard() {
 }
 
 # limit_fill ADDITIONS SLOTS
-#   FR-36 fill mode subset: the SLOTS lowest ids from ADDITIONS (deterministic:
+#   FR-36 fill mode subset: the SLOTS lowest tokens from ADDITIONS (deterministic:
 #   lowest-first, so every box on the same trunk picks the same subset).
 #   SLOTS <= 0 yields the empty set.
 limit_fill() {
-	local adds="$1" slots="$2" id out="" n=0
+	local adds="$1" slots="$2" tok out="" n=0
 	[ "$slots" -le 0 ] && return 0
-	for id in $(emit_set $adds); do
-		out="$out $id"
+	for tok in $(emit_tokens $adds); do
+		out="$out $tok"
 		n=$((n + 1))
 		[ "$n" -ge "$slots" ] && break
 	done
-	emit_set $out
+	emit_tokens $out
 	return 0
 }
 
-# assign_route_metrics KEPT_MAP ADDITIONS START MODE
-#   FR-37 route-metric assignment for VLAN_ROUTES=true. KEPT_MAP is "id:metric"
+# assign_route_metrics KEPT_MAP ADDITIONS START
+#   FR-37 route-metric assignment for VLAN_ROUTES=true. KEPT_MAP is "tok:metric"
 #   tokens (surviving assignments read back from our own YAML); ADDITIONS is a set
-#   of new ids. Prints the full "id:metric" map sorted by id.
-#   discovery: kept assignments are preserved VERBATIM (an existing VLAN's metric
-#     never changes); additions, ascending, take max(START-1, highest kept)+1
-#     onward - so new discoveries never renumber the established order.
-#   id: stateless metric = START + id for every id (kept map ignored); identical
-#     on every box regardless of discovery history.
+#   of new iface.id tokens. Prints the full "tok:metric" map sorted by token.
+#   Kept assignments are preserved VERBATIM (an existing VLAN's metric never
+#   changes); additions, ascending, take max(START-1, highest kept)+1 onward,
+#   so new discoveries never renumber the established order.
 assign_route_metrics() {
-	local kept="$1" adds="$2" start="$3" mode="$4"
+	local kept="$1" adds="$2" start="$3"
 	local tok id metric next out=""
-	if [ "$mode" = id ]; then
-		local res=""
-		for tok in $kept; do out="$out ${tok%%:*}"; done
-		for id in $(emit_set $out $adds); do
-			res="${res:+$res }${id}:$((start + id))"
-		done
-		printf '%s' "$res"
-		return 0
-	fi
 	next=$((start - 1))
 	for tok in $kept; do
 		metric="${tok#*:}"
 		[ "$metric" -gt "$next" ] && next="$metric"
 	done
 	out="$kept"
-	for id in $(emit_set $adds); do
+	for id in $(emit_tokens $adds); do
 		next=$((next + 1))
 		out="$out ${id}:${next}"
 	done
 	[ -z "${out// /}" ] && return 0
-	printf '%s\n' $out | sort -t: -k1,1n | tr '\n' ' ' | sed 's/ $//'
+	printf '%s\n' $out | sort -t: -k1,1 | tr '\n' ' ' | sed 's/ $//'
 	return 0
 }
 
@@ -265,15 +222,15 @@ config_body_differs() {
 }
 
 # map_ids MAP
-#   Ids of an "id:metric" map, as a sorted set.
+#   Keys of a "tok:metric" map, as a sorted token set.
 map_ids() {
 	local map="$1" tok out=""
 	for tok in $map; do out="$out ${tok%%:*}"; done
-	emit_set $out
+	emit_tokens $out
 	return 0
 }
 
-# plan_route_metrics OWNED_MAP TARGET ADDITIONS START MODE
+# plan_route_metrics OWNED_MAP TARGET ADDITIONS START
 #   The single decision point for FR-37 metric assignment: given the map persisted
 #   in our own YAML, produce the full "id:metric" map for TARGET.
 #
@@ -292,11 +249,11 @@ map_ids() {
 #   Every caller MUST use this rather than composing the pieces itself - a second
 #   call site reimplementing the sequence is how the two silently diverge.
 plan_route_metrics() {
-	local owned="$1" target="$2" adds="$3" start="$4" mode="$5"
+	local owned="$1" target="$2" adds="$3" start="$4"
 	local kept needs
 	kept=$(map_filter "$owned" "$(set_minus "$target" "$adds")")
 	needs=$(set_minus "$target" "$(map_ids "$kept")")
-	assign_route_metrics "$kept" "$needs" "$start" "$mode"
+	assign_route_metrics "$kept" "$needs" "$start"
 	return 0
 }
 
@@ -349,6 +306,49 @@ compute_candidates() {
 }
 
 # ---------------------------------------------------------------------------
+# iface.id token helpers (all-trunks canonical key, spec section 3)
+#
+# Every set in the pipeline holds iface.id tokens, not bare VLAN ids. These
+# convert between the two representations. The split is on the LAST dot, which
+# is always the VLAN separator in netplan's <iface>.<id> naming.
+# ---------------------------------------------------------------------------
+
+emit_tokens() {
+	[ -z "$*" ] && return 0
+	printf '%s\n' "$@" | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+tok_iface() { printf '%s' "${1%.*}"; }
+tok_id()    { printf '%s' "${1##*.}"; }
+
+tag_tokens() {
+	local iface="$1" ids="$2" id out=""
+	for id in $ids; do out="$out ${iface}.${id}"; done
+	emit_tokens $out
+}
+
+untag_tokens() {
+	local toks="$1" tok out=""
+	for tok in $toks; do out="$out ${tok##*.}"; done
+	emit_set $out
+}
+
+tokens_for_iface() {
+	local toks="$1" iface="$2" tok out=""
+	for tok in $toks; do
+		[ "${tok%.*}" = "$iface" ] && out="$out $tok"
+	done
+	emit_tokens $out
+}
+
+distinct_ifaces() {
+	local toks="$1" tok out=""
+	for tok in $toks; do out="$out ${tok%.*}"; done
+	[ -z "$out" ] && return 0
+	printf '%s\n' $out | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+# ---------------------------------------------------------------------------
 # Small set utilities (space-separated sorted id lists)
 # ---------------------------------------------------------------------------
 
@@ -358,10 +358,10 @@ set_minus() { # A B -> A without B's members
 		case "$b" in *" $id "*) continue ;; esac
 		out="$out $id"
 	done
-	emit_set $out
+	emit_tokens $out
 }
 
-set_union() { emit_set $1 $2; }
+set_union() { emit_tokens $1 $2; }
 
 count_ids() { set -- $1; echo "$#"; }
 
@@ -422,7 +422,6 @@ load_config() {
 	RESET_ON_BOOT=true
 	VLAN_ROUTES=false
 	VLAN_ROUTE_METRIC_START=100
-	VLAN_ROUTE_METRIC_MODE=discovery
 	RESTART_SNAPS=""
 	RESTART_SERVICES=""
 	LOG_LEVEL=info
@@ -513,10 +512,6 @@ load_config() {
 	}
 	{ is_uint "$VLAN_ROUTE_METRIC_START" && [ "$VLAN_ROUTE_METRIC_START" -ge 1 ]; } || {
 		log err "invalid VLAN_ROUTE_METRIC_START=$VLAN_ROUTE_METRIC_START (integer >= 1)"
-		return 1
-	}
-	in_list "$VLAN_ROUTE_METRIC_MODE" "discovery id" || {
-		log err "invalid VLAN_ROUTE_METRIC_MODE=$VLAN_ROUTE_METRIC_MODE (discovery|id)"
 		return 1
 	}
 	# >= 1: with 0, prune could delete the just-taken backup pre-revert and leave
@@ -704,15 +699,11 @@ detect_iface() { # IFACE -> union of enabled detection methods
 
 iface_tags() { eval "printf '%s' \"\${$(tags_var "$1"):-}\""; }
 
-run_detection() { # sets TRUNK_IFACE, DETECTED_VLANS ; returns 1 if no trunk found
-	local ifaces i tags n cands="" previous tok ifc up=""
+run_detection() { # sets DETECTED_TRUNKS + per-trunk tags via iface_tags; returns 1 if no trunks
+	local ifaces i tags n
 	ifaces=$(discover_phys_ifaces)
-	# Detection cost must NOT scale with port count (a 4-6 port box would blow the
-	# systemd TimeoutStartSec budget): up+promisc everything, then ONE shared carrier
-	# deadline across all ports, then the sniffs run CONCURRENTLY (one SNIFF_SECONDS
-	# window total). Detect only on carrier-up ifaces.
 	for i in $ifaces; do prep_iface "$i"; done
-	local elapsed=0 allup
+	local elapsed=0 allup up=""
 	while [ "$elapsed" -lt "$CARRIER_WAIT_SECONDS" ]; do
 		allup=1
 		for i in $ifaces; do has_carrier "$i" || allup=0; done
@@ -727,46 +718,40 @@ run_detection() { # sets TRUNK_IFACE, DETECTED_VLANS ; returns 1 if no trunk fou
 			log info "no carrier on $i within ${CARRIER_WAIT_SECONDS}s; skipping detection on it"
 		fi
 	done
-	# Clear every stash (not just carrier-up ones): a NIC that lost carrier since the
-	# previous pass must not report stale tags through iface_tags.
 	for i in $ifaces; do unset "$(tags_var "$i")" 2>/dev/null; done
 	local scratch=""
 	[ -n "$up" ] && scratch=$(mktemp -d /run/dynavlan.detect.XXXXXX 2>/dev/null) || scratch=""
 	if [ -n "$scratch" ]; then
 		for i in $up; do detect_iface "$i" >"$scratch/$i" & done
-		wait # only detection jobs are in flight here (no other background children)
+		wait
 		for i in $up; do
 			tags=$(cat "$scratch/$i" 2>/dev/null)
 			if [ -n "$tags" ]; then
-				n=$(count_ids "$tags")
-				cands="$cands ${i}:${n}"
 				eval "$(tags_var "$i")=\"\$tags\""
 			fi
 		done
 		rm -rf "$scratch"
 	else
-		for i in $up; do # scratch dir unavailable: sequential fallback
+		for i in $up; do
 			tags=$(detect_iface "$i")
 			if [ -n "$tags" ]; then
-				n=$(count_ids "$tags")
-				cands="$cands ${i}:${n}"
 				eval "$(tags_var "$i")=\"\$tags\""
 			fi
 		done
 	fi
-	if [ -z "$cands" ]; then
-		TRUNK_IFACE=""
-		DETECTED_VLANS=""
+	DETECTED_TRUNKS=""
+	for i in $(printf '%s\n' $up | sort -u); do
+		tags=$(iface_tags "$i")
+		if [ -n "$tags" ]; then
+			n=$(count_ids "$tags")
+			DETECTED_TRUNKS="$DETECTED_TRUNKS $i"
+			log info "trunk $i: $n tags detected [$(emit_set $tags)]"
+		fi
+	done
+	DETECTED_TRUNKS=$(printf '%s\n' $DETECTED_TRUNKS | sort -u | tr '\n' ' ' | sed 's/^ //' | sed 's/ $//')
+	if [ -z "$DETECTED_TRUNKS" ]; then
 		return 1
 	fi
-	previous=$(owned_parent)
-	TRUNK_IFACE=$(select_trunk "$cands" "$previous")
-	for tok in $cands; do
-		ifc="${tok%%:*}"
-		[ "$ifc" != "$TRUNK_IFACE" ] && log info "non-selected trunk candidate $ifc (${tok#*:} tags); leaving alone"
-	done
-	DETECTED_VLANS=$(emit_set $(iface_tags "$TRUNK_IFACE"))
-	log info "trunk selected: $TRUNK_IFACE"
 	return 0
 }
 
@@ -775,77 +760,61 @@ run_detection() { # sets TRUNK_IFACE, DETECTED_VLANS ; returns 1 if no trunk fou
 # The core never touches netplan except through these six backend_* functions.
 # ---------------------------------------------------------------------------
 
-backend_owned_vlans() { # VLAN ids currently in OUR file (the known-set, FR-20)
+backend_owned_vlans() { # iface.id tokens currently in OUR file (the known-set, FR-20)
 	[ -f "$NETPLAN_FILE" ] || return 0
-	grep -E '^[[:space:]]+id:[[:space:]]*[0-9]+' "$NETPLAN_FILE" 2>/dev/null |
-		grep -oE '[0-9]+' | sort -n -u | tr '\n' ' ' | sed 's/ $//'
+	grep -E '^[[:space:]]+[a-zA-Z0-9_-]+\.[0-9]+:$' "$NETPLAN_FILE" 2>/dev/null |
+		sed 's/^[[:space:]]*//' | sed 's/:$//' | sort -u | tr '\n' ' ' | sed 's/ $//'
 }
 
-backend_owned_metrics() { # "id:metric" map persisted in OUR file (FR-37 discovery-mode state)
+backend_owned_metrics() { # "iface.id:metric" map persisted in OUR file (FR-37 state)
 	[ -f "$NETPLAN_FILE" ] || return 0
-	# Our generated stanzas order id: before route-metric: within each block, so an
-	# id-then-metric pairing scan is reliable on a file only we write.
-	awk '/^[[:space:]]+id:[[:space:]]*[0-9]+/ {id=$2}
-	     /^[[:space:]]+route-metric:[[:space:]]*[0-9]+/ {if (id != "") {print id":"$2; id=""}}' \
-		"$NETPLAN_FILE" 2>/dev/null | tr '\n' ' ' | sed 's/ $//'
+	awk '
+		/^[[:space:]]+[a-zA-Z0-9_-]+\.[0-9]+:$/ { name = $1; sub(/:$/, "", name) }
+		/^[[:space:]]+route-metric:[[:space:]]*[0-9]+/ { if (name != "") { print name ":" $2; name = "" } }
+	' "$NETPLAN_FILE" 2>/dev/null | sort -u | tr '\n' ' ' | sed 's/ $//'
 }
 
-owned_parent() { # parent iface of our VLANs = previously-selected trunk (stickiness source)
-	[ -f "$NETPLAN_FILE" ] || return 0
-	grep -E '^[[:space:]]+link:[[:space:]]*' "$NETPLAN_FILE" 2>/dev/null | awk '{print $2}' | head -1
-}
-
-backend_list_managed_vlans() { # VLAN ids managed OUTSIDE our namespace (FR-10: netplan+kernel, minus our own)
-	local all
+backend_list_managed_vlans() { # IFACE - bare VLAN ids managed elsewhere on THIS iface
+	local iface="$1" all owned_ids
 	all=$({
-		netplan get network.vlans 2>/dev/null | grep -E '^[[:space:]]*id:[[:space:]]*[0-9]+' | grep -oE '[0-9]+'
-		ip -d link show type vlan 2>/dev/null | grep -oE 'id [0-9]+' | awk '{print $2}'
+		netplan get network.vlans 2>/dev/null | awk -v iface="$iface" '
+			/^[[:space:]]+[a-zA-Z0-9_.-]+:/ { cur = 1; found = 0 }
+			/^[[:space:]]+link:/ { if ($2 == iface) found = 1 }
+			/^[[:space:]]+id:/ && found { print $2; found = 0 }
+		'
+		ip -d link show type vlan 2>/dev/null | awk -v p="@${iface}:" '
+			$0 ~ p { getit = 1; next }
+			getit && /id [0-9]/ { for (i=1;i<=NF;i++) if ($i=="id") { print $(i+1); break }; getit = 0 }
+		'
 	} | sort -n -u | tr '\n' ' ' | sed 's/ $//')
-	# Both sources see our own VLANs too (netplan get merges 90-dynavlan.yaml; ip link
-	# lists our live sub-interfaces): subtract them, else every owned VLAN logs a false
-	# "managed elsewhere" exclusion warning on every run.
-	set_minus "$all" "$(backend_owned_vlans)"
+	owned_ids=$(untag_tokens "$(tokens_for_iface "$(backend_owned_vlans)" "$iface")")
+	set_minus "$all" "$owned_ids"
 }
 
-backend_generate_config() { # TARGET_IDS - write our file atomically (FR-13/14/16) on TRUNK_IFACE
-	local ids="$1" id tmp
-	# mktemp in the SAME directory (mv stays an atomic same-fs rename) with an
-	# unpredictable name; mktemp also creates it 0600 from the start.
+backend_generate_config() { # TARGET_TOKENS - write our file atomically (FR-13/14/16)
+	local tokens="$1" tok iface id tmp
 	tmp=$(mktemp "$(dirname "$NETPLAN_FILE")/.dynavlan.XXXXXX") || return 1
 	{
 		printf '# Managed by dynavlan %s - do not edit; regenerated on each change.\n' "$(version_string "$ver" "$build")"
 		printf 'network:\n  version: 2\n'
-		if [ -n "$ids" ]; then
+		if [ -n "$tokens" ]; then
 			printf '  vlans:\n'
-			for id in $(emit_set $ids); do
-				printf '    %s.%s:\n' "$TRUNK_IFACE" "$id"
+			for tok in $(emit_tokens $tokens); do
+				iface="${tok%.*}"
+				id="${tok##*.}"
+				printf '    %s:\n' "$tok"
 				printf '      id: %s\n' "$id"
-				printf '      link: %s\n' "$TRUNK_IFACE"
+				printf '      link: %s\n' "$iface"
 				printf '      dhcp4: true\n'
-				# The four use-* keys below are dhcp4-overrides: they constrain DHCPv4
-				# and nothing else. IPv6 Router Advertisement is a separate channel that
-				# arrives unasked, and networkd accepts RAs by default on a non-router
-				# link - so without this key a VLAN can hand us a SLAAC address, RDNSS
-				# resolvers, and a default route, none of which any use-* key declines.
-				# That would break the FR-18 dependency outright: the health check reads
-				# `ip route show default` (v4 only), so an RA default installed via a
-				# monitored VLAN is invisible to it and could never trigger a revert.
-				# Stays false in routed mode too: FR-37 reasons about metrics IT assigns,
-				# and an RA route carries a metric we never chose, bypassing that guard.
-				# Hardware-observed (2026-07-25): enp1s0.22 held a global SLAAC address
-				# from a VLAN RA while every DHCPv4 decline was in force.
 				printf '      accept-ra: false\n'
 				printf '      dhcp4-overrides:\n'
 				if [ "$VLAN_ROUTES" = true ]; then
-					# FR-37: accept DHCP routes on this VLAN at its assigned metric
-					# (always above the uplink's; guarded by metric_conflict pre-apply).
-					# DNS/NTP/domains stay declined - routes only, never the resolver.
 					local metric="" mtok
 					for mtok in $ROUTE_METRICS; do
-						[ "${mtok%%:*}" = "$id" ] && metric="${mtok#*:}"
+						[ "${mtok%%:*}" = "$tok" ] && metric="${mtok#*:}"
 					done
 					if [ -z "$metric" ]; then
-						log err "internal: no route metric assigned for VLAN $id (map [$ROUTE_METRICS]); refusing to generate"
+						log err "internal: no route metric assigned for $tok (map [$ROUTE_METRICS]); refusing to generate"
 						rm -f "$tmp"
 						return 1
 					fi
@@ -994,16 +963,16 @@ backend_apply_with_revert() { # SNAP_IFACE PROBE_IFC -> 0 accepted, 1 reverted/f
 	[ "$accepted" -eq 1 ]
 }
 
-backend_remove_vlan() { # PARENT ID - tear down live interface (FR-24), only ever called after ACCEPT
-	local parent="$1" id="$2" ifc="$1.$2"
+backend_remove_vlan() { # TOKEN (iface.id) - tear down live interface (FR-24)
+	local tok="$1" ifc="$1"
 	if ip link show "$ifc" >/dev/null 2>&1; then
 		if ip link delete "$ifc" 2>/dev/null; then
-			log notice "removed VLAN $id (deleted interface $ifc)"
+			log notice "removed VLAN $(tok_id "$tok") (deleted interface $ifc)"
 		else
 			log warning "failed to delete interface $ifc"
 		fi
 	else
-		log info "VLAN $id interface $ifc already absent"
+		log info "VLAN $(tok_id "$tok") interface $ifc already absent"
 	fi
 }
 
@@ -1094,11 +1063,11 @@ prune_backups() {
 # Change-gated side effects (FR-27/28)
 # ---------------------------------------------------------------------------
 
-wait_leases() { # ADD_IDS - bounded, non-fatal wait for new-VLAN leases
-	local ids="$1" id ifc waited
-	[ -z "$ids" ] && return 0
-	for id in $ids; do
-		ifc="$TRUNK_IFACE.$id"
+wait_leases() { # TOKENS (iface.id) - bounded, non-fatal wait for new-VLAN leases
+	local tokens="$1" tok ifc waited
+	[ -z "$tokens" ] && return 0
+	for tok in $tokens; do
+		ifc="$tok"
 		waited=0
 		while [ "$waited" -lt "$LEASE_SETTLE_SECONDS" ]; do
 			ip -4 addr show dev "$ifc" 2>/dev/null | grep -q 'inet ' && break
@@ -1106,9 +1075,9 @@ wait_leases() { # ADD_IDS - bounded, non-fatal wait for new-VLAN leases
 			waited=$((waited + 1))
 		done
 		if ip -4 addr show dev "$ifc" 2>/dev/null | grep -q 'inet '; then
-			log info "VLAN $id leased on $ifc"
+			log info "VLAN $(tok_id "$tok") leased on $ifc"
 		else
-			log warning "VLAN $id ($ifc) acquired no lease within ${LEASE_SETTLE_SECONDS}s"
+			log warning "VLAN $(tok_id "$tok") ($ifc) acquired no lease within ${LEASE_SETTLE_SECONDS}s"
 		fi
 	done
 }
@@ -1135,27 +1104,18 @@ restart_targets() {
 # Apply/rollback state machine (design §7) - the safety-critical chain
 # ---------------------------------------------------------------------------
 
-apply_change() { # TARGET_IDS ADDITIONS REMOVALS [LEASE_SET]
-	# LEASE_SET defaults to ADDITIONS: normally only new VLANs need a lease before the
-	# restart targets re-enumerate interfaces. FR-39 reapply overrides it with the FULL
-	# owned set, because it has no additions at all - rewriting every stanza can make
-	# networkd reconfigure the existing links, and restarting an interface-enumerating
-	# agent while kept VLANs are mid-re-DHCP would DROP those subnets from inventory.
+apply_change() { # TARGET_TOKENS ADDITION_TOKENS REMOVAL_TOKENS [LEASE_TOKENS]
 	local target="$1" additions="$2" removals="$3" lease_set="${4-$2}"
-	local snap_iface had_prior=0 id probe=""
-	# Probe iface: the first added VLAN's interface exists only once netplan try has
-	# actually applied - the §9 accept loop uses it as apply-completion evidence.
-	for id in $additions; do
-		probe="$TRUNK_IFACE.$id"
+	local snap_iface had_prior=0 tok probe=""
+	for tok in $additions; do
+		probe="$tok"
 		break
 	done
 	snap_iface=$(snapshot_default_route)
-	# FR-37: assign per-VLAN route metrics for this run and refuse up front if any
-	# would out-prioritize or tie the uplink (a guaranteed health-FAIL revert loop).
 	ROUTE_METRICS=""
 	if [ "$VLAN_ROUTES" = true ]; then
 		local snap_metric
-		ROUTE_METRICS=$(plan_route_metrics "$(backend_owned_metrics)" "$target" "$additions" "$VLAN_ROUTE_METRIC_START" "$VLAN_ROUTE_METRIC_MODE")
+		ROUTE_METRICS=$(plan_route_metrics "$(backend_owned_metrics)" "$target" "$additions" "$VLAN_ROUTE_METRIC_START")
 		snap_metric=$(snapshot_default_metric)
 		if [ "$(metric_conflict "$snap_metric" "$ROUTE_METRICS")" = CONFLICT ]; then
 			log err "VLAN_ROUTES metric conflict: uplink default (${snap_iface:-?}) has metric ${snap_metric} but assigned VLAN metrics [${ROUTE_METRICS}] would match or beat it; raise VLAN_ROUTE_METRIC_START above the uplink metric. Refusing to apply, changing nothing"
@@ -1164,7 +1124,6 @@ apply_change() { # TARGET_IDS ADDITIONS REMOVALS [LEASE_SET]
 	fi
 	[ -f "$NETPLAN_FILE" ] && had_prior=1
 	if ! backup_current; then
-		# No backup = no safe disk-convergence target on revert. Fail toward no change.
 		log err "cannot back up current $NETPLAN_FILE (disk full or $BACKUP_DIR unwritable); refusing to apply"
 		return 1
 	fi
@@ -1182,20 +1141,19 @@ apply_change() { # TARGET_IDS ADDITIONS REMOVALS [LEASE_SET]
 		restore_prior "$had_prior"
 		return 1
 	fi
-	log info "applying target [${target:-none}] on $TRUNK_IFACE via netplan try (uplink snapshot: ${snap_iface:-none})"
+	local trunks
+	trunks=$(distinct_ifaces "$target")
+	log info "applying target [${target:-none}] on trunks [${trunks:-none}] via netplan try (uplink snapshot: ${snap_iface:-none})"
 	if backend_apply_with_revert "$snap_iface" "$probe"; then
 		log notice "netplan try ACCEPTED"
-		prune_backups # prune only after accept: a revert must still find LAST_BACKUP on disk
-		for id in $removals; do backend_remove_vlan "$OLD_TRUNK" "$id"; done # FR-24: deletes only after accept
+		prune_backups
+		for tok in $removals; do backend_remove_vlan "$tok"; done
 		wait_leases "$lease_set"
 		restart_targets
-		log notice "reconcile applied on $TRUNK_IFACE: added [${additions:-none}] removed [${removals:-none}]"
+		log notice "reconcile applied on [${trunks:-none}]: added [${additions:-none}] removed [${removals:-none}]"
 		return 0
 	fi
-	# REVERT path (FR-27/AC-11): no deletes, no lease-settle, no restarts.
 	log err "post-apply health check FAILED; netplan try reverted; uplink preserved, no deletes, no restarts"
-	# Converge disk to the prior file so the next run starts from known-good. Do NOT re-apply
-	# (FR-19: netplan try already reverted the live state; a competing restore must not fight it).
 	restore_prior "$had_prior"
 	return 1
 }
@@ -1204,22 +1162,20 @@ apply_change() { # TARGET_IDS ADDITIONS REMOVALS [LEASE_SET]
 # Exclusion / overlap / count warnings (FR-10/11/12)
 # ---------------------------------------------------------------------------
 
-log_exclusions() { # DETECTED MANAGED
-	local detected="$1" mset=" $2 " id
+log_exclusions() { # IFACE DETECTED_IDS MANAGED_IDS
+	local iface="$1" detected="$2" mset=" $3 " id
 	for id in $detected; do
-		case "$mset" in *" $id "*) log warning "VLAN $id detected but managed elsewhere (netplan/kernel); excluded" ;; esac
+		case "$mset" in *" $id "*) log warning "VLAN $id on $iface detected but managed elsewhere; excluded" ;; esac
 	done
 }
 
-warn_overlap() { # OWNED - FR-11: warn when an owned id is ALSO defined in another netplan file
-	local owned="$1" id n ids
+warn_overlap() { # OWNED_TOKENS - FR-11: warn when an owned iface.id is also defined elsewhere
+	local owned="$1" tok n ids
 	[ -z "$owned" ] && return 0
-	# netplan get merges all files; an id appearing under two different stanza keys
-	# (ours + an external file's) shows up twice in the merged output.
-	ids=$(netplan get network.vlans 2>/dev/null | grep -E '^[[:space:]]*id:[[:space:]]*[0-9]+' | grep -oE '[0-9]+')
-	for id in $owned; do
-		n=$(printf '%s\n' "$ids" | grep -cx "$id")
-		[ "$n" -ge 2 ] && log warning "dynavlan VLAN $id also defined in another netplan file (FR-11); keeping dynavlan's entry"
+	ids=$(netplan get network.vlans 2>/dev/null | grep -E '^[[:space:]]+[a-zA-Z0-9_.-]+\.[0-9]+:' | sed 's/^[[:space:]]*//' | sed 's/:$//')
+	for tok in $owned; do
+		n=$(printf '%s\n' $ids | grep -cx "$tok")
+		[ "$n" -ge 2 ] && log warning "dynavlan VLAN $tok also defined in another netplan file (FR-11); keeping dynavlan's entry"
 	done
 	return 0
 }
@@ -1271,179 +1227,192 @@ gate_vlan_count() { # KEPT ADDITIONS - echoes the (possibly reduced) additions; 
 
 do_boot() {
 	log info "run start: dynavlan $(version_string "$ver" "$build") mode=boot detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}] reset_on_boot=$RESET_ON_BOOT"
-	if ! run_detection || [ -z "$DETECTED_VLANS" ]; then
+
+	if ! run_detection || [ -z "$DETECTED_TRUNKS" ]; then
 		log err "boot reconcile aborted: no carrier / no tags / zero VLANs detected. Changing nothing (FR-22 zero-detection guard)"
 		return 0
 	fi
-	local owned managed additions removals target pass1 pass2 ref
-	local sel1 seltags1 sel2="" seltags2=""
-	sel1="$TRUNK_IFACE" # freshly-selected trunk BEFORE pinning (relocation evidence)
-	seltags1="$DETECTED_VLANS"
+
+	local owned owned_ifaces trunk
+	local all_additions="" all_removals="" target
 	owned=$(backend_owned_vlans)
-	OLD_TRUNK=$(owned_parent)
-	[ -z "$OLD_TRUNK" ] && OLD_TRUNK="$TRUNK_IFACE"
-	# Pin to the owned parent (mirrors do_rescan): both detection passes AND the
-	# generated config must describe the SAME wire. Without this, a second tagged
-	# NIC winning trunk selection in either pass would make boot_removals compare
-	# tag sets from different interfaces and tear down a live-but-idle owned VLAN.
-	# Boot never relocates a live parent; the RELOCATED branch below (AC-3) handles
-	# the trunk having MOVED to a different NIC, with two-pass evidence.
-	if [ -n "$owned" ]; then TRUNK_IFACE="$OLD_TRUNK"; fi
-	ref="$TRUNK_IFACE"
-	pass1=$(emit_set $(iface_tags "$ref"))
-	log info "detected pass1=[${pass1:-none}] on $ref"
-	# Loud breadcrumb regardless of RESET_ON_BOOT: if the owned parent shows nothing
-	# while another NIC carries tags, monitoring may be dead because the trunk moved.
-	# With RESET_ON_BOOT=false relocation can never happen, so without this line the
-	# box would sit at zero monitoring logging only info-level "no change" forever.
-	if [ -n "$owned" ] && [ -z "$pass1" ] && [ -n "$sel1" ] && [ "$sel1" != "$ref" ] && [ -n "$seltags1" ]; then
-		log warning "owned parent $ref carries no tags while $sel1 does; trunk may have moved. Relocation requires RESET_ON_BOOT=true and two-pass evidence"
-	fi
-	managed=$(backend_list_managed_vlans)
-	log_exclusions "$pass1" "$managed"
-	warn_overlap "$owned"
-	additions=$(compute_candidates "$pass1" "$VLAN_MIN" "$VLAN_MAX" "$IGNORE_SET" "$managed" "$owned")
-	removals=""
+	owned_ifaces=$(distinct_ifaces "$owned")
+
+	local all_trunks
+	all_trunks=$(printf '%s\n' $owned_ifaces $DETECTED_TRUNKS | sort -u | tr '\n' ' ' | sed 's/ $//')
+
+	for trunk in $all_trunks; do
+		local detected_ids managed owned_on_trunk owned_ids additions_ids
+		detected_ids=$(emit_set $(iface_tags "$trunk"))
+		managed=$(backend_list_managed_vlans "$trunk")
+		owned_on_trunk=$(tokens_for_iface "$owned" "$trunk")
+		owned_ids=$(untag_tokens "$owned_on_trunk")
+
+		log_exclusions "$trunk" "$detected_ids" "$managed"
+		additions_ids=$(compute_candidates "$detected_ids" "$VLAN_MIN" "$VLAN_MAX" "$IGNORE_SET" "$managed" "$owned_ids")
+		all_additions="$all_additions $(tag_tokens "$trunk" "$additions_ids")"
+
+		eval "_p1_${trunk//[^a-zA-Z0-9]/_}=\"\$detected_ids\""
+	done
+
 	if [ "$RESET_ON_BOOT" = true ]; then
 		log info "boot removal pass 2 in ${BOOT_SETTLE_SECONDS}s..."
 		sleep "$BOOT_SETTLE_SECONDS"
-		pass2=""
-		local pass2_valid=0
-		if run_detection; then
-			sel2="$TRUNK_IFACE" # fresh selection again (relocation evidence)
-			seltags2="$DETECTED_VLANS"
-			# Trust pass 2 for removals only if the reference iface itself has carrier:
-			# an empty read off a dead link is not evidence of absence.
-			if [ "$(cat "/sys/class/net/$ref/carrier" 2>/dev/null)" = "1" ]; then
-				pass2=$(emit_set $(iface_tags "$ref"))
-				pass2_valid=1
+
+		run_detection 2>/dev/null
+
+		for trunk in $all_trunks; do
+			local p1 p2 owned_on_trunk owned_ids removals_ids
+			eval "p1=\"\${_p1_${trunk//[^a-zA-Z0-9]/_}}\""
+			owned_on_trunk=$(tokens_for_iface "$owned" "$trunk")
+			owned_ids=$(untag_tokens "$owned_on_trunk")
+
+			if [ "$(cat "/sys/class/net/$trunk/carrier" 2>/dev/null)" = "1" ]; then
+				p2=$(emit_set $(iface_tags "$trunk"))
+				if [ -n "$p1" ] && [ -n "$p2" ]; then
+					removals_ids=$(boot_removals "$owned_ids" "$p1" "$p2")
+					all_removals="$all_removals $(tag_tokens "$trunk" "$removals_ids")"
+				else
+					log info "trunk $trunk: empty detection in pass 1 or 2; preserving all owned VLANs"
+				fi
+			else
+				log warning "trunk $trunk: no carrier in pass 2; skipping removals (preserving)"
 			fi
-		fi
-		log info "detected pass2=[${pass2:-none}] on $ref"
-		# RELOCATION (AC-3): the owned parent carries no tags in EITHER pass while a
-		# DIFFERENT iface was independently selected, with tags, in BOTH passes. That
-		# is two-pass evidence the trunk physically moved (cable re-patched, port
-		# swap, NIC failure). Reconcile in one pass: remove all owned VLANs from the
-		# old parent, provision the new trunk's set on the new parent. Without this
-		# branch, pinning would strand the box on a dead parent forever.
-		if [ -n "$owned" ] && [ -z "$pass1" ] && [ -z "$pass2" ] &&
-			[ -n "$sel1" ] && [ "$sel1" = "$sel2" ] && [ "$sel1" != "$ref" ] &&
-			[ -n "$seltags1" ] && [ -n "$seltags2" ]; then
-			log notice "trunk relocated: $ref carries no tags in both passes (carrier=$(cat "/sys/class/net/$ref/carrier" 2>/dev/null || echo '?')); $sel1 does (both passes). Reconciling to $sel1"
-			TRUNK_IFACE="$sel1"
-			removals="$owned" # deleted from OLD_TRUNK=$ref, only after accept (FR-24)
-			additions=$(compute_candidates "$(set_union "$seltags1" "$seltags2")" "$VLAN_MIN" "$VLAN_MAX" "$IGNORE_SET" "$managed" "")
-			additions=$(gate_vlan_count "" "$additions") || return 1
-			target="$additions"
-			apply_change "$target" "$additions" "$removals"
-			return $?
-		fi
-		if [ "$pass2_valid" = 1 ]; then
-			removals=$(boot_removals "$owned" "$pass1" "$pass2")
-		else
-			log warning "boot pass 2 could not re-verify trunk $ref (no carrier); skipping removals this boot"
-		fi
+		done
 	fi
-	TRUNK_IFACE="$ref" # run_detection in pass 2 may have re-selected; re-pin before generate
-	target=$(set_union "$(set_minus "$owned" "$removals")" "$additions")
-	if [ -z "$additions" ] && [ -z "$removals" ]; then
-		log info "no change: owned=[${owned:-none}] detected=[$pass1]; zero applies/restarts"
+
+	all_additions=$(emit_tokens $all_additions)
+	all_removals=$(emit_tokens $all_removals)
+	warn_overlap "$owned"
+
+	if [ -z "$all_additions" ] && [ -z "$all_removals" ]; then
+		log info "no change: owned=[${owned:-none}]; zero applies/restarts"
 		return 0
 	fi
-	additions=$(gate_vlan_count "$(set_minus "$owned" "$removals")" "$additions") || return 1
-	if [ -z "$additions" ] && [ -z "$removals" ]; then
+
+	all_additions=$(gate_vlan_count "$(set_minus "$owned" "$all_removals")" "$all_additions") || return 1
+	if [ -z "$all_additions" ] && [ -z "$all_removals" ]; then
 		log info "no change after VLAN_LIMIT gating; zero applies/restarts"
 		return 0
 	fi
-	target=$(set_union "$(set_minus "$owned" "$removals")" "$additions")
-	apply_change "$target" "$additions" "$removals"
+
+	target=$(set_union "$(set_minus "$owned" "$all_removals")" "$all_additions")
+	apply_change "$target" "$all_additions" "$all_removals"
 }
 
 do_rescan() {
 	log info "run start: dynavlan $(version_string "$ver" "$build") mode=rescan detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}]"
-	if ! run_detection; then
-		log info "rescan: no trunk detected; nothing to add"
+	if ! run_detection || [ -z "$DETECTED_TRUNKS" ]; then
+		log info "rescan: no trunks detected; nothing to add"
 		return 0
 	fi
-	local pass="$DETECTED_VLANS" owned managed additions target
+
+	local owned trunk all_additions=""
 	owned=$(backend_owned_vlans)
-	OLD_TRUNK=$(owned_parent)
-	[ -z "$OLD_TRUNK" ] && OLD_TRUNK="$TRUNK_IFACE"
-	# Rescan is add-only and never relocates: if we already own VLANs, pin to their parent.
-	if [ -n "$owned" ]; then
-		TRUNK_IFACE="$OLD_TRUNK"
-		pass=$(emit_set $(iface_tags "$OLD_TRUNK"))
-	fi
-	log info "detected=[$pass] on $TRUNK_IFACE"
-	managed=$(backend_list_managed_vlans)
-	log_exclusions "$pass" "$managed"
-	warn_overlap "$owned"
-	additions=$(compute_candidates "$pass" "$VLAN_MIN" "$VLAN_MAX" "$IGNORE_SET" "$managed" "$owned")
-	if [ -z "$additions" ]; then
-		log info "rescan: no new VLANs (owned=[${owned:-none}] detected=[$pass]); zero applies/restarts"
+
+	for trunk in $DETECTED_TRUNKS; do
+		local detected_ids managed owned_on_trunk owned_ids additions_ids
+		detected_ids=$(emit_set $(iface_tags "$trunk"))
+		managed=$(backend_list_managed_vlans "$trunk")
+		owned_on_trunk=$(tokens_for_iface "$owned" "$trunk")
+		owned_ids=$(untag_tokens "$owned_on_trunk")
+
+		log_exclusions "$trunk" "$detected_ids" "$managed"
+		additions_ids=$(compute_candidates "$detected_ids" "$VLAN_MIN" "$VLAN_MAX" "$IGNORE_SET" "$managed" "$owned_ids")
+		all_additions="$all_additions $(tag_tokens "$trunk" "$additions_ids")"
+	done
+
+	all_additions=$(emit_tokens $all_additions)
+	if [ -z "$all_additions" ]; then
+		log info "rescan: no new VLANs (owned=[${owned:-none}]); zero applies/restarts"
 		return 0
 	fi
-	additions=$(gate_vlan_count "$owned" "$additions") || return 1
-	if [ -z "$additions" ]; then
+
+	warn_overlap "$owned"
+	all_additions=$(gate_vlan_count "$owned" "$all_additions") || return 1
+	if [ -z "$all_additions" ]; then
 		log info "rescan: no additions after VLAN_LIMIT gating; zero applies/restarts"
 		return 0
 	fi
-	target=$(set_union "$owned" "$additions")
-	apply_change "$target" "$additions" ""
+
+	local target
+	target=$(set_union "$owned" "$all_additions")
+	apply_change "$target" "$all_additions" ""
 }
 
 # ---------------------------------------------------------------------------
 # Operator entrypoints (FR-34/35, --reconfigure)
 # ---------------------------------------------------------------------------
 
-do_dryrun() { # FR-34: detect, compute diff, validate in a throwaway tree; never apply
+do_dryrun() {
 	log info "dry-run: detecting (no changes will be made)..."
-	if ! run_detection; then
-		printf 'dry-run: no trunk detected; would change nothing\n'
+	if ! run_detection || [ -z "$DETECTED_TRUNKS" ]; then
+		printf 'dry-run: no trunks detected; would change nothing\n'
 		return 0
 	fi
-	local pass="$DETECTED_VLANS" owned managed additions removals target tree saved
+
+	local owned trunk all_additions="" all_removals=""
 	owned=$(backend_owned_vlans)
-	OLD_TRUNK=$(owned_parent)
-	[ -z "$OLD_TRUNK" ] && OLD_TRUNK="$TRUNK_IFACE"
-	# Mirror the boot/rescan pinning so the preview names the trunk --boot would
-	# actually use, not whichever NIC won this round's selection.
-	if [ -n "$owned" ]; then
-		TRUNK_IFACE="$OLD_TRUNK"
-		pass=$(emit_set $(iface_tags "$OLD_TRUNK"))
-	fi
-	managed=$(backend_list_managed_vlans)
-	additions=$(compute_candidates "$pass" "$VLAN_MIN" "$VLAN_MAX" "$IGNORE_SET" "$managed" "$owned")
-	if [ "$RESET_ON_BOOT" = true ]; then removals=$(set_minus "$owned" "$pass"); else removals=""; fi
-	target=$(set_union "$(set_minus "$owned" "$removals")" "$additions")
+	local owned_ifaces
+	owned_ifaces=$(distinct_ifaces "$owned")
+	local all_trunks
+	all_trunks=$(printf '%s\n' $owned_ifaces $DETECTED_TRUNKS | sort -u | tr '\n' ' ' | sed 's/ $//')
+
+	for trunk in $all_trunks; do
+		local detected_ids managed owned_on_trunk owned_ids additions_ids removals_ids
+		detected_ids=$(emit_set $(iface_tags "$trunk"))
+		managed=$(backend_list_managed_vlans "$trunk")
+		owned_on_trunk=$(tokens_for_iface "$owned" "$trunk")
+		owned_ids=$(untag_tokens "$owned_on_trunk")
+
+		additions_ids=$(compute_candidates "$detected_ids" "$VLAN_MIN" "$VLAN_MAX" "$IGNORE_SET" "$managed" "$owned_ids")
+		all_additions="$all_additions $(tag_tokens "$trunk" "$additions_ids")"
+
+		if [ "$RESET_ON_BOOT" = true ]; then
+			removals_ids=$(set_minus "$owned_ids" "$detected_ids")
+			all_removals="$all_removals $(tag_tokens "$trunk" "$removals_ids")"
+		fi
+	done
+
+	all_additions=$(emit_tokens $all_additions)
+	all_removals=$(emit_tokens $all_removals)
+	local target
+	target=$(set_union "$(set_minus "$owned" "$all_removals")" "$all_additions")
+
 	printf 'dry-run diff (boot mode, single detection pass):\n'
-	printf '  trunk:     %s\n' "$TRUNK_IFACE"
-	printf '  detected:  [%s]\n' "$pass"
+	printf '  trunks:    [%s]\n' "${all_trunks:-none}"
 	printf '  owned:     [%s]\n' "${owned:-none}"
-	printf '  additions: [%s]\n' "${additions:-none}"
-	printf '  removals:  [%s]  (indicative; boot confirms removals with a 2-pass sniff)\n' "${removals:-none}"
+	printf '  additions: [%s]\n' "${all_additions:-none}"
+	printf '  removals:  [%s]  (indicative; boot confirms removals with a 2-pass sniff)\n' "${all_removals:-none}"
 	printf '  target:    [%s]\n' "${target:-none}"
 	printf '  count gate: %s (%s VLANs; VLAN_WARN=%s VLAN_LIMIT=%s mode=%s)\n' \
 		"$(vlan_guard "$(count_ids "$target")" "$VLAN_WARN" "$VLAN_LIMIT")" \
 		"$(count_ids "$target")" "$VLAN_WARN" "$VLAN_LIMIT" "$VLAN_LIMIT_MODE"
-	# FR-37 preview: assign metrics the way apply_change would and surface a conflict.
+
+	for trunk in $all_trunks; do
+		local detected_ids t_owned t_adds t_rems
+		detected_ids=$(emit_set $(iface_tags "$trunk"))
+		t_owned=$(tokens_for_iface "$owned" "$trunk")
+		t_adds=$(tokens_for_iface "$all_additions" "$trunk")
+		t_rems=$(tokens_for_iface "$all_removals" "$trunk")
+		printf '  %s: detected=[%s] owned=[%s] +[%s] -[%s]\n' \
+			"$trunk" "${detected_ids:-none}" "${t_owned:-none}" "${t_adds:-none}" "${t_rems:-none}"
+	done
+
 	ROUTE_METRICS=""
 	if [ "$VLAN_ROUTES" = true ]; then
 		local snap_metric
-		# Same decision point as apply_change, not a parallel recomposition: a preview
-		# that assigns metrics differently from the apply it previews is worse than no
-		# preview at all.
-		ROUTE_METRICS=$(plan_route_metrics "$(backend_owned_metrics)" "$target" "$additions" "$VLAN_ROUTE_METRIC_START" "$VLAN_ROUTE_METRIC_MODE")
+		ROUTE_METRICS=$(plan_route_metrics "$(backend_owned_metrics)" "$target" "$all_additions" "$VLAN_ROUTE_METRIC_START")
 		snap_metric=$(snapshot_default_metric)
-		printf '  routes:    ON mode=%s start=%s metrics [%s]\n' "$VLAN_ROUTE_METRIC_MODE" "$VLAN_ROUTE_METRIC_START" "${ROUTE_METRICS:-none}"
+		printf '  routes:    ON start=%s metrics [%s]\n' "$VLAN_ROUTE_METRIC_START" "${ROUTE_METRICS:-none}"
 		if [ "$(metric_conflict "$snap_metric" "$ROUTE_METRICS")" = CONFLICT ]; then
 			printf '  routes:    CONFLICT - uplink default metric %s would be matched/beaten; --boot would refuse (raise VLAN_ROUTE_METRIC_START)\n' "$snap_metric"
 		fi
 	fi
+
+	local tree saved
 	tree=$(mktemp -d /run/dynavlan.dryrun.XXXXXX) || tree=""
 	if [ -z "$tree" ]; then
-		# Without the throwaway tree, NETPLAN_FILE would point at the REAL file and
-		# dry-run would violate its never-apply contract (FR-34). Bail instead.
 		printf '  validate:  SKIPPED - cannot create scratch tree in /run\n'
 		return 1
 	fi
@@ -1478,19 +1447,18 @@ do_dryrun() { # FR-34: detect, compute diff, validate in a throwaway tree; never
 # cleanup of the abandoned links. Pinning to the owned parent also makes this fast
 # and carrier-independent, which is what an operator invoking it by hand wants.
 do_reapply() {
-	local owned parent live generated saved tmpdir hdr rc
+	local owned parents live generated saved tmpdir hdr rc
 	owned=$(backend_owned_vlans)
 	if [ -z "$owned" ]; then
 		log notice "reapply: no VLANs owned; nothing to regenerate"
 		return 0
 	fi
-	parent=$(owned_parent)
-	if [ -z "$parent" ]; then
-		log err "reapply: $NETPLAN_FILE defines VLANs but no parent link; refusing (cannot know which trunk to write) - run --boot to reconcile from detection instead"
+	parents=$(distinct_ifaces "$owned")
+	if [ -z "$parents" ]; then
+		log err "reapply: $NETPLAN_FILE defines VLANs but no parent link; refusing - run --boot to reconcile from detection instead"
 		return 1
 	fi
-	TRUNK_IFACE="$parent"
-	log info "run start: dynavlan $(version_string "$ver" "$build") mode=reapply owned=[$owned] parent=$TRUNK_IFACE"
+	log info "run start: dynavlan $(version_string "$ver" "$build") mode=reapply owned=[$owned] trunks=[$parents]"
 
 	live=$(cat "$NETPLAN_FILE" 2>/dev/null)
 	hdr=$(printf '%s\n' "$live" | head -1)
@@ -1498,15 +1466,13 @@ do_reapply() {
 	*"Managed by dynavlan"*) log info "on-disk config header: ${hdr#\# Managed by }" ;;
 	esac
 
-	# Generate a candidate into /run, never into /etc/netplan: nothing may land next
-	# to the live file that a later `netplan apply` by any actor could pick up.
 	tmpdir=$(mktemp -d /run/dynavlan.reapply.XXXXXX) || {
 		log err "reapply: cannot create scratch dir in /run; refusing"
 		return 1
 	}
 	ROUTE_METRICS=""
 	if [ "$VLAN_ROUTES" = true ]; then
-		ROUTE_METRICS=$(plan_route_metrics "$(backend_owned_metrics)" "$owned" "" "$VLAN_ROUTE_METRIC_START" "$VLAN_ROUTE_METRIC_MODE")
+		ROUTE_METRICS=$(plan_route_metrics "$(backend_owned_metrics)" "$owned" "" "$VLAN_ROUTE_METRIC_START")
 	fi
 	saved="$NETPLAN_FILE"
 	NETPLAN_FILE="$tmpdir/90-dynavlan.yaml"
@@ -1519,45 +1485,41 @@ do_reapply() {
 	generated=$(cat "$NETPLAN_FILE" 2>/dev/null)
 	NETPLAN_FILE="$saved"
 	rm -rf "$tmpdir"
-	# An unreadable candidate is not evidence of drift. Without this, a failed
-	# read-back leaves $generated empty, which compares DIFFERENT against any
-	# non-empty live file and applies - a change with no reason behind it, on the
-	# one operation that can strand the box. Same stance as the FR-5a `-Q in`
-	# probe: refuse loudly rather than degrade into a silent wrong answer.
 	if [ -z "$generated" ]; then
 		log err "reapply: generated a candidate config but could not read it back; refusing, nothing applied"
 		return 1
 	fi
-
 	if [ "$(config_body_differs "$generated" "$live")" = SAME ]; then
 		log notice "reapply: on-disk config already matches what this build generates; no change, nothing applied"
 		return 0
 	fi
-
-	# Count gate is deliberately NOT consulted: with zero additions this is not
-	# growth, and in fill mode it would TRIM the owned set - turning a reapply into
-	# a silent removal. Log the count for observability instead.
 	log notice "reapply: config drift detected ($(count_ids "$owned") VLANs owned; VLAN_WARN=$VLAN_WARN VLAN_LIMIT=$VLAN_LIMIT); applying regenerated config"
 	apply_change "$owned" "" "" "$owned"
 	rc=$?
-	[ "$rc" -eq 0 ] && log notice "reapply: applied regenerated config for [$owned] on $TRUNK_IFACE"
+	[ "$rc" -eq 0 ] && log notice "reapply: applied regenerated config for [$owned] on trunks [$parents]"
 	return $rc
 }
 
-do_status() { # FR-35
-	local owned trunk managed
+do_status() { # FR-35 - report all trunks
+	local owned trunks managed
 	owned=$(backend_owned_vlans)
-	trunk=$(owned_parent)
+	trunks=$(distinct_ifaces "$owned")
 	printf 'dynavlan %s\n' "$(version_string "$ver" "$build")"
-	printf '  configured (owned): [%s] on %s\n' "${owned:-none}" "${trunk:-none}"
+	printf '  configured (owned): [%s]\n' "${owned:-none}"
+	printf '  owned trunks: [%s]\n' "${trunks:-none}"
 	printf '  detect_method: %s   range: %s-%s   ignore: [%s]\n' "$DETECT_METHOD" "$VLAN_MIN" "$VLAN_MAX" "${IGNORE_SET:-none}"
 	log info "status: running a ${SNIFF_SECONDS}s detection pass..."
-	if run_detection; then
-		managed=$(backend_list_managed_vlans)
-		printf '  detected now: [%s] on trunk %s\n' "$DETECTED_VLANS" "$TRUNK_IFACE"
-		printf '  managed elsewhere: [%s]\n' "${managed:-none}"
+	if run_detection && [ -n "$DETECTED_TRUNKS" ]; then
+		printf '  detected trunks: [%s]\n' "$DETECTED_TRUNKS"
+		local trunk
+		for trunk in $DETECTED_TRUNKS; do
+			local detected_ids
+			detected_ids=$(emit_set $(iface_tags "$trunk"))
+			managed=$(backend_list_managed_vlans "$trunk")
+			printf '    %s: detected=[%s] managed-elsewhere=[%s]\n' "$trunk" "$detected_ids" "${managed:-none}"
+		done
 	else
-		printf '  detected now: [none] (no trunk)\n'
+		printf '  detected trunks: [none]\n'
 	fi
 	printf '  run history: journalctl -t dynavlan\n'
 	return 0

@@ -8,7 +8,7 @@ How to deploy dynavlan on a netplan/systemd-networkd Ubuntu box. This covers ins
 
 - Ubuntu (or compatible) using **netplan with the systemd-networkd renderer**; netplan >= 0.106 (dynavlan checks and refuses below it). The check reads `netplan --version` where it exists (netplan >= 1.0) and otherwise falls back to `dpkg-query -W netplan.io`, which is how the Ubuntu 22.04 line (netplan 0.10x) reports itself.
 - Root access.
-- The box's trunk-facing NIC patched to a switch port carrying tagged VLANs. No switch-side configuration is required beyond the trunk itself.
+- The box's trunk-facing NIC(s) patched to switch ports carrying tagged VLANs. dynavlan provisions every carrier-up trunk it finds, not one selected NIC - a box with two trunks gets both. No switch-side configuration is required beyond the trunk(s) themselves.
 - `tcpdump` (sniff detection, default) and `lldpd` (LLDP detection). `install.sh` installs both if missing.
 - Base uplink connectivity already working (dynavlan never touches base netplan files; it only adds its own).
 
@@ -60,8 +60,9 @@ If this box should actually route via the discovered VLANs, enable routed mode:
 
 ```
 VLAN_ROUTES=true                  # accept each VLAN's DHCP default route
-VLAN_ROUTE_METRIC_START=100       # first metric; MUST stay above the uplink's metric
-VLAN_ROUTE_METRIC_MODE=discovery  # discovery = order found, stable across runs; id = START + VLAN id
+VLAN_ROUTE_METRIC_START=100       # first metric; MUST stay above the uplink's metric.
+                                  # Metrics are assigned in discovery order, one shared ascending
+                                  # sequence across every trunk on the box; existing VLANs never renumber.
 ```
 
 Then push the change to the VLANs already on the box:
@@ -72,7 +73,7 @@ sudo dynavlan --reapply
 
 `--reapply` regenerates the owned VLAN set with the current settings and applies it through the same `netplan try` + health-check path, but only if the generated config actually differs from what is on disk (so it is a safe no-op if nothing changed). Preview first with `sudo dynavlan --dry-run`, which prints the assigned id:metric map and flags any conflict.
 
-Each VLAN then accepts its DHCP default route at a distinct metric (100, 101, 102, ... in discovery mode), so the table is deterministic and the lowest-metric route - normally the untagged uplink at its own metric - still wins. If any assigned metric would match or beat the uplink's, dynavlan **refuses before touching disk** and names the remedy (raise `VLAN_ROUTE_METRIC_START`); applying it would guarantee a revert loop. DNS/NTP/domains and IPv6 RA stay declined even here - routed mode changes routes only.
+Each VLAN then accepts its DHCP default route at a distinct metric (100, 101, 102, ... in discovery order, one shared sequence across every trunk on the box), so the table is deterministic and the lowest-metric route - normally the untagged uplink at its own metric - still wins. If any assigned metric would match or beat the uplink's, dynavlan **refuses before touching disk** and names the remedy (raise `VLAN_ROUTE_METRIC_START`); applying it would guarantee a revert loop. DNS/NTP/domains and IPv6 RA stay declined even here - routed mode changes routes only.
 
 To go back to isolation: set `VLAN_ROUTES=false` and `sudo dynavlan --reapply` again.
 
@@ -143,7 +144,7 @@ Caveat: routed mode makes the interfaces routable, but the box still has one act
 | Change the rescan interval | edit `RESCAN_MINUTES`, then `sudo dynavlan --reconfigure` |
 | Run history | `journalctl -t dynavlan` |
 
-Steady state is hands-off: boot reconciles the VLAN set against the trunk (two-pass, with guards against removing anything on faulty detection); the timer adds newly appearing VLANs between boots. VLANs that disappear from the trunk are removed at the next boot reconcile, never by the timer.
+Steady state is hands-off: boot reconciles the VLAN set against every trunk the box carries (two-pass per trunk, with guards against removing anything on faulty detection); the timer adds newly appearing VLANs on any trunk between boots. VLANs that disappear from a trunk are removed at the next boot reconcile, never by the timer. A trunk that goes fully dark (unplugged, or the switch stops trunking it) keeps its owned VLANs rather than losing them - only VLANs individually absent from a still-live trunk are removed.
 
 ## 6. Files on the box
 

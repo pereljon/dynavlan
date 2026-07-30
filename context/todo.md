@@ -4,10 +4,24 @@ Owns: open tasks and their status. Does NOT hold permanent facts or decisions (t
 Maintain: update whenever a task is added, changes state, or completes.
 Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 
-## ==> CURRENT WORK (2026-07-28): all-trunks provisioner redesign <==
+## ==> CURRENT WORK (2026-07-29): all-trunks provisioner redesign <==
 
-**STATUS: design APPROVED by operator. NEXT ACTION: invoke the `writing-plans` skill against the
-approved spec to produce the implementation plan, then implement with TDD.**
+**STATUS: IMPLEMENTED (code + docs), NOT yet hardware-validated. Script at v0.2.0. NEXT ACTION: run the
+post-implementation hardware checklist (dynavlan-tests.md L3-29..L3-32: dual leasing, carrier-pull-preserve,
+routed multi-trunk, unified revert w/ 2 trunks) on the box, which already has two live trunks wired up for
+exactly this.**
+
+- [x] Code: `select_trunk` removed, `owned_parent` removed, `TRUNK_IFACE`/`DETECTED_VLANS`/`OLD_TRUNK`
+      replaced by `DETECTED_TRUNKS`, `VLAN_ROUTE_METRIC_MODE` config key removed (discovery-only), new
+      `iface.id` token helpers added, backend functions take/parse per-trunk, `do_boot`/`do_rescan`/
+      `do_dryrun`/`do_reapply`/`do_status` loop per trunk then make one unified `apply_change`. AC-3
+      relocation branch removed (dark trunk = preserve, not relocate). `ver` bumped to 0.2.0.
+- [x] Docs reframed for the multi-trunk model (done 2026-07-29): dev/CODEMAP.md, dev/SKELETON.md,
+      dev/features/dynavlan.md, dev/features/dynavlan-tests.md (new sections 1n/1o/1p, 1e retired,
+      new hardware rows L3-29..L3-32), CHANGELOG.md 0.2.0 entry, README.md, docs/dynavlan-PRD.md,
+      docs/deployment-guide.md. Positioning question below resolved in the same pass.
+- [ ] Hardware validation of the multi-trunk apply/revert/routed paths - NOT yet run. The box already has
+      two live trunks (enp1s0/enp2s0) wired up as the concrete L3 fixture (see live state below).
 
 Design spec (authoritative, read it first): `docs/superpowers/specs/2026-07-28-all-trunks-provisioner-design.md`
 (rev 2 + hardware findings; committed aa816af). It was architect-reviewed (verdict: sound to plan after

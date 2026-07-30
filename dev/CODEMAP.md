@@ -11,17 +11,30 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 |----------|------------------|-------|
 | `emit_set` | Print ids as a sorted de-duplicated space-separated set (shared by all set producers) | (via others) |
 | `parse_vlan_ignore` | Expand VLAN_IGNORE comma/space list with low-high ranges into a set; any bad token = non-zero (refuse) | 1a |
-| `select_trunk` | Pick trunk from "iface:tagcount" candidates: most tags wins, hysteresis margin 1 vs previous, lexicographic tiebreak | 1e |
 | `boot_removals` | Owned ids absent from BOTH boot passes; both-empty = remove nothing (zero-detection guard) | 1d |
 | `health_check_eval` | PASS iff the lowest-metric post-apply default egresses the snapshot iface (iface only; "" snap = PASS) | 1c |
 | `vlan_guard` | Count gate verdict: OVER (> limit, 0 = unlimited) / WARN (> warn) / OK | 1f |
 | `limit_fill` | Lowest-N subset of additions for fill mode (deterministic across a fleet) | 1f |
-| `assign_route_metrics` | FR-37 id:metric map: discovery = kept verbatim + next-free ascending for new; id = START+id stateless | 1g |
-| `map_filter` | Keep only listed ids' tokens of an id:metric map (drops removed VLANs' metrics) | 1g |
-| `map_ids` | Ids of an id:metric map, as a sorted set | 1g |
-| `plan_route_metrics` | THE FR-37 assignment decision point: owned map + target + additions -> full id:metric map; assigns for target ids LACKING a metric (not additions). Every caller must use this | 1g |
+| `assign_route_metrics` | FR-37 iface.id:metric map: kept tokens verbatim + next-free ascending metric for new tokens (discovery order, the only mode) | 1g |
+| `map_filter` | Keep only listed tokens' entries of a token:metric map (drops removed VLANs' metrics) | 1g |
+| `map_ids` | Tokens (keys) of a token:metric map, as a sorted set | 1g |
+| `plan_route_metrics` | THE FR-37 assignment decision point: owned map + target + additions -> full token:metric map; assigns for target tokens LACKING a metric (not additions). Every caller must use this | 1g |
 | `metric_conflict` | CONFLICT if any assigned metric <= uplink default's metric (tie counts), else OK | 1g |
-| `compute_candidates` | detected ∩ [MIN,MAX] − ignore − managed-elsewhere − owned | 1b |
+| `compute_candidates` | detected ∩ [MIN,MAX] − ignore − managed-elsewhere − owned (per-trunk bare-id math; caller tags the result to iface.id) | 1b |
+
+## Token helpers (iface.id canonical key, spec section 3; pure)
+
+Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two trunks sharing a VLAN id never alias. Split is always on the LAST dot.
+
+| function | one-line purpose |
+|----------|------------------|
+| `emit_tokens` | Sorted de-duplicated space-separated token set (the token-domain counterpart of `emit_set`) |
+| `tok_iface` | Token -> its iface part (strip trailing `.id`) |
+| `tok_id` | Token -> its id part (strip leading `iface.`) |
+| `tag_tokens` | IFACE + bare-id set -> `iface.id` tokens |
+| `untag_tokens` | Token set -> bare-id set (strips the iface part; used when a caller needs ids on one trunk) |
+| `tokens_for_iface` | Token set filtered to one iface's tokens |
+| `distinct_ifaces` | Token set -> sorted set of the distinct ifaces present (drives the per-trunk loop in do_boot/do_rescan/do_dryrun) |
 
 ## Set utilities
 
@@ -59,17 +72,17 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 | `lldp_tagged_vlans` | Pure: tagged VLAN ids from `lldpctl -f keyvalue` text; drops the native VLAN (`pvid=yes`), stateful adjacency parse (FR-7a) |
 | `detect_lldp` | lldpctl-advertised VLAN ids, PVID excluded |
 | `detect_iface` | Union of enabled methods for one iface |
-| `run_detection` | Orchestrate: prep all, ONE shared carrier deadline, concurrent per-iface detection, select trunk → TRUNK_IFACE/DETECTED_VLANS |
+| `iface_tags` | Reader for one iface's stashed detection result (set by `run_detection`) |
+| `run_detection` | Orchestrate: prep all, ONE shared carrier deadline, concurrent per-iface detection → `DETECTED_TRUNKS` (every carrier-up iface with a non-empty tag set, not a single selected trunk) |
 
 ## Backend seam (§4 - netplan implementation, the only backend)
 
 | function | one-line purpose |
 |----------|------------------|
-| `backend_owned_vlans` | VLAN ids currently in our file (the known-set) |
-| `backend_owned_metrics` | Persisted id:metric map read back from our file (FR-37 discovery-mode state) |
-| `owned_parent` | Parent iface of our VLANs = previously-selected trunk (stickiness source) |
-| `backend_list_managed_vlans` | VLAN ids managed OUTSIDE our namespace (netplan merge + kernel, minus our own) |
-| `backend_generate_config` | Write our file atomically (same-dir mktemp 0600, fsync, rename); isolation stanza (incl. `accept-ra: false` in both modes, FR-14a), or routes+metric per FR-37 |
+| `backend_owned_vlans` | `iface.id` tokens currently in our file (the known-set), parsed from the stanza headers |
+| `backend_owned_metrics` | Persisted `iface.id:metric` map read back from our file (FR-37 discovery-mode state) |
+| `backend_list_managed_vlans` | IFACE -> bare VLAN ids managed OUTSIDE our namespace on THAT trunk (netplan merge + kernel, minus our own tokens on that iface) |
+| `backend_generate_config` | Write our file atomically (same-dir mktemp 0600, fsync, rename) from a target token set; isolation stanza (incl. `accept-ra: false` in both modes, FR-14a), or routes+metric per FR-37, keyed per token |
 | `backend_validate` | `netplan generate`; on failure classify VALIDATE_ERRSRC ours-vs-base (base = freeze) |
 | `backend_apply_with_revert` | The accept primitive: netplan try + fifo, apply-evidence + liveness + consecutive-health + window-bound accept; FAIL holds fifo open for try's own revert timer |
 | `backend_remove_vlan` | `ip link delete` of a removed VLAN interface (only ever called after ACCEPT) |
@@ -110,11 +123,11 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 
 | function | one-line purpose |
 |----------|------------------|
-| `do_boot` | Two-pass reconcile: zero-detection guard, owned-parent pinning, carrier-gated removals, AC-3 relocation branch |
-| `do_rescan` | Add-only timer reconcile, pinned to the owned parent, never relocates/removes |
-| `do_dryrun` | Preview: same pinning/candidate math, throwaway-tree validate, diff + count gate + FR-37 metric/conflict preview; never applies |
-| `do_reapply` | FR-39: regenerate the owned set with this build, apply only if the body differs; NO detection (pins to owned_parent), full owned set lease-waited, count gate bypassed |
-| `do_status` | Owned vs detected-now vs managed-elsewhere report (root; runs a detection pass) |
+| `do_boot` | All-trunks two-pass reconcile: zero-detection guard (no trunks at all), per-trunk candidates/removals over every owned-or-detected iface (union), carrier-gated removals per trunk, tokens tagged per trunk, one unified `apply_change` across the whole box. No relocation branch: a trunk that goes dark (tagless/carrierless) is preserved, never relocated |
+| `do_rescan` | Add-only timer reconcile over every DETECTED_TRUNKS iface, never removes |
+| `do_dryrun` | Preview: same per-trunk candidate math (single pass) over owned-or-detected ifaces, throwaway-tree validate, diff + count gate + FR-37 metric/conflict preview, per-trunk breakdown printed; never applies |
+| `do_reapply` | FR-39: regenerate the OWNED set (whatever trunks it spans) with this build, apply only if the body differs; NO detection (pins to `distinct_ifaces` of the owned tokens), full owned set lease-waited, count gate bypassed |
+| `do_status` | Report for every owned trunk plus every currently-detected trunk: owned vs detected-now vs managed-elsewhere (root; runs a detection pass) |
 | `render_timer_dropin` | Pure: timer drop-in text for an interval; restates ALL monotonic triggers, since the reset clears the whole list (FR-21a) |
 | `do_reconfigure` | Write the rendered drop-in to `dynavlan.timer.d/interval.conf` + daemon-reload |
 | `main` | Mode dispatch: `--version` (pre-config, pre-root) → config → (status/reconfigure) → preconditions → dry-run (non-blocking lock try) → boot/rescan under the fd-held flock |

@@ -112,16 +112,6 @@ call boot_removals "18 21 22" "18 21 22" "18 21 22"; ok "1d all present -> none"
 call boot_removals "18 21"    ""      "";            ok "1d both passes empty -> guard, none" ""
 
 # ---------------------------------------------------------------------------
-# 1e. select_trunk - most tagged port wins, with hysteresis toward the previous trunk
-#     args: candidates ("iface:tagcount ...")  previous ("" if none)
-# ---------------------------------------------------------------------------
-
-call select_trunk "enp1s0:5 enp2s0:1" "";       ok "1e no previous -> most tags"       "enp1s0"
-call select_trunk "enp1s0:3 enp2s0:3" "enp1s0"; ok "1e tie -> stick with previous"     "enp1s0"
-call select_trunk "enp1s0:2 enp2s0:5" "enp1s0"; ok "1e clear supersede flips"          "enp2s0"
-call select_trunk "enp1s0:3 enp2s0:4" "enp1s0"; ok "1e marginal lead does not flip"    "enp1s0"
-
-# ---------------------------------------------------------------------------
 # 1f. vlan_guard / limit_fill - VLAN_WARN / VLAN_LIMIT gate (0 = unlimited)
 #     vlan_guard N WARN LIMIT -> OK | WARN | OVER ; limit_fill ADDS SLOTS -> lowest-N
 # ---------------------------------------------------------------------------
@@ -135,37 +125,33 @@ call vlan_guard 70 32 0;   ok "1f unlimited -> WARN not OVER"       "WARN"
 call vlan_guard 5  32 0;   ok "1f unlimited under warn -> OK"       "OK"
 call vlan_guard 20 32 10;  ok "1f limit below warn still fires"     "OVER"
 
-call limit_fill "1 5 9 20" 2;  ok "1f fill lowest-2"                "1 5"
-call limit_fill "9 1 5" 2;     ok "1f fill sorts before cut"        "1 5"
-call limit_fill "1 5 9" 0;     ok "1f fill zero slots -> empty"     ""
-call limit_fill "1 5" 10;      ok "1f fill slots exceed adds"       "1 5"
+call limit_fill "eth0.1 eth0.5 eth0.9 eth0.20" 2;  ok "1f fill lowest-2"     "eth0.1 eth0.20"
+call limit_fill "eth0.9 eth0.1 eth0.5" 2;     ok "1f fill sorts before cut"        "eth0.1 eth0.5"
+call limit_fill "eth0.1 eth0.5 eth0.9" 0;     ok "1f fill zero slots -> empty"     ""
+call limit_fill "eth0.1 eth0.5" 10;            ok "1f fill slots exceed adds"       "eth0.1 eth0.5"
 
 # ---------------------------------------------------------------------------
 # 1g. assign_route_metrics / metric_conflict - VLAN_ROUTES metric assignment
-#     assign_route_metrics KEPT_MAP ADDITIONS START MODE -> "id:metric ..." (sorted by id)
-#       discovery: kept preserved verbatim; additions get max(START-1, highest kept)+1 ...
-#       id: stateless metric = START + id for every id (kept map ignored)
+#     assign_route_metrics KEPT_MAP ADDITIONS START -> "tok:metric ..." (sorted by tok)
+#       kept preserved verbatim; additions get max(START-1, highest kept)+1 ...
 #     metric_conflict UPLINK_METRIC MAP -> CONFLICT if any metric <= uplink, else OK
 # ---------------------------------------------------------------------------
 
-call assign_route_metrics "" "21 22" 100 discovery;            ok "1g discovery fresh start"              "21:100 22:101"
-call assign_route_metrics "21:100 22:101" "18" 100 discovery;  ok "1g discovery new id continues, keeps"  "18:102 21:100 22:101"
-call assign_route_metrics "21:100" "18 30" 100 discovery;      ok "1g discovery batch ascending"          "18:101 21:100 30:102"
-call assign_route_metrics "21:100 22:101" "" 100 discovery;    ok "1g discovery no additions -> kept"     "21:100 22:101"
-call assign_route_metrics "21:100" "25" 200 discovery;         ok "1g discovery raised START wins"        "21:100 25:200"
-call assign_route_metrics "21:250" "25" 200 discovery;         ok "1g discovery high kept metric wins"    "21:250 25:251"
-call assign_route_metrics "" "" 100 discovery;                 ok "1g discovery all empty -> empty"       ""
-call assign_route_metrics "21:999" "18 22" 100 id;             ok "1g id mode stateless, ignores kept"    "18:118 21:121 22:122"
-call assign_route_metrics "" "5" 100 id;                       ok "1g id mode fresh"                      "5:105"
+call assign_route_metrics "" "enp1s0.21 enp1s0.22" 100;                          ok "1g fresh start"              "enp1s0.21:100 enp1s0.22:101"
+call assign_route_metrics "enp1s0.21:100 enp1s0.22:101" "enp1s0.18" 100;         ok "1g new id continues, keeps"  "enp1s0.18:102 enp1s0.21:100 enp1s0.22:101"
+call assign_route_metrics "enp1s0.21:100" "enp1s0.18 enp1s0.30" 100;             ok "1g batch ascending"          "enp1s0.18:101 enp1s0.21:100 enp1s0.30:102"
+call assign_route_metrics "enp1s0.21:100 enp1s0.22:101" "" 100;                  ok "1g no additions -> kept"     "enp1s0.21:100 enp1s0.22:101"
+call assign_route_metrics "enp1s0.21:100" "enp1s0.25" 200;                       ok "1g raised START wins"        "enp1s0.21:100 enp1s0.25:200"
+call assign_route_metrics "enp1s0.21:250" "enp1s0.25" 200;                       ok "1g high kept metric wins"    "enp1s0.21:250 enp1s0.25:251"
+call assign_route_metrics "" "" 100;                                              ok "1g all empty -> empty"       ""
+call map_filter "enp1s0.18:102 enp1s0.21:100 enp1s0.22:101" "enp1s0.21 enp1s0.22";  ok "1g map_filter keeps listed ids"   "enp1s0.21:100 enp1s0.22:101"
+call map_filter "enp1s0.18:102 enp1s0.21:100" "";              ok "1g map_filter empty ids -> empty" ""
+call map_filter "" "enp1s0.21";                                ok "1g map_filter empty map -> empty" ""
 
-call map_filter "18:102 21:100 22:101" "21 22";  ok "1g map_filter keeps listed ids"   "21:100 22:101"
-call map_filter "18:102 21:100" "";              ok "1g map_filter empty ids -> empty" ""
-call map_filter "" "21";                         ok "1g map_filter empty map -> empty" ""
-
-call metric_conflict ""  "21:100 22:101";  ok "1g no uplink metric -> OK"        "OK"
-call metric_conflict 10  "21:100 22:101";  ok "1g uplink below all -> OK"        "OK"
-call metric_conflict 100 "21:100 22:101";  ok "1g tie with uplink -> CONFLICT"   "CONFLICT"
-call metric_conflict 300 "21:100 22:101";  ok "1g uplink above -> CONFLICT"      "CONFLICT"
+call metric_conflict ""  "enp1s0.21:100 enp1s0.22:101";  ok "1g no uplink metric -> OK"        "OK"
+call metric_conflict 10  "enp1s0.21:100 enp1s0.22:101";  ok "1g uplink below all -> OK"        "OK"
+call metric_conflict 100 "enp1s0.21:100 enp1s0.22:101";  ok "1g tie with uplink -> CONFLICT"   "CONFLICT"
+call metric_conflict 300 "enp1s0.21:100 enp1s0.22:101";  ok "1g uplink above -> CONFLICT"      "CONFLICT"
 call metric_conflict 100 "";               ok "1g empty map -> OK"               "OK"
 
 # ---------------------------------------------------------------------------
@@ -184,32 +170,28 @@ call metric_conflict 100 "";               ok "1g empty map -> OK"              
 # call sites reimplementing this is how they silently diverge.
 # ---------------------------------------------------------------------------
 
-call map_ids "1:100 18:101"; ok "1g map_ids extracts ids" "1 18"
+call map_ids "enp1s0.1:100 enp1s0.18:101"; ok "1g map_ids extracts ids" "enp1s0.1 enp1s0.18"
 call map_ids ""; ok "1g map_ids of empty map -> empty" ""
 
 # THE DEFECT: isolated -> routed on a box that already owns VLANs, no VLAN churn.
-call plan_route_metrics "" "1 18 21" "" 100 discovery
-ok "1g migration: every owned id gets a metric when none has one" "1:100 18:101 21:102"
+call plan_route_metrics "" "enp1s0.1 enp1s0.18 enp1s0.21" "" 100
+ok "1g migration: every owned id gets a metric when none has one" "enp1s0.1:100 enp1s0.18:101 enp1s0.21:102"
 
 # Same migration, with one genuinely new VLAN in the same run.
-call plan_route_metrics "" "1 18 21 22" "22" 100 discovery
-ok "1g migration + addition: all four assigned" "1:100 18:101 21:102 22:103"
+call plan_route_metrics "" "enp1s0.1 enp1s0.18 enp1s0.21 enp1s0.22" "enp1s0.22" 100
+ok "1g migration + addition: all four assigned" "enp1s0.1:100 enp1s0.18:101 enp1s0.21:102 enp1s0.22:103"
 
 # Steady state must be unchanged by the fix: kept metrics preserved verbatim.
-call plan_route_metrics "1:100 18:101" "1 18 22" "22" 100 discovery
-ok "1g steady state: kept verbatim, addition continues" "1:100 18:101 22:102"
+call plan_route_metrics "enp1s0.1:100 enp1s0.18:101" "enp1s0.1 enp1s0.18 enp1s0.22" "enp1s0.22" 100
+ok "1g steady state: kept verbatim, addition continues" "enp1s0.1:100 enp1s0.18:101 enp1s0.22:102"
 
 # A reapply (zero additions, every id already has a metric) must NOT renumber.
-call plan_route_metrics "1:100 18:101" "1 18" "" 100 discovery
-ok "1g reapply with no churn does not renumber" "1:100 18:101"
+call plan_route_metrics "enp1s0.1:100 enp1s0.18:101" "enp1s0.1 enp1s0.18" "" 100
+ok "1g reapply with no churn does not renumber" "enp1s0.1:100 enp1s0.18:101"
 
 # A removed VLAN's persisted metric is dropped, survivors keep theirs.
-call plan_route_metrics "1:100 18:101 21:102" "1 18" "" 100 discovery
-ok "1g removed VLAN's metric dropped, survivors verbatim" "1:100 18:101"
-
-# id mode is stateless: START + id regardless of history.
-call plan_route_metrics "" "18 22" "" 100 id
-ok "1g id mode is stateless" "18:118 22:122"
+call plan_route_metrics "enp1s0.1:100 enp1s0.18:101 enp1s0.21:102" "enp1s0.1 enp1s0.18" "" 100
+ok "1g removed VLAN's metric dropped, survivors verbatim" "enp1s0.1:100 enp1s0.18:101"
 
 # ---------------------------------------------------------------------------
 # 1h. parse_version / version_ge - netplan version probe (FR-0)
@@ -438,6 +420,212 @@ call config_body_differs "$body_a" "$body_c"; ok "1m body differs -> DIFFERENT" 
 call config_body_differs "$body_a" "$body_d"; ok "1m difference on line 2 is still caught" "DIFFERENT"
 call config_body_differs "$body_a" ""; ok "1m empty live file -> DIFFERENT" "DIFFERENT"
 call config_body_differs "" ""; ok "1m both empty -> SAME" "SAME"
+
+# ---------------------------------------------------------------------------
+# 1n. iface.id token helpers - the all-trunks canonical key (spec section 3)
+#
+# Every set in the pipeline holds iface.id tokens (e.g. "enp1s0.100"), not
+# bare VLAN ids. These helpers convert between the two representations.
+# Cross-parent aliasing returns if any pipeline set holds bare ids.
+# ---------------------------------------------------------------------------
+
+call tok_iface "enp1s0.100";       ok "1n tok_iface extracts parent"         "enp1s0"
+call tok_iface "enp2s0.21";        ok "1n tok_iface different parent"         "enp2s0"
+call tok_id "enp1s0.100";          ok "1n tok_id extracts vlan id"            "100"
+call tok_id "enp2s0.21";           ok "1n tok_id different id"                "21"
+
+call tag_tokens "enp1s0" "18 21 100"; ok "1n tag_tokens prefixes iface" "enp1s0.100 enp1s0.18 enp1s0.21"
+call tag_tokens "enp2s0" "18";        ok "1n tag_tokens single id"     "enp2s0.18"
+call tag_tokens "enp1s0" "";          ok "1n tag_tokens empty ids"     ""
+
+call untag_tokens "enp1s0.18 enp2s0.18 enp1s0.100"; ok "1n untag_tokens extracts bare ids (deduped)" "18 100"
+call untag_tokens "";                                ok "1n untag_tokens empty -> empty"              ""
+
+call tokens_for_iface "enp1s0.18 enp1s0.100 enp2s0.21" "enp1s0"; ok "1n tokens_for_iface filters" "enp1s0.100 enp1s0.18"
+call tokens_for_iface "enp1s0.18 enp2s0.21" "enp3s0";            ok "1n tokens_for_iface no match" ""
+
+call distinct_ifaces "enp1s0.18 enp2s0.21 enp1s0.100"; ok "1n distinct_ifaces" "enp1s0 enp2s0"
+call distinct_ifaces "";                                ok "1n distinct_ifaces empty" ""
+
+# emit_tokens sorts lexicographically (iface.id tokens), not numerically
+call emit_tokens "enp2s0.18" "enp1s0.100" "enp1s0.18"; ok "1n emit_tokens lex-sorts and dedupes" "enp1s0.100 enp1s0.18 enp2s0.18"
+
+# ---------------------------------------------------------------------------
+# 1o. Multi-parent backend parsing - stanza header (spec section 5)
+#
+# backend_owned_vlans and backend_owned_metrics parse the stanza header line
+# (    <iface>.<id>:) rather than correlating id:/link: by position. The
+# header unambiguously carries both iface and id, and handles multi-parent
+# (VLANs on different trunks) without a head-1 single-parent assumption.
+# ---------------------------------------------------------------------------
+
+# Multi-parent owned file fixture
+read -r -d '' multi_parent_yaml <<'YAML' || true
+# Managed by dynavlan 0.2.0 (build source)
+network:
+  version: 2
+  vlans:
+    enp1s0.18:
+      id: 18
+      link: enp1s0
+      dhcp4: true
+      accept-ra: false
+      dhcp4-overrides:
+        use-routes: false
+        use-dns: false
+        use-ntp: false
+        use-domains: false
+    enp1s0.100:
+      id: 100
+      link: enp1s0
+      dhcp4: true
+      accept-ra: false
+      dhcp4-overrides:
+        use-routes: false
+        use-dns: false
+        use-ntp: false
+        use-domains: false
+    enp2s0.21:
+      id: 21
+      link: enp2s0
+      dhcp4: true
+      accept-ra: false
+      dhcp4-overrides:
+        use-routes: false
+        use-dns: false
+        use-ntp: false
+        use-domains: false
+YAML
+
+# Multi-parent routed file fixture
+read -r -d '' multi_parent_routed_yaml <<'YAML' || true
+# Managed by dynavlan 0.2.0 (build source)
+network:
+  version: 2
+  vlans:
+    enp1s0.18:
+      id: 18
+      link: enp1s0
+      dhcp4: true
+      accept-ra: false
+      dhcp4-overrides:
+        use-routes: true
+        route-metric: 100
+        use-dns: false
+        use-ntp: false
+        use-domains: false
+    enp2s0.21:
+      id: 21
+      link: enp2s0
+      dhcp4: true
+      accept-ra: false
+      dhcp4-overrides:
+        use-routes: true
+        route-metric: 101
+        use-dns: false
+        use-ntp: false
+        use-domains: false
+YAML
+
+# Single-parent file (migration: existing v0.1.0 file must parse correctly)
+read -r -d '' single_parent_yaml <<'YAML' || true
+# Managed by dynavlan 0.1.0 (build e225a1c)
+network:
+  version: 2
+  vlans:
+    enp1s0.18:
+      id: 18
+      link: enp1s0
+      dhcp4: true
+      accept-ra: false
+      dhcp4-overrides:
+        use-routes: false
+        use-dns: false
+        use-ntp: false
+        use-domains: false
+    enp1s0.21:
+      id: 21
+      link: enp1s0
+      dhcp4: true
+      accept-ra: false
+      dhcp4-overrides:
+        use-routes: false
+        use-dns: false
+        use-ntp: false
+        use-domains: false
+YAML
+
+# Tests need a temp file to simulate NETPLAN_FILE; save/restore the global.
+_saved_npf="$NETPLAN_FILE"
+
+_write_fixture() {
+	NETPLAN_FILE=$(mktemp)
+	printf '%s\n' "$1" >"$NETPLAN_FILE"
+}
+
+_cleanup_fixture() {
+	rm -f "$NETPLAN_FILE"
+	NETPLAN_FILE="$_saved_npf"
+}
+
+# backend_owned_vlans -> iface.id token set
+_write_fixture "$multi_parent_yaml"
+call backend_owned_vlans; ok "1o multi-parent owned vlans" "enp1s0.100 enp1s0.18 enp2s0.21"
+_cleanup_fixture
+
+_write_fixture "$single_parent_yaml"
+call backend_owned_vlans; ok "1o single-parent (migration) owned vlans" "enp1s0.18 enp1s0.21"
+_cleanup_fixture
+
+# backend_owned_metrics -> iface.id:metric map
+_write_fixture "$multi_parent_routed_yaml"
+call backend_owned_metrics; ok "1o multi-parent routed metrics" "enp1s0.18:100 enp2s0.21:101"
+_cleanup_fixture
+
+# empty file -> empty
+NETPLAN_FILE="/nonexistent/path/$$"
+call backend_owned_vlans;   ok "1o no file -> empty owned" ""
+call backend_owned_metrics; ok "1o no file -> empty metrics" ""
+NETPLAN_FILE="$_saved_npf"
+
+# ---------------------------------------------------------------------------
+# 1p. Multi-trunk pipeline integration (spec section 8 data flow)
+#
+# Exercises the pure helpers in the all-trunks configuration: overlapping
+# VLAN ids on different trunks, per-interface managed-elsewhere, iface.id
+# token round-trips, and multi-parent metric assignment.
+# ---------------------------------------------------------------------------
+
+# Overlapping ids: same VLAN id on two trunks -> two distinct tokens
+call tag_tokens "enp1s0" "18 100"; _t1="$OUT"
+call tag_tokens "enp2s0" "18 101"; _t2="$OUT"
+call set_union "$_t1" "$_t2"; ok "1p overlapping ids produce distinct tokens" "enp1s0.100 enp1s0.18 enp2s0.101 enp2s0.18"
+
+# compute_candidates per-iface, then tag, then union (the boot/rescan pattern)
+call compute_candidates "18 21 100" 2 1000 "" "" "18"; _c1="$OUT"  # enp1s0: 18 owned, 21+100 new
+call tag_tokens "enp1s0" "$_c1"; _a1="$OUT"
+call compute_candidates "18 21 101" 2 1000 "" "" ""; _c2="$OUT"    # enp2s0: all new
+call tag_tokens "enp2s0" "$_c2"; _a2="$OUT"
+call set_union "$_a1" "$_a2"; ok "1p multi-trunk additions union" "enp1s0.100 enp1s0.21 enp2s0.101 enp2s0.18 enp2s0.21"
+
+# boot_removals per-trunk, then tag (bare id removals are per-iface)
+call boot_removals "18 21 100" "18 21" "18 21"; _r1="$OUT"  # 100 absent both passes on enp1s0
+call tag_tokens "enp1s0" "$_r1"; ok "1p per-trunk removal tagged" "enp1s0.100"
+
+# plan_route_metrics with iface.id tokens
+call plan_route_metrics "" "enp1s0.18 enp1s0.100 enp2s0.21" "" 100
+ok "1p multi-trunk metric assignment" "enp1s0.100:100 enp1s0.18:101 enp2s0.21:102"
+
+# Kept metrics preserved across trunks
+call plan_route_metrics "enp1s0.18:100 enp2s0.21:101" "enp1s0.18 enp1s0.100 enp2s0.21" "enp1s0.100" 100
+ok "1p kept metrics preserved, new addition appended" "enp1s0.100:102 enp1s0.18:100 enp2s0.21:101"
+
+# limit_fill with tokens: lexicographic order
+call limit_fill "enp2s0.18 enp1s0.100 enp1s0.21" 2
+ok "1p fill lowest-2 tokens (lexicographic)" "enp1s0.100 enp1s0.21"
+
+# count_ids counts tokens
+call count_ids "enp1s0.18 enp1s0.100 enp2s0.21"; ok "1p count_ids on tokens" "3"
 
 # ---------------------------------------------------------------------------
 
