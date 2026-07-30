@@ -328,3 +328,19 @@ Positioning: resolved the deferred open question (see context/open_questions.md)
 NOT changed: the FR-18 health check (multi-uplink is normal behavior now that more than one trunk can carry a default route; watching the lowest-metric default suffices for never-strand, per the design spec's H2 finding), the apply/rollback state machine's shape (still snapshot -> generate -> validate -> apply_with_revert -> accept/fail), and backup/logging/flock mechanics.
 Hardware validation of the multi-trunk paths (dual leasing, carrier-pull-preserve, routed multi-trunk, unified revert across two trunks - dynavlan-tests.md L3-29..L3-32) is explicitly NOT done yet; the box already has two live trunks wired up as the fixture for it (see context/todo.md live state).
 Rejected: keeping bare VLAN ids as the key with a "first trunk wins" collision rule for overlapping ids (silently drops a real, distinct subnet on the second trunk - unacceptable for a provisioning tool); keeping a relocation branch that moves an old trunk's set onto a newly-selected one (no longer coherent once there is no single selected trunk to relocate FROM).
+
+## 2026-07-30 - v0.2.1 released (all-trunks redesign + netplan-get fix)
+Why: all-trunks provisioner (v0.2.0) and the netplan-get field-order fix (v0.2.1) are hardware-validated on the Protectli box with two live trunks. All four multi-trunk test cases passed (L3-29 dual leasing, L3-30 carrier-pull preserve, L3-31 routed multi-trunk, L3-32 unified revert). CHANGELOG reformatted into proper Keep a Changelog sections. Tagged v0.2.1, pushed, GitHub release created on pereljon/dynavlan. GitHub repo description updated from Domotz/monitoring framing to general dynamic-VLAN provisioner.
+Rejected: releasing as v0.2.0 (the field-order fix warranted a patch bump before tagging).
+
+## 2026-07-30 - One-line curl installer (get.sh)
+Why: simplest zero-infrastructure install path. Downloads the latest (or specified) release tarball from GitHub and runs install.sh. Pattern: `curl -fsSL .../get.sh | sudo bash`. No apt repo needed.
+Rejected: requiring users to clone the repo or manually scp artifacts (too many steps for a first install).
+
+## 2026-07-30 - .deb packaging with GitHub Actions release workflow
+Why: enables `dpkg -i` installs and is the prerequisite for a future APT repo (so `apt upgrade` picks up new versions automatically). The workflow triggers on `release: published`, builds the .deb on ubuntu-22.04, and attaches it to the release. Package uses `/lib/systemd/system/` (package-managed) and postinst handles migration from install.sh's `/etc/systemd/system/` placement.
+Rejected: Launchpad PPA immediately (more infrastructure than justified with one deployed box; .deb-on-release is the building block, APT repo is the next step when user base justifies it). Full debhelper build system (overkill for a single bash script with no compilation; dpkg-deb --build is sufficient).
+
+## 2026-07-30 - README status block trimmed
+Why: the multi-line pre-release status block was replaced with a single-line version + validation stamp. The safety warning about console access was softened ("if possible, run with out-of-band fallback") since dynavlan may be preinstalled or remotely installed without console access, and "--dry-run" is the alternative. Full safety detail remains in the Safety section.
+Rejected: removing the status block entirely (the version + validation stamp is useful context at the top).
