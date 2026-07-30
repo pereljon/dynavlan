@@ -64,6 +64,20 @@ No dependency on NIC names, native VLAN, switch vendor, or the contents/filename
 
 ## Install
 
+One-line install (latest release):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash
+```
+
+Or a specific version:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v0.2.1
+```
+
+From a local clone:
+
 ```sh
 sudo bash install.sh
 ```
@@ -92,7 +106,7 @@ dynavlan is built for boxes that may be remote, headless, or unattended, where a
 - dynavlan owns one generated netplan file and never reads or writes any other config.
 - Boot reconcile aborts and changes nothing if it detects no carrier, no tags, or zero VLANs (it never reads "detected nothing" as "remove everything").
 
-Exercise it on the real hardware with console access before trusting it unattended. A bad apply can drop an SSH session, so the first `--boot` must be at the console.
+A bad apply can drop an SSH session, so if possible, run the first `--boot` with an out-of-band fallback (serial console, IPMI, or physical access). If that is not available, `--dry-run` previews the change without applying it.
 
 ## Documentation
 

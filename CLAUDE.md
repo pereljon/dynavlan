@@ -8,7 +8,7 @@ On a fresh session or after a compact: read `context/index.md` first - it owns t
 
 ## Project
 
-**dynavlan** -- a self-configuring VLAN provisioning tool for headless netplan/systemd-networkd Linux boxes. Single-file bash. It discovers the active tagged VLANs on whatever trunk the box is plugged into, brings each up with DHCP (address-only, fully route/DNS-isolated by default), and restarts the nominated snaps/services (e.g. the Domotz agent snap) so an interface-enumerating agent picks up the new subnets, with no SSH and no hand-edited YAML. Runs at boot and on a timer. Deployment steps: `docs/deployment-guide.md`.
+**dynavlan** -- a self-configuring VLAN provisioner for headless netplan/systemd-networkd Linux boxes. Single-file bash. It discovers the active tagged VLANs on every trunk the box is plugged into, brings each up with DHCP (address-only, fully route/DNS-isolated by default), and restarts the nominated snaps/services so an interface-enumerating agent picks up the new subnets, with no SSH and no hand-edited YAML. Runs at boot and on a timer. Deployment steps: `docs/deployment-guide.md`.
 
 Audience: infrastructure tool for boxes that may be remote, headless, or unattended. Safety and recoverability dominate every decision; a bad apply that breaks the uplink may be unrecoverable without physical access.
 

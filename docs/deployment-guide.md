@@ -2,7 +2,7 @@
 
 How to deploy dynavlan on a netplan/systemd-networkd Ubuntu box. This covers installation, configuration, the first (attended) run, and ongoing operation. What dynavlan is and how it works: `README.md`, `docs/dynavlan-PRD.md`.
 
-> **Pre-release note:** dynavlan is in initial testing. Perform the first apply at the console (physical or serial), not over SSH alone - a bad apply can drop the connection, and the console is the recovery path.
+> A bad apply can drop an SSH session, so if possible, run the first `--boot` with an out-of-band fallback (serial console, IPMI, or physical access). If that is not available, `--dry-run` previews the change without applying it.
 
 ## 1. Prerequisites
 
@@ -14,7 +14,19 @@ How to deploy dynavlan on a netplan/systemd-networkd Ubuntu box. This covers ins
 
 ## 2. Install
 
-Copy the six artifacts to the box and run the installer:
+**One-line install** (latest release, requires `curl`):
+
+```
+curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash
+```
+
+A specific version:
+
+```
+curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v0.2.1
+```
+
+**From a local copy** (clone, SCP, or ZIP):
 
 ```
 scp dynavlan dynavlan.conf dynavlan.service dynavlan-rescan.service dynavlan.timer install.sh <user>@<box>:
