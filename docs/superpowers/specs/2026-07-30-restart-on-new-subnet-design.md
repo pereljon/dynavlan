@@ -165,7 +165,9 @@ New pure helper (TDD, RED first):
   non-octet prefixes (`/24`, `/25`, `/16`, `/8`, `/32`).
 
 Reused (already present and tested): `set_minus` for `current − seen`, `set_union`
-for the monotonic grow, `emit_set` for canonical ordering.
+for the monotonic grow, `emit_tokens` for canonical ordering. Note: subnet tokens
+are strings, so ordering uses `emit_tokens` (lexical `sort -u`), never `emit_set`
+(which is numeric `sort -n` and is for bare VLAN ids only).
 
 New impure glue (exercised on hardware, not unit-tested):
 
