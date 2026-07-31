@@ -19,30 +19,13 @@ dynavlan removes the human from that loop. It discovers the VLANs from the wire,
 
 It runs at boot and on a timer (systemd), reconciling as VLANs appear and disappear on any trunk.
 
-## Isolated by default, and how to make VLANs routable
+## Isolated by default
 
 By default every discovered VLAN comes up **address-only**: DHCP assigns an IP so the subnet is present and reachable on its own interface, but the VLAN installs **no default route, no DNS, no NTP, no search domains**, and IPv6 Router Advertisements are declined. This is deliberate, and it is the *opposite* of netplan's own `dhcp4: true` default (which accepts routes) - so if "enable a VLAN" makes you expect a fully routable interface, this is the surprising part, on purpose.
 
-dynavlan grew out of monitoring/discovery use, which is why isolation is its engineering default: it provisions VLANs so an agent can *see* each subnet, not so the box *routes through* it by default. Accepting default routes from many VLANs at once does not make them "all routable" - only the lowest-metric default is ever used for outbound traffic, while the rest just clutter the routing table and every site's DNS/NTP pollute the resolver. Isolation keeps the box's uplink and resolver clean, and it is precisely what the auto-revert safety net depends on: a VLAN that installs no default route cannot hijack the uplink, so the health check can treat "the default route moved" as a failure. Routed mode is a first-class, fully supported way to use dynavlan as a general dynamic-VLAN provisioner - just not the default.
+dynavlan grew out of monitoring/discovery use: it provisions VLANs so an agent can *see* each subnet, not so the box *routes through* it. Isolation keeps the box's uplink and resolver clean, and it is what the auto-revert safety net depends on - a VLAN that installs no default route cannot hijack the uplink, so the health check can treat "the default route moved" as a failure.
 
-**To make the VLAN interfaces routable**, enable routed mode in `/etc/dynavlan.conf`:
-
-```sh
-VLAN_ROUTES=true                  # accept each VLAN's DHCP-provided default route
-VLAN_ROUTE_METRIC_START=100       # first metric assigned; MUST stay above the uplink's metric.
-                                  # Metrics are assigned in discovery order, one shared ascending
-                                  # sequence across every trunk on the box; existing VLANs never renumber.
-```
-
-then apply it to the VLANs already configured on the box:
-
-```sh
-sudo dynavlan --reapply
-```
-
-In routed mode each VLAN accepts its DHCP default route at a distinct per-VLAN metric, so the table stays deterministic and the lowest-metric route (normally the untagged uplink) still wins. dynavlan **refuses before touching disk** if any assigned metric would match or beat the uplink's, since that would guarantee a health-check revert loop - raise `VLAN_ROUTE_METRIC_START` above the uplink metric if that happens. DNS, NTP, domains, and IPv6 RA stay declined even in routed mode: routed mode changes routes only, never the resolver.
-
-One honest limit: routed mode makes the interfaces routable, but the box still has a single active default path at a time (the lowest metric). It does not independently test or use each VLAN's own gateway; per-VLAN reachability testing (probing every VLAN's gateway in turn) is a separate capability dynavlan does not provide.
+Routed mode is a first-class, opt-in alternative (`VLAN_ROUTES=true`) that accepts each VLAN's DHCP default route at deterministic per-VLAN metrics above the uplink's, with DNS/NTP/domains still declined. Setup, `--reapply`, and the metric mechanics live in [Making the VLAN interfaces routable](docs/deployment-guide.md#making-the-vlan-interfaces-routable-opt-in) in the deployment guide.
 
 ## Service-restart integration
 
