@@ -667,6 +667,18 @@ ok "1p fill lowest-2 tokens (lexicographic)" "enp1s0.100 enp1s0.21"
 call count_ids "enp1s0.18 enp1s0.100 enp2s0.21"; ok "1p count_ids on tokens" "3"
 
 # ---------------------------------------------------------------------------
+# 1q. ipv4_network - address+prefix -> network address (FR-40 subnet keying)
+#     Keying subnet tokens on the network (not the host address) is what makes a
+#     same-pool DHCP renewal produce an identical token, so it must NOT restart.
+call ipv4_network 10.0.5.55 24;   ok "1q /24 zeroes the last octet"        "10.0.5.0"
+call ipv4_network 10.0.5.200 25;  ok "1q /25 non-octet boundary (.128)"    "10.0.5.128"
+call ipv4_network 10.0.5.55 26;   ok "1q /26 non-octet boundary (.0)"      "10.0.5.0"
+call ipv4_network 172.16.9.4 12;  ok "1q /12 masks into the third octet"   "172.16.0.0"
+call ipv4_network 10.11.12.13 8;  ok "1q /8 keeps only first octet"        "10.0.0.0"
+call ipv4_network 10.0.5.55 32;   ok "1q /32 is the host itself"           "10.0.5.55"
+call ipv4_network 192.168.1.1 0;  ok "1q /0 is all-zero network"           "0.0.0.0"
+
+# ---------------------------------------------------------------------------
 
 printf '\n%s tests, %s failures\n' "$tests" "$fails"
 [ "$fails" -eq 0 ]

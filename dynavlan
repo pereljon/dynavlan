@@ -58,6 +58,29 @@ emit_set() {
 	printf '%s\n' "$@" | sort -n -u | tr '\n' ' ' | sed 's/ $//'
 }
 
+# Network address for an IPv4 ADDR under PREFIX (0-32), as a dotted quad. Pure.
+# Subnet tokens key on this, not the host address, so a same-pool DHCP renewal
+# maps to an identical token and does not trigger a restart (FR-40).
+ipv4_network() { # ADDR PREFIX -> network dotted-quad
+	local addr="$1" prefix="$2"
+	local o1 o2 o3 o4 ip mask net
+	IFS=. read -r o1 o2 o3 o4 <<<"$addr"
+	ip=$(( (o1 << 24) | (o2 << 16) | (o3 << 8) | o4 ))
+	if [ "$prefix" -le 0 ]; then
+		mask=0
+	elif [ "$prefix" -ge 32 ]; then
+		mask=4294967295
+	else
+		mask=$(( (4294967295 << (32 - prefix)) & 4294967295 ))
+	fi
+	net=$(( ip & mask ))
+	printf '%d.%d.%d.%d\n' \
+		$(( (net >> 24) & 255 )) \
+		$(( (net >> 16) & 255 )) \
+		$(( (net >> 8) & 255 )) \
+		$(( net & 255 ))
+}
+
 # parse_vlan_ignore RAW
 #   Expand a VLAN_IGNORE string (comma and/or whitespace separated, with inclusive
 #   low-high ranges) into a sorted, de-duplicated, space-separated set on stdout.
