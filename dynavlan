@@ -1120,6 +1120,7 @@ wait_leases() { # TOKENS (iface.id) - bounded, non-fatal wait for new-VLAN lease
 
 restart_targets() {
 	local s
+	RESTARTED_THIS_RUN=1
 	for s in $RESTART_SNAPS; do
 		if snap restart "$s" >/dev/null 2>&1; then
 			log notice "restarted snap $s"
@@ -1134,6 +1135,70 @@ restart_targets() {
 			log warning "failed to restart service $s (missing or error); continuing"
 		fi
 	done
+}
+
+# FR-40 ephemeral state: subnets the agent is known to have seen THIS uptime.
+# /run is tmpfs, wiped on reboot, which is exactly the required lifetime (on
+# reboot the agent relaunches and re-enumerates, so the baseline must reset).
+# This is runtime scratch, NOT persistent config: config state still lives only
+# in the owned netplan file.
+SEEN_FILE="${SEEN_FILE:-/run/dynavlan/seen}"
+
+# Current global-scope IPv4 subnets as sorted `iface:network/prefix` tokens.
+# `scope global` excludes loopback (127/8, scope host) and IPv4 link-local
+# (169.254/16, scope link): a link-local address means DHCP FAILED and must not
+# count as a subnet. The token keys on the network, so a same-pool renewal is a
+# no-op (see ipv4_network).
+current_subnets() {
+	local idx ifc fam cidr rest addr prefix net out=""
+	while read -r idx ifc fam cidr rest; do
+		# Skip non-CIDR field-4 forms: a peer/point-to-point line renders as
+		# `inet 10.8.0.1 peer 10.8.0.2/32 scope global`, where the LOCAL address
+		# in field 4 carries no /prefix. Without this, `${cidr#*/}` would yield
+		# the whole address as the "prefix" and ipv4_network would error on every
+		# run (tun/ppp/VPN interfaces on a monitored box hit this).
+		case "$cidr" in
+			*/*) ;;
+			*) continue ;;
+		esac
+		addr=${cidr%/*}
+		prefix=${cidr#*/}
+		net=$(ipv4_network "$addr" "$prefix")
+		out="$out ${ifc}:${net}/${prefix}"
+	done < <(ip -4 -o addr show scope global 2>/dev/null)
+	emit_tokens $out
+}
+
+read_seen() { # -> seen-set contents, empty if the file is absent
+	cat "$SEEN_FILE" 2>/dev/null || true
+}
+
+write_seen() { # SET
+	mkdir -p "$(dirname "$SEEN_FILE")" 2>/dev/null || true
+	printf '%s\n' "$1" >"$SEEN_FILE" 2>/dev/null \
+		|| log warning "could not write $SEEN_FILE; next run may restart again"
+}
+
+# FR-40 rule, run once at the end of every --boot/--rescan (see main). On the
+# first run of an uptime SEEN_FILE is absent, so `seen` is empty and every
+# current subnet is "new": the agent is restarted once after the network has
+# settled, regardless of whether it started before or after DHCP. A per-run
+# RESTARTED_THIS_RUN flag dedups against any VLAN restart apply_change already did.
+maybe_restart_on_new_subnet() {
+	[ "$RESTART_ON_NEW_SUBNET" = true ] || return 0
+	local current seen new
+	current=$(current_subnets)
+	seen=$(read_seen)
+	new=$(set_minus "$current" "$seen")
+	if [ -n "$new" ]; then
+		if [ "${RESTARTED_THIS_RUN:-0}" = 1 ]; then
+			log info "new IPv4 subnet(s) [$new]; agent already restarted this run"
+		else
+			log notice "new IPv4 subnet(s) [$new]; restarting monitoring targets"
+			restart_targets
+		fi
+	fi
+	write_seen "$(set_union "$seen" "$current")"
 }
 
 # ---------------------------------------------------------------------------
@@ -1700,6 +1765,7 @@ main() {
 		fi
 		if [ "$mode" = --boot ]; then do_boot; else do_rescan; fi
 		rc=$?
+		maybe_restart_on_new_subnet
 		log info "run end: mode=${mode#--} rc=$rc"
 		return $rc
 		;;
