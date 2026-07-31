@@ -255,6 +255,20 @@ Removal-combination case (do_boot only, mirrors 1d but across two trunks):
 
 Note: 1d requires `boot_removals` to be exposed as a pure helper (per-trunk; the mode functions call it once per trunk and combine). 1f's helpers feed `gate_vlan_count` (refuse vs fill per `VLAN_LIMIT_MODE`, over the combined total). 1g's helpers feed `apply_change`'s FR-37 branch (assignment + up-front uplink-conflict refusal, over the combined target). `detect_lldp` is impure (shells out to `lldpctl`) and stays a Layer 3 concern; `lldp_tagged_vlans` holds all the logic worth unit-testing. The exclusion must NOT reach the sniff's contribution: `detect_iface` unions the two sources, and a VLAN genuinely carried tagged must survive even when LLDP names it the PVID.
 
+### 1q. `ipv4_network` (FR-40 subnet-token keying)
+
+Reduces an address to its network so a same-pool DHCP renewal produces an identical `iface:subnet` token and does not restart.
+
+| Input | Expected |
+|---|---|
+| `ipv4_network 10.0.5.55 24` | `10.0.5.0` (octet-aligned) |
+| `ipv4_network 10.0.5.200 25` | `10.0.5.128` (non-octet boundary) |
+| `ipv4_network 10.0.5.55 26` | `10.0.5.0` (non-octet boundary) |
+| `ipv4_network 172.16.9.4 12` | `172.16.0.0` (masks into the third octet) |
+| `ipv4_network 10.11.12.13 8` | `10.0.0.0` |
+| `ipv4_network 10.0.5.55 32` | `10.0.5.55` (host itself) |
+| `ipv4_network 192.168.1.1 0` | `0.0.0.0` (all-zero network) |
+
 ## Layer 2 - `--dry-run` decision-path verification (real inputs)
 
 `dynavlan --dry-run` exercises discovery → detection → filtering → candidate computation → `backend_validate` (throwaway tree) and prints the intended add/remove diff, with zero side effects. Use it as:
@@ -308,6 +322,11 @@ Run on the **actual Protectli/Ubuntu appliance plugged into the live Meraki trun
 | L3-27 | Build provenance (FR-38) | `dynavlan --version` as a NON-root user and again with a deliberately invalid `/etc/dynavlan.conf`; `sudo bash install.sh` from a clean checkout, then from one with an uncommitted edit; then `journalctl -t dynavlan | grep 'run start'` | `--version` prints `dynavlan <ver> (build <id>)` and exits 0 in BOTH cases (no root needed, config never loaded). Installer echoes the build id; the dirty tree installs `<hash>-dirty` and prints the uncommitted-changes WARNING. Every run-start line carries the identity. Confirm the installed `/usr/local/sbin/dynavlan` differs from the source only in the `build=` line | AC-7 |
 | L3-26 | IPv6 RA declined on VLANs (FR-14a) | On a trunk carrying at least one RA-sending VLAN (validated: VLAN 22), run `--dry-run` first (proves netplan accepts the key), then `--boot`. After apply: `ip -6 addr show dev <trunk>.<id>`, `ip -6 route show default`, `resolvectl dns <trunk>.<id>`, and `networkctl status <trunk>.<id>` | No global (SLAAC) IPv6 address on any owned VLAN; NO IPv6 default route via any owned VLAN; no RA-sourced (RDNSS) resolvers on them; `IPv6AcceptRA=no` in the rendered `.network`. The `fe80` link-local address REMAINS (link-local is deliberately untouched). Also record whether a pre-existing SLAAC address survives the apply: networkd did not clean up orphaned VLAN links, so it may need a one-time `ip -6 addr flush`. Re-run under VLAN_ROUTES=true and confirm the key is still emitted | AC-4, AC-11 |
 
+| L3-33 | Access port restart, once (FR-40) | Plug an access/native-only port into a NIC dynavlan does not provision (no tags); wait for the next `--rescan` | Next rescan restarts the nominated targets exactly once, and the new `iface:subnet` token is seeded into `/run/dynavlan/seen` (a second rescan with no further change restarts nothing) | AC-15 |
+| L3-34 | Same-subnet renewal, no restart (FR-40) | Force a DHCP renewal on an already-seen interface that lands on the same subnet (different host address is fine) | No restart; journal shows no new-subnet notice | AC-15 |
+| L3-35 | Agent-before-DHCP boot race (FR-40) | Arrange the monitoring agent to start before base-interface DHCP completes at boot (or simulate by clearing `/run/dynavlan/seen` and rebooting with a slow base lease) | The agent is restarted once after the network settles, on the boot run, closing the enumerate-nothing race | AC-15 |
+| L3-36 | `--dry-run`/`--status` report only (FR-40) | With `/run/dynavlan/seen` absent or stale, run `--dry-run` then `--status` | Both print the "new IPv4 subnets since last seen (would restart)" delta; neither restarts anything nor creates/modifies `/run/dynavlan/seen` | AC-15 |
+
 Several of these (netplan-try accept/revert, promisc sniff of an unconfigured VLAN, isolation stanza, explicit `ip link delete`) were already validated once by hand on the lab box; this codifies them as repeatable.
 
 **Hardware run 2026-07-27 (serial-driven):** L3-6, L3-20 (revert + confirmation-window bound) and L3-22 (routed apply, metrics 100-106) all passed on the box. The health-FAIL is injected as a competing lower-metric default on `enp2s0` (the unmanaged dead NIC) during the try window - injecting it on a dynavlan-managed VLAN iface does NOT work, the apply's reconfiguration flushes it before health samples. See `context/decisions.md` 2026-07-27.
@@ -330,6 +349,7 @@ Several of these (netplan-try accept/revert, promisc sniff of an unconfigured VL
 | AC-12 | Layer 1 1c (evaluator) + **L3-14 (real empty-snapshot accept)** |
 | AC-13 | Layer 1 1f (guard/fill math) + L3-19 (real refuse + fill) |
 | AC-14 | Layer 1 1g (assignment + conflict math, token-keyed) + L3-22 (real routed apply + metric persistence) + L3-23 (real conflict refusal) + L3-31 (two-trunk metric sequence, NOT yet run on hardware) |
+| AC-15 | Layer 1 1q (`ipv4_network` keying) + L3-33 (access-port restart-once) + L3-34 (same-subnet no restart) + L3-35 (boot-race fix) + L3-36 (dry-run/status delta, no side effects) - NONE yet run on hardware |
 
 Note: FR-23 removal-set math is covered by Layer 1 1d (per-trunk; combined across trunks by 1p); FR-16/FR-30 by L3-11/L3-12. There is no FR-4 hysteresis requirement in the all-trunks model (superseded; see 1e above).
 

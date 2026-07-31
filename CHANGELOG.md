@@ -4,6 +4,12 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ## Unreleased
 
+## [0.3.0] - 2026-07-30
+
+### Added
+
+- Restart on a newly-appeared IPv4 subnet (FR-40). Previously, dynavlan only restarted `RESTART_SNAPS`/`RESTART_SERVICES` on a tagged-VLAN change, so two cases were missed: an access port or native-only trunk that gets a DHCP lease after boot (no tagged VLAN, so nothing changes), and the monitoring agent starting before the base interface finishes DHCP (dynavlan's boot run is deliberately not ordered after `network-online.target`). Both are the same underlying problem: the agent cares about IPv4 subnets it can scan, not VLAN tags. New pure helper `ipv4_network` keys subnet tokens on the network address, not the host address, so a same-pool DHCP renewal never restarts; a monotonic per-uptime seen-set at `/run/dynavlan/seen` (wiped on reboot) means a flap back onto an already-seen subnet doesn't either, and an empty seen-set at boot restarts once after settle regardless of boot-vs-DHCP ordering. At most one restart per run, deduped against any VLAN-driven restart. New config key `RESTART_ON_NEW_SUBNET` (default `true`). `--dry-run`/`--status` report the would-restart delta without restarting or writing the seen-set. `apply_change` is unchanged; the growth-check is an additive post-step called from `main` after every `--boot`/`--rescan` exit, regardless of that mode's own return code.
+
 ## [0.2.1] - 2026-07-30
 
 ### Fixed

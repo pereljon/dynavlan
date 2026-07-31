@@ -29,19 +29,38 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 - [x] .deb packaging: debian/, build-deb.sh, GitHub Actions workflow (done 2026-07-30)
 - [x] GitHub repo description updated for multi-trunk positioning (done 2026-07-30)
 
-## Active: carrier-down VLAN removal (design approved, plan next)
+## Active: carrier-down VLAN removal (v0.3.0) - PLANNED, next = execute
 
-- [ ] Carrier-down VLAN removal (minor bump). Design APPROVED and committed:
-      `docs/superpowers/specs/2026-07-30-carrier-down-vlan-removal-design.md`.
+- [ ] Carrier-down VLAN removal (minor bump -> v0.3.0). State: design approved +
+      committed (`docs/superpowers/specs/2026-07-30-carrier-down-vlan-removal-design.md`);
+      implementation plan WRITTEN + architect-reviewed (H1/M1/L1 folded in):
+      `docs/superpowers/plans/2026-07-30-carrier-down-vlan-removal.md` (7 tasks).
       Decisions: fire at boot + timer; carrier-down only (carrier-up-no-tags still
-      preserved); minimal in-run two-pass debounce (grace-timer alt recorded as
-      deferred); new `REMOVE_ON_CARRIER_LOSS` knob default true, independent of
-      `RESET_ON_BOOT`. NOTE: this SUPERSEDES the hardware-validated L3-30
-      "carrier-pull preserve" behavior; the hardware checklist and any L3-30
-      reference must be updated to the new prune-on-sustained-carrier-loss result.
-      NEXT STEP: create the implementation plan via the `writing-plans` skill
-      (TDD `carrier_removals` RED first, then `have_routing`, then
-      do_boot/do_rescan/do_dryrun/do_status + config + `ver=` bump + docs sweep).
+      preserved); minimal in-run two-pass debounce (grace-timer alt deferred); new
+      `REMOVE_ON_CARRIER_LOSS` knob default true, independent of `RESET_ON_BOOT`.
+      SUPERSEDES the hardware-validated L3-30 "carrier-pull preserve": the hardware
+      checklist / L3-30 references update to prune-on-sustained-carrier-loss.
+      NEXT STEP: execute the plan (Task 1: TDD `carrier_removals` RED first),
+      inline for the coupled do_boot/do_rescan tasks; then minor-release code
+      review + hardware validation gate before the v0.3.0 release.
+      (Task/step decomposition lives in the plan file, not here - per CLAUDE.md
+      Task Tracking Granularity.)
+
+## Active: restart-on-new-subnet (v0.3.0) - CODE-COMPLETE, pending hardware validation
+
+- [ ] Restart-on-new-subnet (FR-40, minor bump -> v0.3.0, `ver=` already bumped). Restarts
+      `RESTART_SNAPS`/`RESTART_SERVICES` when a new global-IPv4 subnet appears on any
+      interface (not only on a tagged-VLAN change), closing the agent-started-before-DHCP
+      boot race and covering access/native ports dynavlan never provisions. New
+      `RESTART_ON_NEW_SUBNET` config key (default true); new pure helper `ipv4_network`
+      (subnet-not-host-address keying); ephemeral per-uptime seen-set at
+      `/run/dynavlan/seen`; growth-check wired into `main` after every `--boot`/`--rescan`
+      exit, deduped against the existing VLAN-driven restart. Design:
+      `docs/superpowers/specs/2026-07-30-restart-on-new-subnet-design.md`. Docs (PRD FR-40/
+      AC-15, SKELETON, CODEMAP, design doc, test plan 1q + L3-33..36, README, CHANGELOG)
+      brought current in the same pass. State: code-complete; NEXT STEP is the L3-33..36
+      hardware checklist on the Protectli box before this can be marked hardware-validated
+      or released.
 
 ## Next steps (not started)
 

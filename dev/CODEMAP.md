@@ -21,6 +21,7 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 | `plan_route_metrics` | THE FR-37 assignment decision point: owned map + target + additions -> full token:metric map; assigns for target tokens LACKING a metric (not additions). Every caller must use this | 1g |
 | `metric_conflict` | CONFLICT if any assigned metric <= uplink default's metric (tie counts), else OK | 1g |
 | `compute_candidates` | detected ∩ [MIN,MAX] − ignore − managed-elsewhere − owned (per-trunk bare-id math; caller tags the result to iface.id) | 1b |
+| `ipv4_network` | Network address for an IPv4 ADDR+PREFIX, dotted-quad (FR-40 subnet-token keying, so a same-pool renewal maps to an identical token) | 1q |
 
 ## Token helpers (iface.id canonical key, spec section 3; pure)
 
@@ -108,7 +109,10 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 | function | one-line purpose |
 |----------|------------------|
 | `wait_leases` | Bounded non-fatal wait for new-VLAN DHCP leases |
-| `restart_targets` | Restart RESTART_SNAPS (snap) then RESTART_SERVICES (systemctl); warn-and-continue on failure |
+| `restart_targets` | Restart RESTART_SNAPS (snap) then RESTART_SERVICES (systemctl); warn-and-continue on failure; sets `RESTARTED_THIS_RUN` so FR-40's growth-check does not double-restart |
+| `current_subnets` | FR-40: sorted `iface:network/prefix` tokens from `ip -4 -o addr show scope global`, skipping non-CIDR peer lines and link-local/loopback |
+| `read_seen` / `write_seen` | FR-40: read/write the ephemeral seen-subnet set at `/run/dynavlan/seen` (absent file = empty set) |
+| `maybe_restart_on_new_subnet` | FR-40: if `current_subnets − seen` is non-empty, restart targets once (deduped via `RESTARTED_THIS_RUN`), then grow `seen` to `seen ∪ current`; gated by `RESTART_ON_NEW_SUBNET` |
 
 ## Apply orchestration + gates
 
@@ -130,7 +134,7 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 | `do_status` | Report for every owned trunk plus every currently-detected trunk: owned vs detected-now vs managed-elsewhere (root; runs a detection pass) |
 | `render_timer_dropin` | Pure: timer drop-in text for an interval; restates ALL monotonic triggers, since the reset clears the whole list (FR-21a) |
 | `do_reconfigure` | Write the rendered drop-in to `dynavlan.timer.d/interval.conf` + daemon-reload |
-| `main` | Mode dispatch: `--version` (pre-config, pre-root) → config → (status/reconfigure) → preconditions → dry-run (non-blocking lock try) → boot/rescan under the fd-held flock |
+| `main` | Mode dispatch: `--version` (pre-config, pre-root) → config → (status/reconfigure) → preconditions → dry-run (non-blocking lock try) → boot/rescan under the fd-held flock, followed by `maybe_restart_on_new_subnet` (FR-40) on every boot/rescan exit path |
 
 ## Non-script artifacts
 

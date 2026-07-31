@@ -53,6 +53,8 @@ Most monitoring and discovery agents (network scanners, SNMP pollers, asset-disc
 
 A restart that fails is logged and non-fatal; the VLAN change still stands. This is the seam that makes dynavlan useful to a specific agent without knowing anything about it. The reference deployment restarts the Domotz agent snap, but the same hook drives any interface-enumerating tool (LibreNMS, Zabbix, netdisco, a custom collector).
 
+dynavlan also restarts those targets when a new IPv4 subnet simply *appears* on any interface - an access port plugged in after boot, or the agent starting before the base interface finishes DHCP - not only on a tagged-VLAN change. Controlled by `RESTART_ON_NEW_SUBNET` (default `true`).
+
 ## Requirements
 
 - Ubuntu (or any distro) using **netplan with the systemd-networkd renderer**
