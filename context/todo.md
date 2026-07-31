@@ -29,9 +29,9 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 - [x] .deb packaging: debian/, build-deb.sh, GitHub Actions workflow (done 2026-07-30)
 - [x] GitHub repo description updated for multi-trunk positioning (done 2026-07-30)
 
-## Active: carrier-down VLAN removal (v0.3.0) - PLANNED, next = execute
+## Active: carrier-down VLAN removal (v0.4.0) - PLANNED, next = execute
 
-- [ ] Carrier-down VLAN removal (minor bump -> v0.3.0). State: design approved +
+- [ ] Carrier-down VLAN removal (minor bump -> v0.4.0). State: design approved +
       committed (`docs/superpowers/specs/2026-07-30-carrier-down-vlan-removal-design.md`);
       implementation plan WRITTEN + architect-reviewed (H1/M1/L1 folded in):
       `docs/superpowers/plans/2026-07-30-carrier-down-vlan-removal.md` (7 tasks).
@@ -42,9 +42,13 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
       checklist / L3-30 references update to prune-on-sustained-carrier-loss.
       NEXT STEP: execute the plan (Task 1: TDD `carrier_removals` RED first),
       inline for the coupled do_boot/do_rescan tasks; then minor-release code
-      review + hardware validation gate before the v0.3.0 release.
+      review + hardware validation gate before the v0.4.0 release.
       (Task/step decomposition lives in the plan file, not here - per CLAUDE.md
       Task Tracking Granularity.)
+      VERSION: renumbered v0.3.0 -> v0.4.0 on 2026-07-30 to resolve a collision with
+      restart-on-new-subnet (FR-40), which already took v0.3.0 and is code-complete.
+      The plan's `ver=` bump lands on whatever ver= is current at execution: 0.2.1 if
+      built before FR-40 merges, 0.3.0 if after - target is 0.4.0 either way.
 
 ## Active: restart-on-new-subnet (v0.3.0) - CODE-COMPLETE, pending hardware validation
 
