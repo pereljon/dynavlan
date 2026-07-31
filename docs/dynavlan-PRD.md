@@ -1,6 +1,6 @@
 # dynavlan - Product Requirements Document (v3.6)
 
-Status: Draft v3.6, design-locked and hardware-validated 2026-07-14; implemented 2026-07-21..23 with three review rounds folded in; corrected against live hardware 2026-07-25; all-trunks redesign implemented 2026-07-29 (v0.2.0); restart-on-new-subnet implemented 2026-07-30 (v0.3.0, code-complete, hardware validation pending). Not yet released.
+Status: Draft v3.6, design-locked and hardware-validated 2026-07-14; implemented 2026-07-21..23 with three review rounds folded in; corrected against live hardware 2026-07-25; all-trunks redesign implemented 2026-07-29 (v0.2.0); restart-on-new-subnet implemented and hardware-validated 2026-07-30, released as v0.3.0.
 
 ### Changes from v3.5 (restart-on-new-subnet, 2026-07-30)
 NEW FR-40 (`RESTART_ON_NEW_SUBNET`, default true): restart the nominated `RESTART_SNAPS`/`RESTART_SERVICES` when a new global-scope IPv4 subnet appears on any interface, not only on a tagged-VLAN change - closes the agent-started-before-DHCP boot race and covers access/native ports dynavlan never provisions. NEW AC-15. See `docs/superpowers/specs/2026-07-30-restart-on-new-subnet-design.md` for the full design.

@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sud
 A specific version:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v0.2.1
+curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v0.3.0
 ```
 
 **From a local copy** (clone, SCP, or ZIP):
@@ -56,11 +56,12 @@ The keys most deployments touch:
 # VLAN_IGNORE=""                   # VLANs never to configure, e.g. "5,20-25"
 # RESTART_SNAPS="..."              # snaps to restart after a VLAN change
 # RESTART_SERVICES=""              # systemd services to restart after a VLAN change
+# RESTART_ON_NEW_SUBNET=true       # also restart targets when a new IPv4 subnet appears, not only on a VLAN change
 # RESCAN_MINUTES=5                 # timer interval (run --reconfigure after changing)
 # VLAN_ROUTES=false                # opt-in: accept DHCP routes per VLAN at per-VLAN metrics
 ```
 
-Set `RESTART_SNAPS`/`RESTART_SERVICES` to whatever agent should re-enumerate interfaces after a VLAN change (see README "Service-restart integration"). Leave `VLAN_ROUTES` off unless you specifically want the box routing via discovered VLANs; the default is full route/DNS isolation.
+Set `RESTART_SNAPS`/`RESTART_SERVICES` to whatever agent should re-enumerate interfaces after a VLAN change; with `RESTART_ON_NEW_SUBNET` (default on) dynavlan also restarts them when a new IPv4 subnet appears on any interface, e.g. an access port plugged in after boot or the agent starting before base-interface DHCP completes (see README "Service-restart integration"). Leave `VLAN_ROUTES` off unless you specifically want the box routing via discovered VLANs; the default is full route/DNS isolation.
 
 ### What "isolated by default" means
 
