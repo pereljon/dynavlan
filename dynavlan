@@ -1193,6 +1193,8 @@ maybe_restart_on_new_subnet() {
 	if [ -n "$new" ]; then
 		if [ "${RESTARTED_THIS_RUN:-0}" = 1 ]; then
 			log info "new IPv4 subnet(s) [$new]; agent already restarted this run"
+		elif [ -z "$RESTART_SNAPS" ] && [ -z "$RESTART_SERVICES" ]; then
+			log info "new IPv4 subnet(s) [$new]; no restart targets configured"
 		else
 			log notice "new IPv4 subnet(s) [$new]; restarting monitoring targets"
 			restart_targets
@@ -1636,7 +1638,7 @@ do_status() { # FR-35 - report all trunks
 		local cur_sn new_sn
 		cur_sn=$(current_subnets)
 		new_sn=$(set_minus "$cur_sn" "$(read_seen)")
-		printf 'new IPv4 subnets since last seen (would restart): [%s]\n' "${new_sn:-none}"
+		printf '  new IPv4 subnets since last seen (would restart): [%s]\n' "${new_sn:-none}"
 	fi
 	return 0
 }
