@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.2.1"
+ver="0.3.0"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -450,6 +450,7 @@ load_config() {
 	LOG_LEVEL=info
 	BACKUP_KEEP=10
 	PER_VLAN_MAC=false
+	RESTART_ON_NEW_SUBNET=true
 
 	if [ -f "$CONF_FILE" ]; then
 		# Sourced as root on every run: refuse if the file is not root-owned or is
@@ -551,6 +552,10 @@ load_config() {
 		log err "PER_VLAN_MAC=true is not implemented in this version (G-4 open); set false"
 		return 1
 	fi
+	in_list "$RESTART_ON_NEW_SUBNET" "true false" || {
+		log err "invalid RESTART_ON_NEW_SUBNET=$RESTART_ON_NEW_SUBNET"
+		return 1
+	}
 	return 0
 }
 
