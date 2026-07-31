@@ -50,9 +50,9 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
       The plan's `ver=` bump lands on whatever ver= is current at execution: 0.2.1 if
       built before FR-40 merges, 0.3.0 if after - target is 0.4.0 either way.
 
-## Active: restart-on-new-subnet (v0.3.0) - CODE-COMPLETE, pending hardware validation
+## Active: restart-on-new-subnet (v0.3.0) - HARDWARE-VALIDATED, pending merge + release
 
-- [ ] Restart-on-new-subnet (FR-40, minor bump -> v0.3.0, `ver=` already bumped). Restarts
+- [x] Restart-on-new-subnet (FR-40, minor bump -> v0.3.0, `ver=` already bumped). Restarts
       `RESTART_SNAPS`/`RESTART_SERVICES` when a new global-IPv4 subnet appears on any
       interface (not only on a tagged-VLAN change), closing the agent-started-before-DHCP
       boot race and covering access/native ports dynavlan never provisions. New
@@ -62,9 +62,17 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
       exit, deduped against the existing VLAN-driven restart. Design:
       `docs/superpowers/specs/2026-07-30-restart-on-new-subnet-design.md`. Docs (PRD FR-40/
       AC-15, SKELETON, CODEMAP, design doc, test plan 1q + L3-33..36, README, CHANGELOG)
-      brought current in the same pass. State: code-complete; NEXT STEP is the L3-33..36
-      hardware checklist on the Protectli box before this can be marked hardware-validated
-      or released.
+      brought current in the same pass. Built on branch `feature/fr-40-restart-on-new-subnet`
+      via subagent-driven-development: 6 commits, per-task + architect + final whole-branch
+      reviews all clean, unit suite 139/0. HARDWARE-VALIDATED 2026-07-30 on the Protectli box
+      with the real Domotz snap (`domotzpro-agent-publicstore`), enp2s0 as the test NIC:
+      L3-33 (access port after boot -> 1 restart; UniFi and Meraki), L3-34 (same subnet ->
+      no restart), L3-35 (boot race: Domotz started 05:48:30 then restarted 05:51:01 after
+      settle), L3-36 (dry-run/status read-only) all PASS; plus disappearance-no-restart,
+      monotonic flap idempotence, reconnected-trunk multi-subnet restart with no re-provision,
+      and interface-in-key (base vs .N same subnet distinct). Timer FR-21a health reconfirmed.
+      NEXT STEP: merge `feature/fr-40-restart-on-new-subnet` -> main, then release v0.3.0
+      (git tag + gh release on pereljon/dynavlan) - both user-authorized.
 
 ## Next steps (not started)
 

@@ -331,6 +331,8 @@ Several of these (netplan-try accept/revert, promisc sniff of an unconfigured VL
 
 **Hardware run 2026-07-27 (serial-driven):** L3-6, L3-20 (revert + confirmation-window bound) and L3-22 (routed apply, metrics 100-106) all passed on the box. The health-FAIL is injected as a competing lower-metric default on `enp2s0` (the unmanaged dead NIC) during the try window - injecting it on a dynavlan-managed VLAN iface does NOT work, the apply's reconfiguration flushes it before health samples. See `context/decisions.md` 2026-07-27.
 
+**Hardware run 2026-07-30 (FR-40, SSH-driven with real Domotz snap):** L3-33..36 all PASS on the Protectli box, restart target = the real `domotzpro-agent-publicstore` snap, observed via its `ExecMainStartTimestamp` plus the `dynavlan` journal. enp2s0 was the test NIC (enp1s0 = the Meraki trunk / SSH path, untouched). L3-33 verified on a UniFi access port AND a Meraki access port (base `enp2s0:<subnet>` new token -> exactly one restart), and on a full UniFi trunk (7 newly-leased `enp2s0.*` VLAN subnets -> one restart, no re-provision since already owned). L3-34: a second rescan with no change restarts nothing. L3-35: on reboot, `/run/dynavlan/seen` is empty, Domotz's snap started at boot (05:48:30) and the `--boot` run restarted it (05:51:01) after settle - the `dynavlan.service` journal shows `new IPv4 subnet(s) [16 subnets]; restarting monitoring targets` with `no change ... zero applies/restarts` (no netplan apply). L3-36: `--dry-run` and `--status` print the would-restart delta and leave `/run/dynavlan/seen` mtime unchanged, no restart. Also confirmed: disappearance never restarts (monotonic `seen` retains a departed subnet), flap of an already-seen subnet is idempotent, and interface-in-the-key holds (`enp2s0:192.168.22.0/24` counts as new even with `enp2s0.22:192.168.22.0/24` already seen). Timer FR-21a health reconfirmed after a stop/start (`NextElapseUSecMonotonic` finite once the activated rescan settles; the transient `n/a` is only while the rescan service is mid-run).
+
 ## Acceptance-criteria traceability
 
 | AC | Method |
@@ -349,7 +351,7 @@ Several of these (netplan-try accept/revert, promisc sniff of an unconfigured VL
 | AC-12 | Layer 1 1c (evaluator) + **L3-14 (real empty-snapshot accept)** |
 | AC-13 | Layer 1 1f (guard/fill math) + L3-19 (real refuse + fill) |
 | AC-14 | Layer 1 1g (assignment + conflict math, token-keyed) + L3-22 (real routed apply + metric persistence) + L3-23 (real conflict refusal) + L3-31 (two-trunk metric sequence, NOT yet run on hardware) |
-| AC-15 | Layer 1 1q (`ipv4_network` keying) + L3-33 (access-port restart-once) + L3-34 (same-subnet no restart) + L3-35 (boot-race fix) + L3-36 (dry-run/status delta, no side effects) - NONE yet run on hardware |
+| AC-15 | Layer 1 1q (`ipv4_network` keying) + L3-33 (access-port restart-once) + L3-34 (same-subnet no restart) + L3-35 (boot-race fix) + L3-36 (dry-run/status delta, no side effects) - ALL PASS on hardware 2026-07-30 (see hardware-run note below) |
 
 Note: FR-23 removal-set math is covered by Layer 1 1d (per-trunk; combined across trunks by 1p); FR-16/FR-30 by L3-11/L3-12. There is no FR-4 hysteresis requirement in the all-trunks model (superseded; see 1e above).
 
