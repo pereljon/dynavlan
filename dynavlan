@@ -1502,6 +1502,13 @@ do_dryrun() {
 			"$trunk" "${detected_ids:-none}" "${t_owned:-none}" "${t_adds:-none}" "${t_rems:-none}"
 	done
 
+	if [ "$RESTART_ON_NEW_SUBNET" = true ]; then
+		local cur_sn new_sn
+		cur_sn=$(current_subnets)
+		new_sn=$(set_minus "$cur_sn" "$(read_seen)")
+		printf '  new IPv4 subnets since last seen (would restart): [%s]\n' "${new_sn:-none}"
+	fi
+
 	ROUTE_METRICS=""
 	if [ "$VLAN_ROUTES" = true ]; then
 		local snap_metric
@@ -1625,6 +1632,12 @@ do_status() { # FR-35 - report all trunks
 		printf '  detected trunks: [none]\n'
 	fi
 	printf '  run history: journalctl -t dynavlan\n'
+	if [ "$RESTART_ON_NEW_SUBNET" = true ]; then
+		local cur_sn new_sn
+		cur_sn=$(current_subnets)
+		new_sn=$(set_minus "$cur_sn" "$(read_seen)")
+		printf 'new IPv4 subnets since last seen (would restart): [%s]\n' "${new_sn:-none}"
+	fi
 	return 0
 }
 
