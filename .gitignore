@@ -14,6 +14,9 @@ secrets.yml
 # Claude
 .claude/
 
+# Internal working files (not for publication)
+internal/
+
 # OS
 .DS_Store
 Thumbs.db
