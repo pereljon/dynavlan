@@ -1361,15 +1361,26 @@ gate_vlan_count() { # KEPT ADDITIONS - echoes the (possibly reduced) additions; 
 # ---------------------------------------------------------------------------
 
 do_boot() {
-	log info "run start: dynavlan $(version_string "$ver" "$build") mode=boot detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}] reset_on_boot=$RESET_ON_BOOT"
+	log info "run start: dynavlan $(version_string "$ver" "$build") mode=boot detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}] reset_on_boot=$RESET_ON_BOOT remove_on_carrier_loss=$REMOVE_ON_CARRIER_LOSS"
 
-	if ! run_detection || [ -z "$DETECTED_TRUNKS" ]; then
-		log err "boot reconcile aborted: no carrier / no tags / zero VLANs detected. Changing nothing (FR-22 zero-detection guard)"
+	if ! run_detection; then
+		log err "boot reconcile aborted: detection failed (no interfaces prepped / probe error). Changing nothing"
 		return 0
 	fi
+	# Empty detection (ran OK, saw nothing) is NOT a hard failure. Additions become
+	# impossible, but an owned trunk that is carrier-down must still be prunable:
+	# FR-22's "detected nothing != remove everything" guards the SNIFF signal on the
+	# detection-diff path, and carrier is a separate authoritative signal. The in-loop
+	# empty-detection guard below still preserves every carrier-UP trunk, so the
+	# detection-diff path keeps its FR-22 protection either way.
+	if [ -z "$DETECTED_TRUNKS" ] && [ "$REMOVE_ON_CARRIER_LOSS" != true ]; then
+		log err "boot reconcile aborted: no carrier / no tags / zero VLANs detected and REMOVE_ON_CARRIER_LOSS=false. Changing nothing (FR-22 zero-detection guard)"
+		return 0
+	fi
+	[ -z "$DETECTED_TRUNKS" ] && log info "boot: zero VLANs detected; owned carrier-down trunks remain eligible for removal"
 
 	local owned owned_ifaces trunk
-	local all_additions="" all_removals="" target
+	local all_additions="" all_removals="" target any_owned_down=false
 	owned=$(backend_owned_vlans)
 	owned_ifaces=$(distinct_ifaces "$owned")
 
@@ -1388,31 +1399,77 @@ do_boot() {
 		all_additions="$all_additions $(tag_tokens "$trunk" "$additions_ids")"
 
 		eval "_p1_${trunk//[^a-zA-Z0-9]/_}=\"\$detected_ids\""
+
+		local c1=down
+		has_carrier "$trunk" && c1=up
+		eval "_c1_${trunk//[^a-zA-Z0-9]/_}=\"\$c1\""
+		if [ "$c1" = down ] && [ -n "$owned_on_trunk" ]; then
+			any_owned_down=true
+		fi
 	done
 
-	if [ "$RESET_ON_BOOT" = true ]; then
-		log info "boot removal pass 2 in ${BOOT_SETTLE_SECONDS}s..."
+	# A second settle+resample is needed when RESET_ON_BOOT drives a detection
+	# diff, OR when carrier-down removal is armed and some owned trunk is already
+	# down at pass 1 (that pass-1 sample is one half of the debounce). When
+	# RESET_ON_BOOT=false and every trunk is up, neither applies: no settle, no
+	# change - the fast path is unchanged.
+	local need_pass2=false
+	[ "$RESET_ON_BOOT" = true ] && need_pass2=true
+	[ "$REMOVE_ON_CARRIER_LOSS" = true ] && [ "$any_owned_down" = true ] && need_pass2=true
+
+	if [ "$need_pass2" = true ]; then
+		log info "boot pass 2 in ${BOOT_SETTLE_SECONDS}s..."
 		sleep "$BOOT_SETTLE_SECONDS"
+		# Re-detect only when RESET_ON_BOOT drives the detection-diff path. When pass 2
+		# exists solely for the carrier re-sample (RESET_ON_BOOT=false, a trunk down),
+		# the carrier-down branch reads /sys + the owned set and never consults
+		# detection, so a full ~SNIFF_SECONDS sniff here would be pure boot latency.
+		[ "$RESET_ON_BOOT" = true ] && run_detection 2>/dev/null
 
-		run_detection 2>/dev/null
-
+		local routing_ok=unknown   # have_routing evaluated at most once, lazily
 		for trunk in $all_trunks; do
-			local p1 p2 owned_on_trunk owned_ids removals_ids
+			local p1 p2 c1 c2=down owned_on_trunk owned_ids removals_ids
 			eval "p1=\"\${_p1_${trunk//[^a-zA-Z0-9]/_}}\""
+			eval "c1=\"\${_c1_${trunk//[^a-zA-Z0-9]/_}}\""
 			owned_on_trunk=$(tokens_for_iface "$owned" "$trunk")
 			owned_ids=$(untag_tokens "$owned_on_trunk")
+			has_carrier "$trunk" && c2=up
 
-			if [ "$(cat "/sys/class/net/$trunk/carrier" 2>/dev/null)" = "1" ]; then
-				p2=$(emit_set $(iface_tags "$trunk"))
-				if [ -n "$p1" ] && [ -n "$p2" ]; then
-					removals_ids=$(boot_removals "$owned_ids" "$p1" "$p2")
-					all_removals="$all_removals $(tag_tokens "$trunk" "$removals_ids")"
-				else
-					log info "trunk $trunk: empty detection in pass 1 or 2; preserving all owned VLANs"
+			if [ "$c2" = up ]; then
+				# Carrier present at pass 2: detection-diff removal, RESET_ON_BOOT only
+				# (unchanged from the pre-feature behavior).
+				if [ "$RESET_ON_BOOT" = true ]; then
+					p2=$(emit_set $(iface_tags "$trunk"))
+					if [ -n "$p1" ] && [ -n "$p2" ]; then
+						removals_ids=$(boot_removals "$owned_ids" "$p1" "$p2")
+						all_removals="$all_removals $(tag_tokens "$trunk" "$removals_ids")"
+					else
+						log info "trunk $trunk: empty detection in pass 1 or 2; preserving all owned VLANs"
+					fi
 				fi
-			else
-				log warning "trunk $trunk: no carrier in pass 2; skipping removals (preserving)"
+				continue
 			fi
+
+			# Carrier DOWN at pass 2.
+			[ -z "$owned_ids" ] && continue
+			if [ "$REMOVE_ON_CARRIER_LOSS" != true ]; then
+				log warning "trunk $trunk: no carrier; REMOVE_ON_CARRIER_LOSS=false, preserving owned VLANs"
+				continue
+			fi
+			if [ "$c1" != down ]; then
+				log info "trunk $trunk: carrier flapped (up->down) across the settle; preserving owned VLANs"
+				continue
+			fi
+			if [ "$routing_ok" = unknown ]; then
+				if have_routing; then routing_ok=yes; else routing_ok=no; fi
+			fi
+			if [ "$routing_ok" != yes ]; then
+				log warning "trunk $trunk: carrier down but box has no healthy routing; preserving owned VLANs (fail toward no change)"
+				continue
+			fi
+			removals_ids=$(carrier_removals "$owned_ids" "$c1" "$c2")
+			all_removals="$all_removals $(tag_tokens "$trunk" "$removals_ids")"
+			log notice "trunk $trunk: carrier down across both samples; removing all owned VLANs on it [$removals_ids]"
 		done
 	fi
 
