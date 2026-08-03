@@ -76,7 +76,7 @@ Hardware-validated netplan/NIC behaviors that strand the box or silently lose mo
 
 Runs as root, typically on a remote, headless, or unattended box. The threat model is accidental self-inflicted footguns (stranding the box, hijacking the uplink route, leaking network topology), not adversarial input. Recoverability outweighs everything: defensive code is warranted specifically around the apply/rollback path, not general input hardening. Captured VLAN IDs and subnets are confidentiality-sensitive: logs stay local, sniff uses a minimal snaplen and never persists frames.
 
-**No real MACs or PII in committed files.** This is a public repo. Never commit a real MAC address, and no personally identifying information beyond the maintainer's name (Jonathan Perel) and email (pereljon@users.noreply.github.com). When a real capture, log excerpt, or hardware detail illustrates a point (e.g. in `context/decisions.md`), redact the MAC to an RFC 7042 documentation value (`00:00:5e:00:53:xx`) before committing. IP addresses and VLAN IDs are not PII and are fine.
+**No real MACs or PII in committed files.** This is a public repo. Never commit a real MAC address, and no personally identifying information beyond the maintainer's name (Jonathan Perel) -- no personal email addresses (the Debian `Maintainer` field uses a GitHub noreply address). When a real capture, log excerpt, or hardware detail illustrates a point (e.g. in `context/decisions.md`), redact the MAC to an RFC 7042 documentation value (`00:00:5e:00:53:xx`) before committing. IP addresses and VLAN IDs are not PII and are fine.
 
 ## Development Workflow
 
