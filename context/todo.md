@@ -4,11 +4,17 @@ Owns: open tasks and their status. Does NOT hold permanent facts or decisions (t
 Maintain: update whenever a task is added, changes state, or completes.
 Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 
-## Current state (2026-07-30)
+## Current state (2026-08-03)
 
-v0.2.1 released and hardware-validated. 132 tests, 0 failures. Script ~1700 lines.
+See `context/index.md` STATE line for the authoritative up-to-date summary (kept current
+there to avoid two places drifting). As of this date: v0.3.0 (restart-on-new-subnet)
+released; v0.4.0 (carrier-down VLAN removal, FR-41) merged to `main` and pushed,
+148 tests/0 failures, script ~1940 lines - pending code review + hardware validation
+before its own release (see the v0.4.0 milestone below). Superseded, kept for history:
+v0.2.1 was released and hardware-validated with 132 tests, ~1700 lines, on the commits
+below.
 
-Commits on main since the all-trunks redesign:
+Commits on main since the all-trunks redesign (historical, through v0.2.1):
 - `18f58ef` feat: all-trunks provisioner redesign (v0.2.0)
 - `1cd76db` fix: backend_list_managed_vlans awk assumed link: before id: (v0.2.1)
 - `570cd23` docs: record hardware validation results (L3-29..L3-32 all PASS)
@@ -59,13 +65,16 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
       history, AC-16 traceability row).
       SUPERSEDES the hardware-validated L3-30 "carrier-pull preserve" result - the
       revised L3-30 (carrier-pull prune) is NOT YET run on hardware.
+      MERGED to `main` 2026-08-03 (fast-forward, 148/148 tests re-verified post-merge
+      per CLAUDE.md's merge -> verify -> push sequencing); worktree + feature branch
+      removed (all commits preserved on `main`). Pushed to `origin/main` same day.
       NEXT STEP: minor-release code review (all modified units, per CLAUDE.md Code
-      Review Before Release), then hardware validation on the Protectli box
-      (console-backed, per CLAUDE.md - cannot claim this works until it runs on the
-      box) before the v0.4.0 release. Work is currently in an isolated worktree at
-      `.claude/worktrees/carrier-down-vlan-removal`, not yet merged to main.
+      Review Before Release - NOT YET DONE), then hardware validation on the
+      Protectli box (console-backed, per CLAUDE.md - cannot claim this works until
+      it runs on the box) before the v0.4.0 release (`git tag`/`gh release`, both
+      user-authorized).
 
-## Active: restart-on-new-subnet (v0.3.0) - HARDWARE-VALIDATED, pending merge + release
+## Completed: restart-on-new-subnet (v0.3.0) - RELEASED
 
 - [x] Restart-on-new-subnet (FR-40, minor bump -> v0.3.0, `ver=` already bumped). Restarts
       `RESTART_SNAPS`/`RESTART_SERVICES` when a new global-IPv4 subnet appears on any
@@ -86,8 +95,8 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
       settle), L3-36 (dry-run/status read-only) all PASS; plus disappearance-no-restart,
       monotonic flap idempotence, reconnected-trunk multi-subnet restart with no re-provision,
       and interface-in-key (base vs .N same subnet distinct). Timer FR-21a health reconfirmed.
-      NEXT STEP: merge `feature/fr-40-restart-on-new-subnet` -> main, then release v0.3.0
-      (git tag + gh release on pereljon/dynavlan) - both user-authorized.
+      MERGED to `main` and RELEASED as v0.3.0 (`v0.3.0` tag exists, GitHub release created
+      on pereljon/dynavlan). Superseded by v0.4.0 work above.
 
 ## Next steps (not started)
 

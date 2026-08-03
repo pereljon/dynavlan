@@ -16,12 +16,15 @@ Installing that .deb via `dpkg` was validated on the Domotz box (Ubuntu 22.04), 
 install.sh->.deb migration, FR-38 build id, conffile preservation, reboot + boot apply (no-change, no
 revert), and real Domotz snap restart all passed. That box is now dpkg-managed (no longer install.sh).
 
-NEXT UP: v0.4.0 (carrier-down VLAN removal, FR-41) is CODE-COMPLETE (2026-08-03) in an isolated worktree
-(`worktree-carrier-down-vlan-removal`, not yet merged to main), `ver=` bumped to 0.4.0. Prunes an owned
-trunk's VLANs after a debounced carrier-down loss (boot + rescan), gated on healthy routing; supersedes
-the hardware-validated L3-30 "carrier-pull preserve" result with a revised "carrier-pull prune" case, NOT
-YET run on hardware. 148/148 unit tests. Remaining gates before release: minor-release code review, then
-console-backed hardware validation on the Protectli box (`context/todo.md` Next steps).
+NEXT UP: v0.4.0 (carrier-down VLAN removal, FR-41) is CODE-COMPLETE and MERGED to `main` + pushed to
+`origin/main` (2026-08-03; built in an isolated worktree, since removed), `ver=` bumped to 0.4.0. Prunes
+an owned trunk's VLANs after a debounced carrier-down loss (boot + rescan), gated on healthy routing;
+supersedes the hardware-validated L3-30 "carrier-pull preserve" result with a revised "carrier-pull prune"
+case, NOT YET run on hardware. 148/148 unit tests. Remaining gates before its own release: minor-release
+code review (not yet done), then console-backed hardware validation on the Protectli box (`context/todo.md`
+Next steps). The same session also codified a Worktree Policy + Workflow Pipeline in `CLAUDE.md`
+(worktree for behavior changes, docs-only stays on `main`, merge-locally default, tag-time re-verification,
+release gate on shippable-artifact changes) - see `context/decisions.md` 2026-08-03.
 
 Before coding a change, read in order:
 4. dev/SKELETON.md - logic flow and key invariants
