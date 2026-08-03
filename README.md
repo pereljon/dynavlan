@@ -108,6 +108,8 @@ A bad apply can drop an SSH session, so if possible, run the first `--boot` with
 |------|---------|
 | `docs/dynavlan-PRD.md` | Product requirements (authoritative behavior) |
 | `dev/features/dynavlan.md` | Technical design: architecture, apply/rollback state machine, systemd/install layout |
+| `dev/SKELETON.md` | How it works: logic flow, key invariants, hardware-validated behaviors |
+| `dev/CODEMAP.md` | Where things live: per-function map for navigating the script |
 | `dev/features/dynavlan-tests.md` | Test plan: unit asserts, `--dry-run`, hardware integration checklist |
 | `dynavlan.conf` | Config reference (every key documented at its default) |
 | `docs/deployment-guide.md` | Deployment guide: install, configure, first attended run, operation, removal |
