@@ -1573,7 +1573,11 @@ do_rescan() {
 
 do_dryrun() {
 	log info "dry-run: detecting (no changes will be made)..."
-	if ! run_detection || [ -z "$DETECTED_TRUNKS" ]; then
+	if ! run_detection; then
+		printf 'dry-run: detection failed; would change nothing\n'
+		return 0
+	fi
+	if [ -z "$DETECTED_TRUNKS" ] && [ "$REMOVE_ON_CARRIER_LOSS" != true ]; then
 		printf 'dry-run: no trunks detected; would change nothing\n'
 		return 0
 	fi
@@ -1584,6 +1588,9 @@ do_dryrun() {
 	owned_ifaces=$(distinct_ifaces "$owned")
 	local all_trunks
 	all_trunks=$(printf '%s\n' $owned_ifaces $DETECTED_TRUNKS | sort -u | tr '\n' ' ' | sed 's/ $//')
+
+	local routing_ok=no
+	have_routing && routing_ok=yes
 
 	for trunk in $all_trunks; do
 		local detected_ids managed owned_on_trunk owned_ids additions_ids removals_ids
@@ -1599,6 +1606,11 @@ do_dryrun() {
 			removals_ids=$(set_minus "$owned_ids" "$detected_ids")
 			all_removals="$all_removals $(tag_tokens "$trunk" "$removals_ids")"
 		fi
+
+		if [ "$REMOVE_ON_CARRIER_LOSS" = true ] && [ "$routing_ok" = yes ] \
+			&& ! has_carrier "$trunk" && [ -n "$owned_ids" ]; then
+			all_removals="$all_removals $(tag_tokens "$trunk" "$owned_ids")"
+		fi
 	done
 
 	all_additions=$(emit_tokens $all_additions)
@@ -1610,21 +1622,27 @@ do_dryrun() {
 	printf '  trunks:    [%s]\n' "${all_trunks:-none}"
 	printf '  owned:     [%s]\n' "${owned:-none}"
 	printf '  additions: [%s]\n' "${all_additions:-none}"
-	printf '  removals:  [%s]  (indicative; boot confirms removals with a 2-pass sniff)\n' "${all_removals:-none}"
+	printf '  removals:  [%s]  (indicative; boot confirms with a 2-pass sniff or a 2-sample carrier check)\n' "${all_removals:-none}"
 	printf '  target:    [%s]\n' "${target:-none}"
 	printf '  count gate: %s (%s VLANs; VLAN_WARN=%s VLAN_LIMIT=%s mode=%s)\n' \
 		"$(vlan_guard "$(count_ids "$target")" "$VLAN_WARN" "$VLAN_LIMIT")" \
 		"$(count_ids "$target")" "$VLAN_WARN" "$VLAN_LIMIT" "$VLAN_LIMIT_MODE"
 
 	for trunk in $all_trunks; do
-		local detected_ids t_owned t_adds t_rems
+		local detected_ids t_owned t_adds t_rems cstate
 		detected_ids=$(emit_set $(iface_tags "$trunk"))
 		t_owned=$(tokens_for_iface "$owned" "$trunk")
 		t_adds=$(tokens_for_iface "$all_additions" "$trunk")
 		t_rems=$(tokens_for_iface "$all_removals" "$trunk")
-		printf '  %s: detected=[%s] owned=[%s] +[%s] -[%s]\n' \
-			"$trunk" "${detected_ids:-none}" "${t_owned:-none}" "${t_adds:-none}" "${t_rems:-none}"
+		cstate=down
+		has_carrier "$trunk" && cstate=up
+		printf '  %s: carrier=%s detected=[%s] owned=[%s] +[%s] -[%s]\n' \
+			"$trunk" "$cstate" "${detected_ids:-none}" "${t_owned:-none}" "${t_adds:-none}" "${t_rems:-none}"
 	done
+
+	if [ "$REMOVE_ON_CARRIER_LOSS" = true ] && [ "$routing_ok" = no ]; then
+		printf '  carrier-down: preserving (no healthy default route; --boot would preserve)\n'
+	fi
 
 	if [ "$RESTART_ON_NEW_SUBNET" = true ]; then
 		local cur_sn new_sn
@@ -1741,6 +1759,13 @@ do_status() { # FR-35 - report all trunks
 	printf 'dynavlan %s\n' "$(version_string "$ver" "$build")"
 	printf '  configured (owned): [%s]\n' "${owned:-none}"
 	printf '  owned trunks: [%s]\n' "${trunks:-none}"
+	if [ -n "$trunks" ]; then
+		local t cstate
+		for t in $trunks; do
+			if has_carrier "$t"; then cstate=up; else cstate=down; fi
+			printf '    %s: carrier=%s\n' "$t" "$cstate"
+		done
+	fi
 	printf '  detect_method: %s   range: %s-%s   ignore: [%s]\n' "$DETECT_METHOD" "$VLAN_MIN" "$VLAN_MAX" "${IGNORE_SET:-none}"
 	log info "status: running a ${SNIFF_SECONDS}s detection pass..."
 	if run_detection && [ -n "$DETECTED_TRUNKS" ]; then
