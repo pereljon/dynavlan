@@ -1060,6 +1060,20 @@ snapshot_default_metric() { # metric of the lowest-metric default route, "" if n
 	printf '%s' "$best"
 }
 
+# have_routing
+#   True iff the box has a usable default route: a lowest-metric default exists
+#   AND the iface it egresses currently has carrier. Pre-condition for carrier-down
+#   removal - if routing is already gone (no default, or the only default egresses
+#   a dead iface), preserve everything and change nothing. This also covers the
+#   "lost link was the sole uplink" case: removal would fail the post-apply health
+#   check and revert anyway; this just avoids attempting the doomed netplan-try
+#   churn (and its agent restart) in the first place.
+have_routing() {
+	local dev
+	dev=$(snapshot_default_route)
+	[ -n "$dev" ] && has_carrier "$dev"
+}
+
 post_apply_health() { # SNAP_IFACE -> PASS/FAIL (delegates the decision to the pure evaluator)
 	local snap_iface="$1" tokens
 	tokens=$(default_routes_tokens | tr '\n' ' ')

@@ -124,6 +124,26 @@ call carrier_removals ""         down down; ok "1r empty owned -> none"         
 call carrier_removals "22 18 21" down down; ok "1r output is sorted"              "18 21 22"
 
 # ---------------------------------------------------------------------------
+# 1s. have_routing - true iff a default route exists AND its dev has carrier.
+#     Stubs snapshot_default_route + has_carrier; restores them after.
+# ---------------------------------------------------------------------------
+
+_sdr_saved=$(declare -f snapshot_default_route)
+_hc_saved=$(declare -f has_carrier)
+
+snapshot_default_route() { printf '%s' "$STUB_DEV"; }
+has_carrier() { [ -n "$STUB_DEV" ] && [ "$STUB_CARRIER" = up ]; }
+routing_says() { if have_routing; then echo yes; else echo no; fi; }
+
+STUB_DEV=enp1s0; STUB_CARRIER=up;   call routing_says; ok "1s default route + carrier -> routing"        "yes"
+STUB_DEV=enp1s0; STUB_CARRIER=down; call routing_says; ok "1s default route, dead egress -> no routing"  "no"
+STUB_DEV="";     STUB_CARRIER=up;   call routing_says; ok "1s no default route -> no routing"            "no"
+
+eval "$_sdr_saved"
+eval "$_hc_saved"
+unset STUB_DEV STUB_CARRIER
+
+# ---------------------------------------------------------------------------
 # 1f. vlan_guard / limit_fill - VLAN_WARN / VLAN_LIMIT gate (0 = unlimited)
 #     vlan_guard N WARN LIMIT -> OK | WARN | OVER ; limit_fill ADDS SLOTS -> lowest-N
 # ---------------------------------------------------------------------------
