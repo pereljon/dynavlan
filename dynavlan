@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.3.0"
+ver="0.4.0"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -454,6 +454,7 @@ load_config() {
 	LEASE_SETTLE_SECONDS=30
 	RESCAN_MINUTES=5
 	RESET_ON_BOOT=true
+	REMOVE_ON_CARRIER_LOSS=true
 	VLAN_ROUTES=false
 	VLAN_ROUTE_METRIC_START=100
 	RESTART_SNAPS=""
@@ -539,6 +540,10 @@ load_config() {
 	}
 	in_list "$RESET_ON_BOOT" "true false" || {
 		log err "invalid RESET_ON_BOOT=$RESET_ON_BOOT"
+		return 1
+	}
+	in_list "$REMOVE_ON_CARRIER_LOSS" "true false" || {
+		log err "invalid REMOVE_ON_CARRIER_LOSS=$REMOVE_ON_CARRIER_LOSS"
 		return 1
 	}
 	in_list "$VLAN_ROUTES" "true false" || {
