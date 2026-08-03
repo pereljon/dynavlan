@@ -50,23 +50,7 @@ Infrastructure, not a framework. Never surprise the operator; never strand the b
 
 ## Documentation Roles
 
-| File | Purpose |
-|------|---------|
-| `CLAUDE.md` | Conventions, checklists, guardrails for working in this repo |
-| `context/index.md` | Read-order for a fresh session; pointers to the live-state files below |
-| `context/todo.md` | Outstanding tasks and their state (source of truth for project status) |
-| `context/decisions.md` | Dated log of decisions made and rejected |
-| `context/open_questions.md` | Unresolved questions with status and resolution path |
-| `dev/CODEMAP.md` | Where things live: per-function purposes, for locating code |
-| `dev/SKELETON.md` | How it works: logic flow and key invariants (incl. the hardware-validated behaviors) |
-| `dev/features/dynavlan.md` | Technical design: architecture, backend seam, apply/rollback state machine, module decomposition, systemd/install layout |
-| `dev/features/dynavlan-tests.md` | Test plan: unit assert cases, `--dry-run` verification, hardware integration checklist |
-| `docs/dynavlan-PRD.md` | Product requirements: authoritative FR/NFR/AC with severity+impact tags |
-| `docs/deployment-guide.md` | Deployment guide: install, configure, first attended run, operation, removal |
-| `README.md` | Landing page: what the project is and where the docs are |
-| `CHANGELOG.md` | What changed per release |
-
-Keep this table current; each file gets one clear role.
+File-to-role map (what each doc is for): `context/index.md` (## File roles). Keep it current; each file gets one clear role.
 
 ## Non-Obvious Behaviors
 
