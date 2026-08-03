@@ -68,6 +68,23 @@ Runs as root, typically on a remote, headless, or unattended box. The threat mod
 - New logic: TDD pure helpers in `tests/unit.sh` first (RED before GREEN, per `superpowers:test-driven-development`); wire integration code cohesively - the apply/rollback state machine is too coupled for subagent fan-out.
 - There is no hot-reload: dynavlan installs as a systemd service + timer. Hardware testing happens on the real appliance on the real trunk with console access, never only over SSH (a bad apply drops the connection). No VM.
 
+### Workflow Pipeline
+
+The canonical order of a change, start to finish. This is the *sequence*; the detailed rules live in the sections it links to - do not duplicate them here.
+
+1. **Read state** - `context/index.md` -> `context/todo.md`/`open_questions.md`/`decisions.md` (Start Here).
+2. **Scope the change** - review with the user: happy path, edge cases, flag/config conflicts, interface updates (Testing Plan). Confirm before coding.
+3. **Set up a worktree** (if warranted, see Worktree Policy below) - report when creating one, no need to ask first. Then read `dev/SKELETON.md` + `dev/CODEMAP.md` to find the blast radius (Development Workflow, above).
+4. **Code** - TDD pure helpers RED-before-GREEN in `tests/unit.sh`; wire coupled integration code inline, never fanned out to subagents.
+5. **Code review** - scope by version bump (Code Review Before Release); fix CRITICAL/HIGH before committing.
+6. **Update docs** - the Change Checklist GATE, done after review so docs describe the final code, not a draft of it.
+7. **Test** - `bash tests/unit.sh` (mandatory before every commit). Exercise the feature for real; hardware validation is a separate, later gate and is never satisfied by unit tests alone (Testing Plan).
+8. **Commit** - [approval gate] (Git Approvals).
+9. **Merge** - if built in a worktree, merge to `main` locally by default (Worktree Policy), then re-run `bash tests/unit.sh` on `main` itself before pushing.
+10. **Push** - [approval gate] (Git Approvals).
+11. **Release** - [approval gate]; hardware-validate first (cannot claim it works until it has run on the box); confirm version/build identity is current; `git tag` -> `git push origin TAG` -> `gh release create` (Git Approvals).
+12. **Session hygiene** - update `context/` files, then clear or compact to start the next cycle fresh (Session Hygiene).
+
 ### Worktree Policy
 
 - **Behavior changes to `dynavlan`** (new FR, config key, or apply/rollback/detection logic) get an isolated worktree/branch (per `superpowers:using-git-worktrees`) before landing on `main`. Report when creating one (see Git Approvals) - no need to ask first.
@@ -105,6 +122,8 @@ Each step requires explicit user approval. Approval for one step does not imply 
 2. **Commit**: propose the commit message and changed files, wait for approval before `git commit`.
 3. **Push**: wait for explicit approval before `git push`.
 4. **Release**: only the user can authorize a release. A release requires `git tag vX.Y.Z`, `git push origin vX.Y.Z`, and `gh release create vX.Y.Z` on `pereljon/dynavlan` (gh account: pereljon). Commit or push do not imply release.
+   - **Immediately before `git tag`**, re-run `bash tests/unit.sh` and confirm `dynavlan --version` reports the expected version - never tag off a state that hasn't been freshly verified (see Version and build identity below; this is the same discipline, applied at the one moment it matters most).
+   - **Release gate**: only tag a release if the deliverable script, its installer, or its packaged config/service templates changed since the last release - those are the only assets an install or upgrade actually consumes. Docs-only changes are already available via the repo and don't need a release.
 
 After completing work, ask which steps the user wants: "Want to commit, push, or release?"
 
@@ -135,6 +154,8 @@ After any code change, check whether these need updating:
 - `CHANGELOG.md` (new features, fixes, removals per release)
 - version in the `dynavlan` script (`ver=` variable) - see **Version and build identity** below; this is a gate, not a judgement call
 - systemd units (`dynavlan.service`/`dynavlan-rescan.service`/`dynavlan.timer`) and `install.sh` if artifacts change
+- **When adding a config key**: default + `in_list`/range validation in `load_config`, a commented template entry in `dynavlan.conf` at its default, and the FR/config-surface section in `docs/dynavlan-PRD.md`.
+- **When adding a CLI mode/flag**: the dispatch in `main`, the Usage section in `README.md`, and the corresponding FR/AC in `docs/dynavlan-PRD.md`.
 
 When making multiple changes, consider logical ordering: some changes should come before others (e.g. move code before updating references to it; validate inputs before using them).
 
