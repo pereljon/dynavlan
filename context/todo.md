@@ -78,6 +78,7 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 
 - [x] Test .deb build end-to-end (done 2026-08-03): installed the v0.3.0 release .deb on the Domotz box (Ubuntu 22.04), console-backed. Validated install.sh->.deb migration (old /etc/systemd/system units removed, /lib copies live), FR-38 build id (`814bcd1`, was `unknown`), conffile preserved, reboot + boot `--boot` apply (no-change, no revert), and real `domotzpro-agent-publicstore` snap restart. Box now dpkg-managed. Apply->netplan-try->revert path not exercised (no config diff); already hw-validated for v0.3.0.
 - [ ] APT repository: host a signed repo so `apt upgrade` picks up new versions (Launchpad PPA, GitHub Pages + reprepro, or packagecloud.io)
+- [ ] Define v1.0: decide what feature set / maturity bar makes the release 1.0 (e.g. carrier-down removal, APT distribution, second-box validation, non-Meraki switch coverage, IPv6 arm). Draft the criteria, don't just tag it.
 - [ ] Git hooks for version gate enforcement (see open_questions.md, designed but not built)
 - [ ] IPv6 health-check arm (deferred from FR-14a; required before any future IPv6 route acceptance)
 - [ ] Non-Meraki switch validation (sniff-primary proven only on Meraki; LLDP coverage varies by vendor)
