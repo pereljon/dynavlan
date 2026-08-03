@@ -77,8 +77,34 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 ## Next steps (not started)
 
 - [x] Test .deb build end-to-end (done 2026-08-03): installed the v0.3.0 release .deb on the Domotz box (Ubuntu 22.04), console-backed. Validated install.sh->.deb migration (old /etc/systemd/system units removed, /lib copies live), FR-38 build id (`814bcd1`, was `unknown`), conffile preserved, reboot + boot `--boot` apply (no-change, no revert), and real `domotzpro-agent-publicstore` snap restart. Box now dpkg-managed. Apply->netplan-try->revert path not exercised (no config diff); already hw-validated for v0.3.0.
-- [ ] APT repository: host a signed repo so `apt upgrade` picks up new versions (Launchpad PPA, GitHub Pages + reprepro, or packagecloud.io)
-- [ ] Define v1.0: decide what feature set / maturity bar makes the release 1.0 (e.g. carrier-down removal, APT distribution, second-box validation, non-Meraki switch coverage, IPv6 arm). Draft the criteria, don't just tag it.
+- [ ] APT repository: host a signed repo so `apt upgrade` picks up new versions.
+      DESIGNED + user-approved 2026-08-03. Approach: GitHub Pages + reprepro,
+      public, manual/attended upgrades only (NOT unattended). Spec (local-only,
+      under git-excluded docs/superpowers/):
+      `docs/superpowers/specs/2026-08-03-apt-repository-hosting-design.md`.
+      Decision recorded in context/decisions.md (2026-08-03). NEXT STEP: write
+      the implementation plan (superpowers:writing-plans) - was pending user's
+      spec review at session end. Rejected Launchpad PPA (Ubuntu-only, breaks
+      distro-agnostic) and SaaS (Cloudsmith/packagecloud; third party in trust
+      path). Touches: get.sh (apt-aware + tarball fallback), release.yml (new
+      publish-apt job, rebuild-from-assets, actions/deploy-pages), new apt/conf/,
+      README/deployment-guide, one PRD NFR (manual-upgrade), CHANGELOG. No ver=
+      bump (dynavlan script untouched). Needs a locally-generated RSA-4096
+      passphraseless signing key in Actions secret APT_GPG_PRIVATE_KEY, plus
+      offline key backup + revocation cert before first publish. Pages source
+      must be set to "GitHub Actions".
+- [ ] v1.0 release. DEFINED 2026-08-03 (spec: local-only
+      `docs/superpowers/specs/2026-08-03-v1.0-definition-design.md`; decision in
+      context/decisions.md 2026-08-03). Four gates, all required before the 1.0.0 tag:
+      (1) carrier-down VLAN removal shipped as v0.4.0 (see the v0.4.0 milestone above);
+      (2) APT distribution built + reference box upgrades via apt (see the APT milestone above);
+      (3) second-box / multi-site validation on >=1 more box at a different site
+      (non-Meraki switch requirement ALREADY MET via the v0.3.0 UniFi trunk validation);
+      (4) 1.0.0 itself = config-surface freeze + `COMPATIBILITY.md` (deprecate-with-warning
+      policy) + version-gate git hooks + full major-review (adversarial, other models).
+      Path: v0.4.0 -> APT + validation (parallel) -> freeze + tag 1.0.0 (last by construction).
+      OUT OF SCOPE for 1.0 (documented limitations): IPv6, exhaustive vendor coverage,
+      PER_VLAN_MAC (stays default off), automatic config-drift detection.
 - [ ] Git hooks for version gate enforcement (see open_questions.md, designed but not built)
 - [ ] IPv6 health-check arm (deferred from FR-14a; required before any future IPv6 route acceptance)
 - [ ] Non-Meraki switch validation (sniff-primary proven only on Meraki; LLDP coverage varies by vendor)
