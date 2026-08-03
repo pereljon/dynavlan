@@ -1493,15 +1493,21 @@ do_boot() {
 }
 
 do_rescan() {
-	log info "run start: dynavlan $(version_string "$ver" "$build") mode=rescan detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}]"
-	if ! run_detection || [ -z "$DETECTED_TRUNKS" ]; then
+	log info "run start: dynavlan $(version_string "$ver" "$build") mode=rescan detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}] remove_on_carrier_loss=$REMOVE_ON_CARRIER_LOSS"
+	if ! run_detection; then
+		log info "rescan: detection failed; nothing to do"
+		return 0
+	fi
+	if [ -z "$DETECTED_TRUNKS" ] && [ "$REMOVE_ON_CARRIER_LOSS" != true ]; then
 		log info "rescan: no trunks detected; nothing to add"
 		return 0
 	fi
 
-	local owned trunk all_additions=""
+	local owned owned_ifaces trunk all_additions="" all_removals=""
 	owned=$(backend_owned_vlans)
+	owned_ifaces=$(distinct_ifaces "$owned")
 
+	# Additions: carrier-up detected trunks only (unchanged behavior).
 	for trunk in $DETECTED_TRUNKS; do
 		local detected_ids managed owned_on_trunk owned_ids additions_ids
 		detected_ids=$(emit_set $(iface_tags "$trunk"))
@@ -1514,22 +1520,51 @@ do_rescan() {
 		all_additions="$all_additions $(tag_tokens "$trunk" "$additions_ids")"
 	done
 
+	# Removals: owned trunks that are carrier-down. Fast path preserved - the
+	# settle sleep is incurred ONLY when at least one owned trunk is actually down,
+	# so steady state (all trunks up) has no new latency and stays add-only.
+	if [ "$REMOVE_ON_CARRIER_LOSS" = true ]; then
+		local down_trunks=""
+		for trunk in $owned_ifaces; do
+			has_carrier "$trunk" || down_trunks="$down_trunks $trunk"
+		done
+		if [ -n "$down_trunks" ] && have_routing; then
+			log info "rescan: owned trunk(s) carrier-down [${down_trunks# }]; confirming over ${BOOT_SETTLE_SECONDS}s..."
+			sleep "$BOOT_SETTLE_SECONDS"
+			for trunk in $down_trunks; do
+				local owned_ids c2=down removals_ids
+				owned_ids=$(untag_tokens "$(tokens_for_iface "$owned" "$trunk")")
+				has_carrier "$trunk" && c2=up
+				removals_ids=$(carrier_removals "$owned_ids" down "$c2")
+				if [ -n "$removals_ids" ]; then
+					all_removals="$all_removals $(tag_tokens "$trunk" "$removals_ids")"
+					log notice "rescan: trunk $trunk carrier down across both samples; removing [$removals_ids]"
+				else
+					log info "rescan: trunk $trunk carrier recovered during the settle; preserving owned VLANs"
+				fi
+			done
+		elif [ -n "$down_trunks" ]; then
+			log warning "rescan: carrier-down trunk(s) [${down_trunks# }] but no healthy routing; preserving (fail toward no change)"
+		fi
+	fi
+
 	all_additions=$(emit_tokens $all_additions)
-	if [ -z "$all_additions" ]; then
-		log info "rescan: no new VLANs (owned=[${owned:-none}]); zero applies/restarts"
+	all_removals=$(emit_tokens $all_removals)
+	if [ -z "$all_additions" ] && [ -z "$all_removals" ]; then
+		log info "rescan: no changes (owned=[${owned:-none}]); zero applies/restarts"
 		return 0
 	fi
 
 	warn_overlap "$owned"
-	all_additions=$(gate_vlan_count "$owned" "$all_additions") || return 1
-	if [ -z "$all_additions" ]; then
-		log info "rescan: no additions after VLAN_LIMIT gating; zero applies/restarts"
+	all_additions=$(gate_vlan_count "$(set_minus "$owned" "$all_removals")" "$all_additions") || return 1
+	if [ -z "$all_additions" ] && [ -z "$all_removals" ]; then
+		log info "rescan: no changes after VLAN_LIMIT gating; zero applies/restarts"
 		return 0
 	fi
 
 	local target
-	target=$(set_union "$owned" "$all_additions")
-	apply_change "$target" "$all_additions" ""
+	target=$(set_union "$(set_minus "$owned" "$all_removals")" "$all_additions")
+	apply_change "$target" "$all_additions" "$all_removals"
 }
 
 # ---------------------------------------------------------------------------
