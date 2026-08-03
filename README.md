@@ -17,7 +17,7 @@ dynavlan removes the human from that loop. It discovers the VLANs from the wire,
 3. **Apply with a safety net**: dynavlan owns exactly one generated netplan file and touches nothing else. Every change across every trunk goes through a single `netplan try` against a pre-apply default-route snapshot and **auto-reverts on a routing-health failure** - the box is never stranded.
 4. **Restart** the services you configure, so the interface-enumerating agent re-enumerates and starts watching the new VLANs.
 
-It runs at boot and on a timer (systemd), reconciling as VLANs appear and disappear on any trunk.
+It runs at boot as a full reconcile (`--boot`: adds *and* removes VLANs to match every trunk), then on a systemd timer as an add-only rescan (`--rescan`, default every 5 min) that brings up VLANs as they appear. Removals wait for the next boot, so a transient trunk blip can't tear down a live interface.
 
 ## Isolated by default
 
