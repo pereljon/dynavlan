@@ -130,6 +130,17 @@ boot_removals() {
 	return 0
 }
 
+# carrier_removals OWNED_ON_TRUNK C1 C2
+#   Full removal set for a dead trunk: return the entire owned-on-trunk set when
+#   BOTH carrier samples are "down" (a debounced, sustained loss), else empty. A
+#   carrier-down port cannot pass frames, so every VLAN on it is dead; this is a
+#   full teardown of the trunk's owned set, not a detection diff. Single up sample
+#   (a flap across the settle) preserves. Emits a sorted bare-id set.
+carrier_removals() { # OWNED_ON_TRUNK C1 C2
+	[ "$2" = down ] && [ "$3" = down ] && emit_set $1
+	return 0
+}
+
 # health_check_eval SNAP_IFACE POST_ROUTES
 #   Evaluate the FR-18 default-route health check. SNAP_IFACE is the egress iface of
 #   the lowest-metric default route captured before apply ("" if none). POST_ROUTES is

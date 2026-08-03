@@ -112,6 +112,18 @@ call boot_removals "18 21 22" "18 21 22" "18 21 22"; ok "1d all present -> none"
 call boot_removals "18 21"    ""      "";            ok "1d both passes empty -> guard, none" ""
 
 # ---------------------------------------------------------------------------
+# 1r. carrier_removals - full owned set removed only when BOTH carrier samples down
+#     args: owned_on_trunk  c1  c2   (c1/c2 = up|down)
+# ---------------------------------------------------------------------------
+
+call carrier_removals "18 21 22" down down; ok "1r both down -> full set removed" "18 21 22"
+call carrier_removals "18 21 22" up   down; ok "1r pass1 up (flap) -> none"       ""
+call carrier_removals "18 21 22" down up;   ok "1r pass2 up (flap) -> none"       ""
+call carrier_removals "18 21 22" up   up;   ok "1r both up -> none"               ""
+call carrier_removals ""         down down; ok "1r empty owned -> none"           ""
+call carrier_removals "22 18 21" down down; ok "1r output is sorted"              "18 21 22"
+
+# ---------------------------------------------------------------------------
 # 1f. vlan_guard / limit_fill - VLAN_WARN / VLAN_LIMIT gate (0 = unlimited)
 #     vlan_guard N WARN LIMIT -> OK | WARN | OVER ; limit_fill ADDS SLOTS -> lowest-N
 # ---------------------------------------------------------------------------
