@@ -68,6 +68,15 @@ Runs as root, typically on a remote, headless, or unattended box. The threat mod
 - New logic: TDD pure helpers in `tests/unit.sh` first (RED before GREEN, per `superpowers:test-driven-development`); wire integration code cohesively - the apply/rollback state machine is too coupled for subagent fan-out.
 - There is no hot-reload: dynavlan installs as a systemd service + timer. Hardware testing happens on the real appliance on the real trunk with console access, never only over SSH (a bad apply drops the connection). No VM.
 
+### Worktree Policy
+
+- **Behavior changes to `dynavlan`** (new FR, config key, or apply/rollback/detection logic) get an isolated worktree/branch (per `superpowers:using-git-worktrees`) before landing on `main`. Report when creating one (see Git Approvals) - no need to ask first.
+- **Docs-only or trivial fixes** (typos, one-line comment/doc corrections) can land directly on `main` - a worktree adds ceremony with no payoff at that size.
+- **Code review runs in the same worktree/branch**, not a separate one: review the diff before merging, fix findings there, then merge. A worktree isolates the change from `main`; review is part of finishing that change, not a new one.
+- **A major-release review (X.0.0, e.g. 1.0)** gets its own dedicated worktree/branch (e.g. `release/1.0.0-review`), separate from any single feature's branch, since it reviews the accumulated surface across multiple prior features and may collect several fix commits before one merge + tag. Create it only once the release's other gates are already met.
+- Solo-maintainer project: default to **Option 1 (merge locally)** from `superpowers:finishing-a-development-branch` unless the user asks for a PR - there is no second reviewer requiring one.
+- **Testing sequence: merge -> verify -> push.** Run `bash tests/unit.sh` before every commit in the worktree (already mandatory). After merging into `main`, re-run the suite on `main` itself before pushing - a merge changes what's on disk even when it's a fast-forward, so the merged tree, not the pre-merge branch, is what gets pushed. Hardware validation is a separate, later gate tied to *release*, not to push: pushing merged commits doesn't run anything on the box, so it belongs before `git tag`/`gh release`, not before `git push`. Full order for a feature: merge -> unit tests on `main` -> push (whenever) -> hardware validation -> release.
+
 ### Task Tracking Granularity
 
 Three layers, kept distinct - do not conflate them:
@@ -92,9 +101,10 @@ Address CRITICAL and HIGH issues before committing.
 
 Each step requires explicit user approval. Approval for one step does not imply approval for the next.
 
-1. **Commit**: propose the commit message and changed files, wait for approval before `git commit`.
-2. **Push**: wait for explicit approval before `git push`.
-3. **Release**: only the user can authorize a release. A release requires `git tag vX.Y.Z`, `git push origin vX.Y.Z`, and `gh release create vX.Y.Z` on `pereljon/dynavlan` (gh account: pereljon). Commit or push do not imply release.
+1. **Worktree**: report when creating a new git worktree (e.g. via `superpowers:using-git-worktrees` or an `EnterWorktree`-style tool) - no need to ask first, since the Worktree Policy below already decides when one applies. It's local and reversible, unlike commit/push/release. Ask only when it's genuinely ambiguous whether a change counts as "behavior change" (worktree) vs. "trivial" (main) under that policy.
+2. **Commit**: propose the commit message and changed files, wait for approval before `git commit`.
+3. **Push**: wait for explicit approval before `git push`.
+4. **Release**: only the user can authorize a release. A release requires `git tag vX.Y.Z`, `git push origin vX.Y.Z`, and `gh release create vX.Y.Z` on `pereljon/dynavlan` (gh account: pereljon). Commit or push do not imply release.
 
 After completing work, ask which steps the user wants: "Want to commit, push, or release?"
 
