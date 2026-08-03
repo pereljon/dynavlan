@@ -12,6 +12,7 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 | `emit_set` | Print ids as a sorted de-duplicated space-separated set (shared by all set producers) | (via others) |
 | `parse_vlan_ignore` | Expand VLAN_IGNORE comma/space list with low-high ranges into a set; any bad token = non-zero (refuse) | 1a |
 | `boot_removals` | Owned ids absent from BOTH boot passes; both-empty = remove nothing (zero-detection guard) | 1d |
+| `carrier_removals` | FR-41: full owned-on-trunk set if BOTH carrier samples are "down", else empty (dead-trunk full teardown, not a diff) | 1r |
 | `health_check_eval` | PASS iff the lowest-metric post-apply default egresses the snapshot iface (iface only; "" snap = PASS) | 1c |
 | `vlan_guard` | Count gate verdict: OVER (> limit, 0 = unlimited) / WARN (> warn) / OK | 1f |
 | `limit_fill` | Lowest-N subset of additions for fill mode (deterministic across a fleet) | 1f |
@@ -95,6 +96,7 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 | `default_routes_tokens` | Current default routes as "iface:metric" tokens |
 | `snapshot_default_route` / `snapshot_default_metric` | Iface / metric of the lowest-metric pre-apply default ("" if none) |
 | `post_apply_health` | Sample routes now and delegate PASS/FAIL to `health_check_eval` |
+| `have_routing` | FR-41 pre-condition: true iff a lowest-metric default route exists AND its egress iface has carrier (composes `snapshot_default_route` + `has_carrier`; tests 1s) |
 
 ## Backups (FR-19)
 
@@ -127,11 +129,11 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 
 | function | one-line purpose |
 |----------|------------------|
-| `do_boot` | All-trunks two-pass reconcile: zero-detection guard (no trunks at all), per-trunk candidates/removals over every owned-or-detected iface (union), carrier-gated removals per trunk, tokens tagged per trunk, one unified `apply_change` across the whole box. No relocation branch: a trunk that goes dark (tagless/carrierless) is preserved, never relocated |
-| `do_rescan` | Add-only timer reconcile over every DETECTED_TRUNKS iface, never removes |
-| `do_dryrun` | Preview: same per-trunk candidate math (single pass) over owned-or-detected ifaces, throwaway-tree validate, diff + count gate + FR-37 metric/conflict preview, per-trunk breakdown printed; never applies |
+| `do_boot` | All-trunks reconcile: hard `run_detection` failure aborts box-wide (empty-but-successful detection does not); per-trunk candidates over every owned-or-detected iface (union); carrier-UP trunks get sniff-based detection-diff removal (`RESET_ON_BOOT`); carrier-DOWN trunks get full-set FR-41 pruning (`carrier_removals`, gated on `have_routing` + `REMOVE_ON_CARRIER_LOSS`, a flap preserves); second settle+resample (`need_pass2`) fires for either reason; one unified `apply_change` across the whole box. No relocation branch: a tagless-but-carrier-UP trunk is preserved (detection uncertainty); a carrier-DOWN trunk is pruned once routing is healthy, not preserved |
+| `do_rescan` | Timer reconcile: additions over DETECTED_TRUNKS as before; FR-41 (v0.4.0) adds its first removal path - carrier-down OWNED trunks are pruned on a routing-gated two-sample settle, fast-path-preserved (settle sleep only when an owned trunk is actually down) |
+| `do_dryrun` | Preview: same per-trunk candidate math (single pass) over owned-or-detected ifaces, plus a would-be FR-41 removal per trunk (single advisory sample, `have_routing`-gated); throwaway-tree validate, diff + count gate + FR-37 metric/conflict preview, per-trunk breakdown (now with carrier state) printed; never applies |
 | `do_reapply` | FR-39: regenerate the OWNED set (whatever trunks it spans) with this build, apply only if the body differs; NO detection (pins to `distinct_ifaces` of the owned tokens), full owned set lease-waited, count gate bypassed |
-| `do_status` | Report for every owned trunk plus every currently-detected trunk: owned vs detected-now vs managed-elsewhere (root; runs a detection pass) |
+| `do_status` | Report for every owned trunk plus every currently-detected trunk: owned vs detected-now vs managed-elsewhere (root; runs a detection pass); also prints carrier up/down per owned trunk (FR-41) |
 | `render_timer_dropin` | Pure: timer drop-in text for an interval; restates ALL monotonic triggers, since the reset clears the whole list (FR-21a) |
 | `do_reconfigure` | Write the rendered drop-in to `dynavlan.timer.d/interval.conf` + daemon-reload |
 | `main` | Mode dispatch: `--version` (pre-config, pre-root) → config → (status/reconfigure) → preconditions → dry-run (non-blocking lock try) → boot/rescan under the fd-held flock, followed by `maybe_restart_on_new_subnet` (FR-40) on every boot/rescan exit path |

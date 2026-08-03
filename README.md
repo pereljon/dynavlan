@@ -17,7 +17,7 @@ dynavlan removes the human from that loop. It discovers the VLANs from the wire,
 3. **Apply with a safety net**: dynavlan owns exactly one generated netplan file and touches nothing else. Every change across every trunk goes through a single `netplan try` against a pre-apply default-route snapshot and **auto-reverts on a routing-health failure** - the box is never stranded.
 4. **Restart** the services you configure, so the interface-enumerating agent re-enumerates and starts watching the new VLANs.
 
-It runs at boot as a full reconcile (`--boot`: adds *and* removes VLANs to match every trunk), then on a systemd timer as an add-only rescan (`--rescan`, default every 5 min) that brings up VLANs as they appear. Removals wait for the next boot, so a transient trunk blip can't tear down a live interface.
+It runs at boot as a full reconcile (`--boot`: adds *and* removes VLANs to match every trunk), then on a systemd timer as a rescan (`--rescan`, default every 5 min) that brings up VLANs as they appear. A trunk that's carrier-up but shows no tags is preserved either way (a sniff can miss a real, silent VLAN, so absence of evidence there isn't evidence of absence). A trunk whose physical link goes down, though, is pruned - not preserved - once that's confirmed across two samples and the box still has a healthy uplink: a dead port cannot carry any VLAN, so there is nothing to protect. This runs at both boot and on the rescan timer, gated by `REMOVE_ON_CARRIER_LOSS` (default `true`); a brief flap shorter than the confirmation window is preserved, and it never touches anything if the box's own uplink has no redundant route.
 
 ## Isolated by default
 
@@ -98,7 +98,7 @@ dynavlan is built for boxes that may be remote, headless, or unattended, where a
 
 - Every apply is validated and health-checked against a pre-apply default-route snapshot; a routing failure auto-reverts via `netplan try`. Rollback is gated on the health check, never on an exit code.
 - dynavlan owns one generated netplan file and never reads or writes any other config.
-- Boot reconcile aborts and changes nothing if it detects no carrier, no tags, or zero VLANs (it never reads "detected nothing" as "remove everything").
+- Boot reconcile changes nothing if detection itself fails; "detected nothing" is never read as "remove everything" - a carrier-up trunk with no tags is preserved (detection is uncertain), while a carrier-down trunk is pruned only after a two-sample debounce and only if the box still has a healthy uplink route.
 
 A bad apply can drop an SSH session, so if possible, run the first `--boot` with an out-of-band fallback (serial console, IPMI, or physical access). If that is not available, `--dry-run` previews the change without applying it.
 

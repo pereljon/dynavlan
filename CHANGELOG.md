@@ -4,6 +4,10 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ## Unreleased
 
+### Added
+
+- Carrier-down VLAN removal (FR-41), NOT YET hardware-validated. When an owned trunk's physical link stays carrier-down across a two-sample debounce (`BOOT_SETTLE_SECONDS` apart) - at boot or on the rescan timer - and the box still has a healthy default route, dynavlan removes all owned VLANs on that trunk through the standard validated + health-gated + auto-reverting apply chain. A carrier-down port cannot pass frames, so this is a full teardown of the trunk's set, not a per-VLAN detection diff. Independent of `RESET_ON_BOOT`: governed solely by new config key `REMOVE_ON_CARRIER_LOSS` (default `true`), so a `RESET_ON_BOOT=false` box still self-heals a dead trunk. Rescan (previously strictly add-only) gains its first removal path; the settle sleep is incurred only when an owned trunk is actually carrier-down, so the steady-state fast path is unchanged. Narrows the prior preservation invariant: preservation now protects only genuine detection uncertainty (carrier-up, no tags) - carrier-down is authoritative kernel evidence and is no longer blanket-preserved. `--dry-run` previews a would-be teardown; `--status` reports carrier state per owned trunk. Two new pure helpers: `carrier_removals` (the debounce decision) and `have_routing` (the routing pre-condition - a carrier-down trunk that doubles as the box's own uplink, with no redundant route, is preserved rather than attempted). **Supersedes** the hardware-validated v0.2.0 "L3-30 carrier-pull preserve" result with a revised "carrier-pull prune" case (`dev/features/dynavlan-tests.md`), not yet run on hardware.
+
 ## [0.3.0] - 2026-07-30
 
 ### Added

@@ -5,16 +5,23 @@ Read these live-state files first on every session, in order:
 2. context/open_questions.md - unresolved questions
 3. context/decisions.md - decisions already made (do not re-litigate)
 
-STATE (2026-07-30): dynavlan v0.3.0 released and hardware-validated. v0.3.0 is restart-on-new-subnet
-(FR-40): restart the nominated agent when a new IPv4 subnet appears on any interface, not only on a
-tagged-VLAN change - closes the agent-started-before-DHCP boot race and covers access/native ports.
-Hardware-validated 2026-07-30 on the Protectli box with the real Domotz snap (UniFi + Meraki access,
-UniFi trunk, boot race). Prior: all-trunks redesign (v0.2.0) + netplan-get field-order fix (v0.2.1).
-All tagged, pushed, released on GitHub. Packaging: `get.sh` (curl one-liner, no arg = latest), `.deb`
-via GitHub Actions on release. The v0.3.0 release auto-built and attached `dynavlan_0.3.0_all.deb`
-(first successful workflow build). Installing that .deb via `dpkg` was validated on the Domotz box (Ubuntu 22.04),
-console-backed, 2026-08-03: install.sh->.deb migration, FR-38 build id, conffile preservation, reboot + boot apply
-(no-change, no revert), and real Domotz snap restart all passed. That box is now dpkg-managed (no longer install.sh).
+STATE (2026-08-03): dynavlan v0.3.0 released and hardware-validated (restart-on-new-subnet, FR-40:
+restart the nominated agent when a new IPv4 subnet appears on any interface, not only on a tagged-VLAN
+change; closes the agent-started-before-DHCP boot race and covers access/native ports). Hardware-validated
+2026-07-30 on the Protectli box with the real Domotz snap (UniFi + Meraki access, UniFi trunk, boot race).
+Prior: all-trunks redesign (v0.2.0) + netplan-get field-order fix (v0.2.1). All tagged, pushed, released
+on GitHub. Packaging: `get.sh` (curl one-liner, no arg = latest), `.deb` via GitHub Actions on release.
+The v0.3.0 release auto-built and attached `dynavlan_0.3.0_all.deb` (first successful workflow build).
+Installing that .deb via `dpkg` was validated on the Domotz box (Ubuntu 22.04), console-backed, 2026-08-03:
+install.sh->.deb migration, FR-38 build id, conffile preservation, reboot + boot apply (no-change, no
+revert), and real Domotz snap restart all passed. That box is now dpkg-managed (no longer install.sh).
+
+NEXT UP: v0.4.0 (carrier-down VLAN removal, FR-41) is CODE-COMPLETE (2026-08-03) in an isolated worktree
+(`worktree-carrier-down-vlan-removal`, not yet merged to main), `ver=` bumped to 0.4.0. Prunes an owned
+trunk's VLANs after a debounced carrier-down loss (boot + rescan), gated on healthy routing; supersedes
+the hardware-validated L3-30 "carrier-pull preserve" result with a revised "carrier-pull prune" case, NOT
+YET run on hardware. 148/148 unit tests. Remaining gates before release: minor-release code review, then
+console-backed hardware validation on the Protectli box (`context/todo.md` Next steps).
 
 Before coding a change, read in order:
 4. dev/SKELETON.md - logic flow and key invariants

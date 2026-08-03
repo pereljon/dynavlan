@@ -29,26 +29,41 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 - [x] .deb packaging: debian/, build-deb.sh, GitHub Actions workflow (done 2026-07-30)
 - [x] GitHub repo description updated for multi-trunk positioning (done 2026-07-30)
 
-## Active: carrier-down VLAN removal (v0.4.0) - PLANNED, next = execute
+## Active: carrier-down VLAN removal (v0.4.0) - CODE-COMPLETE, pending review + hardware validation
 
-- [ ] Carrier-down VLAN removal (minor bump -> v0.4.0). State: design approved +
-      committed (`docs/superpowers/specs/2026-07-30-carrier-down-vlan-removal-design.md`);
-      implementation plan WRITTEN + architect-reviewed (H1/M1/L1 folded in):
-      `docs/superpowers/plans/2026-07-30-carrier-down-vlan-removal.md` (7 tasks).
-      Decisions: fire at boot + timer; carrier-down only (carrier-up-no-tags still
-      preserved); minimal in-run two-pass debounce (grace-timer alt deferred); new
-      `REMOVE_ON_CARRIER_LOSS` knob default true, independent of `RESET_ON_BOOT`.
-      SUPERSEDES the hardware-validated L3-30 "carrier-pull preserve": the hardware
-      checklist / L3-30 references update to prune-on-sustained-carrier-loss.
-      NEXT STEP: execute the plan (Task 1: TDD `carrier_removals` RED first),
-      inline for the coupled do_boot/do_rescan tasks; then minor-release code
-      review + hardware validation gate before the v0.4.0 release.
-      (Task/step decomposition lives in the plan file, not here - per CLAUDE.md
-      Task Tracking Granularity.)
-      VERSION: renumbered v0.3.0 -> v0.4.0 on 2026-07-30 to resolve a collision with
-      restart-on-new-subnet (FR-40), which already took v0.3.0 and is code-complete.
-      The plan's `ver=` bump lands on whatever ver= is current at execution: 0.2.1 if
-      built before FR-40 merges, 0.3.0 if after - target is 0.4.0 either way.
+- [x] Carrier-down VLAN removal (FR-41, minor bump -> v0.4.0, `ver=` already bumped). All
+      7 plan tasks implemented on branch `worktree-carrier-down-vlan-removal` (7 commits):
+      `carrier_removals` (pure debounce helper, tests 1r) + `have_routing` (routing
+      pre-condition, tests 1s) + `REMOVE_ON_CARRIER_LOSS` config key (default true) +
+      `BOOT_SETTLE_SECONDS` comment clarified as dual-purpose + `do_boot` wiring
+      (zero-detection guard split so an empty-but-successful detection still reaches
+      carrier-down pruning; pass-1 carrier stash; `need_pass2` fires independently of
+      `RESET_ON_BOOT`) + `do_rescan`'s first-ever removal path (fast-path-preserved:
+      settle sleep only when an owned trunk is actually down) + `--dry-run` preview
+      + `--status` per-trunk carrier flag. 148/148 unit tests passing (139 baseline +
+      9 new: 6 `carrier_removals` + 3 `have_routing`). Design:
+      `docs/superpowers/specs/2026-07-30-carrier-down-vlan-removal-design.md`; plan:
+      `docs/superpowers/plans/2026-07-30-carrier-down-vlan-removal.md` (7 tasks, all
+      checked off; test-section letters renumbered 1q/1r -> 1r/1s mid-execution since
+      FR-40 had already claimed 1q; two small gaps closed during a plan-review pass
+      before execution: rescan run-start log parity with `remove_on_carrier_loss`,
+      and the `BOOT_SETTLE_SECONDS` dual-purpose doc comment).
+      Docs brought current in the same pass: PRD bumped to v3.7 (new FR-41 + AC-16;
+      FR-21/23/AC-3 narrowed - carrier-down no longer blanket-preserved, only
+      carrier-up-with-no-tags is), SKELETON (Key Invariants + reconcile-policy
+      prose), design doc (new §11b + a `have_routing` note in §7), CODEMAP (new
+      helper rows + updated one-liners), README (How-it-works + Safety sections
+      corrected - "removals wait for next boot" was stale), CHANGELOG (Unreleased),
+      test plan (new 1r/1s Layer-1 sections, Layer-2 dry-run cases, L3-30 revised
+      to "carrier-pull PRUNE" with the original preserve result kept as struck-through
+      history, AC-16 traceability row).
+      SUPERSEDES the hardware-validated L3-30 "carrier-pull preserve" result - the
+      revised L3-30 (carrier-pull prune) is NOT YET run on hardware.
+      NEXT STEP: minor-release code review (all modified units, per CLAUDE.md Code
+      Review Before Release), then hardware validation on the Protectli box
+      (console-backed, per CLAUDE.md - cannot claim this works until it runs on the
+      box) before the v0.4.0 release. Work is currently in an isolated worktree at
+      `.claude/worktrees/carrier-down-vlan-removal`, not yet merged to main.
 
 ## Active: restart-on-new-subnet (v0.3.0) - HARDWARE-VALIDATED, pending merge + release
 
@@ -76,6 +91,14 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 
 ## Next steps (not started)
 
+- [ ] Hardware-validate carrier-down VLAN removal (revised L3-30, "carrier-pull prune")
+      on the Protectli box, console-backed. Code-complete in the v0.4.0 milestone above
+      but NOT YET run on hardware - cannot be claimed working until it is (CLAUDE.md).
+      Confirm `dynavlan --version` reports 0.4.0 first, then: unplug a duplicate trunk
+      and confirm removal within two rescan cycles + settle AND at boot; a flap shorter
+      than the settle preserves; pulling the box's own uplink (no redundant route)
+      preserves; re-plug re-adds. This plus the minor-release code review are the
+      release gates for v0.4.0.
 - [x] Test .deb build end-to-end (done 2026-08-03): installed the v0.3.0 release .deb on the Domotz box (Ubuntu 22.04), console-backed. Validated install.sh->.deb migration (old /etc/systemd/system units removed, /lib copies live), FR-38 build id (`814bcd1`, was `unknown`), conffile preserved, reboot + boot `--boot` apply (no-change, no revert), and real `domotzpro-agent-publicstore` snap restart. Box now dpkg-managed. Apply->netplan-try->revert path not exercised (no config diff); already hw-validated for v0.3.0.
 - [ ] APT repository: host a signed repo so `apt upgrade` picks up new versions.
       DESIGNED + user-approved 2026-08-03. Approach: GitHub Pages + reprepro,

@@ -245,7 +245,7 @@ Exercises the do_boot/do_rescan/do_dryrun loop-and-combine shape without a live 
 |---|---|
 | enp1s0 detected={18,21} owned={} ; enp2s0 detected={18,22} owned={} | `enp1s0.18 enp1s0.21 enp2s0.18 enp2s0.22` — VLAN 18 tagged on both trunks yields TWO tokens, not one (the collision case the token design exists for) |
 | enp1s0 detected={18} owned={enp1s0.18} ; enp2s0 detected={18} owned={} | `enp2s0.18` only — enp1s0's 18 is already owned on enp1s0, but that does NOT suppress enp2s0's independent 18 (bare-id "owned" must be scoped per trunk, not box-wide) |
-| enp1s0 carrier-down (excluded from the detected-trunk loop), owned={enp1s0.18} ; enp2s0 detected={21} | additions = `enp2s0.21`; enp1s0's owned token is untouched (preserved, not evaluated for removal since it has no carrier this pass) |
+| enp1s0 carrier-down (excluded from the detected-trunk loop), owned={enp1s0.18} ; enp2s0 detected={21} | additions = `enp2s0.21`; enp1s0's owned token is excluded from ADDITIONS math (no carrier this pass) - but as of FR-41 it is NOT untouched: it is separately evaluated for carrier-down REMOVAL (see 1r/1s below), pruned if the loss debounces across two samples and the box still has healthy routing |
 
 Removal-combination case (do_boot only, mirrors 1d but across two trunks):
 
@@ -269,6 +269,29 @@ Reduces an address to its network so a same-pool DHCP renewal produces an identi
 | `ipv4_network 10.0.5.55 32` | `10.0.5.55` (host itself) |
 | `ipv4_network 192.168.1.1 0` | `0.0.0.0` (all-zero network) |
 
+### 1r. `carrier_removals` (FR-41 debounce decision)
+
+Full owned-on-trunk set removed only when BOTH carrier samples are `down`; any `up` sample (a flap) preserves.
+
+| owned_on_trunk / c1 / c2 | Expected |
+|---|---|
+| `18 21 22` / down / down | `18 21 22` (both down -> full set removed) |
+| `18 21 22` / up / down | `` (pass1 up, a flap -> none) |
+| `18 21 22` / down / up | `` (pass2 up, a flap -> none) |
+| `18 21 22` / up / up | `` (both up -> none) |
+| `` / down / down | `` (empty owned -> none) |
+| `22 18 21` / down / down | `18 21 22` (output is sorted) |
+
+### 1s. `have_routing` (FR-41 routing pre-condition)
+
+True iff a default route exists AND its egress iface has carrier; composes `snapshot_default_route` + `has_carrier` (both stubbed for this section).
+
+| default route dev / its carrier | Expected |
+|---|---|
+| present / up | routing (true) |
+| present / down | no routing (false - the trunk that lost carrier IS the uplink, no redundancy) |
+| absent / (n/a) | no routing (false) |
+
 ## Layer 2 - `--dry-run` decision-path verification (real inputs)
 
 `dynavlan --dry-run` exercises discovery → detection → filtering → candidate computation → `backend_validate` (throwaway tree) and prints the intended add/remove diff, with zero side effects. Use it as:
@@ -280,6 +303,12 @@ Reduces an address to its network so a same-pool DHCP renewal produces an identi
 Verifies on real inputs: interface discovery, all-trunks detection (every carrier-up iface with tags, not a single selected trunk), sniff+lldp detection, range/ignore/exclusion filtering per trunk, and that the generated config validates. The dry-run validation tree includes the real base netplan files (see design §6), so it DOES surface an FR-17 base-file-freeze condition. Does NOT cover the apply/rollback path (by design) — that is Layer 3.
 
 Lock interaction (round-4): while a `--boot`/`--rescan` holds the FR-30 flock, a concurrent `--dry-run` warns "run in progress; preview may reflect mid-change state" and still completes read-only; conversely, while a dry-run's preview runs, a timer rescan logs "skipped, run in progress" and retries next cycle. Quick check: start `--dry-run` (its sniff window is long enough) and `systemctl start dynavlan-rescan.service` mid-window; confirm the skip line in the journal.
+
+FR-41 carrier-down preview cases (single advisory sample, no debounce - dry-run never applies):
+
+- An owned trunk that is currently carrier-down, with the box otherwise routing normally: the per-trunk breakdown shows `carrier=down` and the removals column lists that trunk's full owned set; the summary parenthetical notes removals are indicative, confirmed on a real run by a 2-pass sniff or a 2-sample carrier check.
+- Same setup but the box has no healthy default route (or the only default's iface is also carrier-down): the carrier-down trunk's owned VLANs do NOT appear in removals, and a `carrier-down: preserving (no healthy default route; --boot would preserve)` line is printed.
+- `REMOVE_ON_CARRIER_LOSS=false`: a carrier-down owned trunk shows `carrier=down` but contributes nothing to removals, regardless of routing health.
 
 ## Layer 3 - Manual hardware checklist (apply/rollback safety)
 
@@ -308,7 +337,8 @@ Run on the **actual Protectli/Ubuntu appliance plugged into the live Meraki trun
 | L3-17 | Dead-try false-accept guard | Kill netplan try (or trigger "another netplan process running") after launch, before accept | dynavlan does NOT accept, does NOT delete interfaces, does NOT restart the agent; err logged | AC-6, AC-11 |
 | L3-18 | Trunk goes dark, preserved not relocated (AC-3, all-trunks) | With owned VLANs on NIC A, unplug A (or move the cable to NIC B without ever un-owning A); `--boot` | A's owned VLANs are PRESERVED (no carrier / no tags on A in either pass = skip removals on A, per-trunk); if B now carries tags, B is independently provisioned as ADDITIONS on its own trunk, in the SAME reconcile, alongside A's untouched set - there is no relocation branch moving A's set onto B | AC-3 |
 | L3-29 | Second live trunk: independent provisioning + dual leasing | With two carrier-up trunks each carrying tagged VLANs (incl. an overlapping VLAN id tagged on both), run `--boot` | Both trunks provisioned in ONE reconcile via a single `netplan try`; the overlapping id yields two distinct interfaces (`<trunkA>.<id>` and `<trunkB>.<id>`), both lease independently; `--status`/`--dry-run` show both trunks | AC-1, AC-3 |
-| L3-30 | Carrier-pull preserve (two trunks) | With both trunks owned, pull carrier on ONE trunk only; `--boot` | The carrier-down trunk's owned VLANs are preserved (not removed, per the dark-trunk rule); the still-up trunk reconciles normally (adds/removes as its own detection dictates) | AC-3, AC-4 |
+| L3-30 (revised, SUPERSEDES the v0.2.0 "carrier-pull preserve" PASS below - FR-41, NOT YET VALIDATED) | Carrier-pull PRUNE (two trunks) | With both trunks owned and the box routing normally, pull carrier on ONE trunk (simulating an unplugged duplicate trunk); wait through a rescan cycle + settle, then separately re-test via `--boot` | The carrier-down trunk's owned VLANs are REMOVED (two-sample debounce, `have_routing` healthy) within two rescan cycles + settle, and also at boot; the still-up trunk reconciles normally. A flap shorter than the settle preserves. Pulling the box's OWN uplink (no redundant route) preserves instead of removing. Re-plugging the trunk re-adds its VLANs on the next cycle | AC-3, AC-16 |
+| ~~L3-30 (original, v0.2.0)~~ | ~~Carrier-pull preserve (two trunks)~~ | ~~With both trunks owned, pull carrier on ONE trunk only; `--boot`~~ | SUPERSEDED 2026-08-03 by FR-41 (carrier-down is now pruned, not preserved). Original result, PASS on 2026-07-30: "The carrier-down trunk's owned VLANs are preserved (not removed, per the dark-trunk rule); the still-up trunk reconciles normally." Kept here for history only - do not re-validate this behavior. | AC-3 (historical) |
 | L3-31 | Routed mode across two trunks (FR-37) | VLAN_ROUTES=true with an overlapping VLAN id tagged on both trunks; `--boot` | Each trunk's copy of the id gets a DISTINCT metric from one shared ascending sequence (not one sequence per trunk); no metric collision; uplink stays lowest | AC-14 |
 | L3-32 | Unified revert across two trunks | Force a health FAIL while both trunks have pending changes | Single `netplan try` reverts BOTH trunks' changes together; neither trunk is left half-applied; no deletes/restarts on either | AC-6, AC-11 |
 | L3-19 | VLAN_LIMIT refuse and fill (FR-36/AC-13) | Set VLAN_LIMIT below the trunk's VLAN count; run --boot in refuse mode, then VLAN_LIMIT_MODE=fill | refuse: nothing new applied, owned set untouched, err names count/limit/remedies. fill: exactly VLAN_LIMIT VLANs (lowest ids), skipped ids named in the journal | AC-13 |
@@ -339,7 +369,7 @@ Several of these (netplan-try accept/revert, promisc sniff of an unconfigured VL
 |----|--------|
 | AC-1 | L3-1 |
 | AC-2 | L3-1 + concurrent-`--rescan` step (lock forces skip, snap restarts exactly once; ties to FR-26 + FR-30) |
-| AC-3 | L3-7, L3-8, L3-18, L3-29, L3-30 |
+| AC-3 | L3-7, L3-8, L3-18, L3-29, L3-30 (revised: carrier-pull PRUNE, NOT YET run on hardware; supersedes the original preserve result) |
 | AC-4 | L3-4 + Layer 1 1b empty-detected row |
 | AC-5 | Layer 1 1a (invalid config value) + **L3-13 (missing/insufficient dependency, incl. no usable `netplan try`)** |
 | AC-6 | L3-5 (validate fail), L3-6 (health fail), L3-11 (flock death), L3-12 (atomic write), L3-32 (unified revert, two trunks) |
@@ -352,8 +382,9 @@ Several of these (netplan-try accept/revert, promisc sniff of an unconfigured VL
 | AC-13 | Layer 1 1f (guard/fill math) + L3-19 (real refuse + fill) |
 | AC-14 | Layer 1 1g (assignment + conflict math, token-keyed) + L3-22 (real routed apply + metric persistence) + L3-23 (real conflict refusal) + L3-31 (two-trunk metric sequence, NOT yet run on hardware) |
 | AC-15 | Layer 1 1q (`ipv4_network` keying) + L3-33 (access-port restart-once) + L3-34 (same-subnet no restart) + L3-35 (boot-race fix) + L3-36 (dry-run/status delta, no side effects) - ALL PASS on hardware 2026-07-30 (see hardware-run note below) |
+| AC-16 | Layer 1 1r (`carrier_removals` debounce) + 1s (`have_routing` gate) + Layer 2 FR-41 dry-run preview cases + L3-30 (revised: carrier-pull PRUNE, NOT YET run on hardware) |
 
-Note: FR-23 removal-set math is covered by Layer 1 1d (per-trunk; combined across trunks by 1p); FR-16/FR-30 by L3-11/L3-12. There is no FR-4 hysteresis requirement in the all-trunks model (superseded; see 1e above).
+Note: FR-23 removal-set math is covered by Layer 1 1d (per-trunk; combined across trunks by 1p); FR-16/FR-30 by L3-11/L3-12. There is no FR-4 hysteresis requirement in the all-trunks model (superseded; see 1e above). FR-41 carrier-down removal-set math is covered by Layer 1 1r (`carrier_removals`) + 1s (`have_routing`); code-complete, NOT YET hardware-validated (see revised L3-30).
 
 ## Deliberately out of scope (add later if the tool graduates)
 
