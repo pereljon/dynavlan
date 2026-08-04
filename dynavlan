@@ -1549,18 +1549,32 @@ do_rescan() {
 		if [ -n "$down_trunks" ] && have_routing; then
 			log info "rescan: owned trunk(s) carrier-down [${down_trunks# }]; confirming over ${BOOT_SETTLE_SECONDS}s..."
 			sleep "$BOOT_SETTLE_SECONDS"
-			for trunk in $down_trunks; do
-				local owned_ids c2=down removals_ids
-				owned_ids=$(untag_tokens "$(tokens_for_iface "$owned" "$trunk")")
-				has_carrier "$trunk" && c2=up
-				removals_ids=$(carrier_removals "$owned_ids" down "$c2")
-				if [ -n "$removals_ids" ]; then
-					all_removals="$all_removals $(tag_tokens "$trunk" "$removals_ids")"
-					log notice "rescan: trunk $trunk carrier down across both samples; removing [$removals_ids]"
-				else
-					log info "rescan: trunk $trunk carrier recovered during the settle; preserving owned VLANs"
-				fi
-			done
+			# Re-check routing AFTER the settle, not only before it. The uplink can
+			# drop DURING the sleep (a switch reboot takes both ports), and nothing
+			# downstream would catch it: with the uplink already gone the pre-apply
+			# route snapshot is empty, and an empty snapshot is a deliberate
+			# unconditional health-check PASS (AC-12, "never revert on an
+			# independently-missing uplink"). Without this second check a removal is
+			# applied and ACCEPTED on a box with no routing at all - netplan try, an
+			# ip link delete, and an agent restart, all during an active outage.
+			# do_boot is not exposed: it evaluates have_routing inside its pass-2
+			# loop, immediately before building the removal set.
+			if ! have_routing; then
+				log warning "rescan: routing lost during the settle; preserving carrier-down trunk(s) [${down_trunks# }] (fail toward no change)"
+			else
+				for trunk in $down_trunks; do
+					local owned_ids c2=down removals_ids
+					owned_ids=$(untag_tokens "$(tokens_for_iface "$owned" "$trunk")")
+					has_carrier "$trunk" && c2=up
+					removals_ids=$(carrier_removals "$owned_ids" down "$c2")
+					if [ -n "$removals_ids" ]; then
+						all_removals="$all_removals $(tag_tokens "$trunk" "$removals_ids")"
+						log notice "rescan: trunk $trunk carrier down across both samples; removing [$removals_ids]"
+					else
+						log info "rescan: trunk $trunk carrier recovered during the settle; preserving owned VLANs"
+					fi
+				done
+			fi
 		elif [ -n "$down_trunks" ]; then
 			log warning "rescan: carrier-down trunk(s) [${down_trunks# }] but no healthy routing; preserving (fail toward no change)"
 		fi
