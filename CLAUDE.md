@@ -74,25 +74,35 @@ The canonical order of a change, start to finish. This is the *sequence*; the de
 
 1. **Read state** - `context/index.md` -> `context/todo.md`/`open_questions.md`/`decisions.md` (Start Here).
 2. **Scope the change** - review with the user: happy path, edge cases, flag/config conflicts, interface updates (Testing Plan). Confirm before coding.
-3. **Set up a worktree** (if warranted, see Worktree Policy below) - report when creating one, no need to ask first. Then read `dev/SKELETON.md` + `dev/CODEMAP.md` to find the blast radius (Development Workflow, above).
+3. **Create a branch** (see Branch Policy below; worktrees need explicit authorization). Then read `dev/SKELETON.md` + `dev/CODEMAP.md` to find the blast radius (Development Workflow, above).
 4. **Code** - TDD pure helpers RED-before-GREEN in `tests/unit.sh`; wire coupled integration code inline, never fanned out to subagents.
 5. **Code review** - scope by version bump (Code Review Before Release); fix CRITICAL/HIGH before committing.
 6. **Update docs** - the Change Checklist GATE, done after review so docs describe the final code, not a draft of it.
 7. **Test** - `bash tests/unit.sh` (mandatory before every commit). Exercise the feature for real; hardware validation is a separate, later gate and is never satisfied by unit tests alone (Testing Plan).
 8. **Commit** - [approval gate] (Git Approvals).
-9. **Merge** - if built in a worktree, merge to `main` locally by default (Worktree Policy), then re-run `bash tests/unit.sh` on `main` itself before pushing.
+9. **Merge** - `git merge --ff-only` to `main` locally by default (Branch Policy), then re-run `bash tests/unit.sh` on `main` itself before pushing.
 10. **Push** - [approval gate] (Git Approvals).
 11. **Release** - [approval gate]; hardware-validate first (cannot claim it works until it has run on the box); confirm version/build identity is current; `git tag` -> `git push origin TAG` -> `gh release create` (Git Approvals).
 12. **Session hygiene** - update `context/` files, then clear or compact to start the next cycle fresh (Session Hygiene).
 
-### Worktree Policy
+### Branch Policy
 
-- **Behavior changes to `dynavlan`** (new FR, config key, or apply/rollback/detection logic) get an isolated worktree/branch (per `superpowers:using-git-worktrees`) before landing on `main`. Report when creating one (see Git Approvals) - no need to ask first.
-- **Docs-only or trivial fixes** (typos, one-line comment/doc corrections) can land directly on `main` - a worktree adds ceremony with no payoff at that size.
-- **Code review runs in the same worktree/branch**, not a separate one: review the diff before merging, fix findings there, then merge. A worktree isolates the change from `main`; review is part of finishing that change, not a new one.
-- **A major-release review (X.0.0, e.g. 1.0)** gets its own dedicated worktree/branch (e.g. `release/1.0.0-review`), separate from any single feature's branch, since it reviews the accumulated surface across multiple prior features and may collect several fix commits before one merge + tag. Create it only once the release's other gates are already met.
+**Use a branch, not a worktree.** Isolation from `main` comes from the branch; a worktree only adds a second working directory, which this project has no standing need for.
+
+- **Behavior changes to `dynavlan`** (new FR, config key, or apply/rollback/detection logic) get a branch before landing on `main`: `git switch -c <name>`, then `git switch main && git merge --ff-only <name> && git branch -d <name>`.
+- **Docs-only or trivial fixes** (typos, one-line comment/doc corrections) land directly on `main`.
+- **Code review runs on the same branch**, not a separate one: review the diff before merging, fix findings there, then merge. Review is part of finishing the change, not a new one.
+- **A major-release review (X.0.0)** gets its own branch (e.g. `release/1.0.0-review`), separate from any feature's, since it reviews the accumulated surface across several features and may collect multiple fix commits before one merge + tag. Create it only once the release's other gates are met.
 - Solo-maintainer project: default to **Option 1 (merge locally)** from `superpowers:finishing-a-development-branch` unless the user asks for a PR - there is no second reviewer requiring one.
-- **Testing sequence: merge -> verify -> push.** Run `bash tests/unit.sh` before every commit in the worktree (already mandatory). After merging into `main`, re-run the suite on `main` itself before pushing - a merge changes what's on disk even when it's a fast-forward, so the merged tree, not the pre-merge branch, is what gets pushed. Hardware validation is a separate, later gate tied to *release*, not to push: pushing merged commits doesn't run anything on the box, so it belongs before `git tag`/`gh release`, not before `git push`. Full order for a feature: merge -> unit tests on `main` -> push (whenever) -> hardware validation -> release.
+
+**Worktrees require explicit user authorization** and are justified only by one of these, none of which is routine here:
+
+1. A second Claude session is active on this repo - two sessions sharing one checkout will collide.
+2. `main` must stay deployable while the work is in flight (a hotfix might need cutting).
+3. The change may be abandoned outright, and `git reset --hard` on the only checkout would be uncomfortable.
+
+Absent one of those, do not create a worktree even though `superpowers:using-git-worktrees` fires automatically - this is the project-specific override to its default. The overhead is not theoretical: a worktree omits untracked and `.git/info/exclude`-hidden files (`docs/superpowers/plans/` among them), so design and plan docs go missing, and finishing requires an exit-and-merge dance a branch does not.
+- **Testing sequence: merge -> verify -> push.** Run `bash tests/unit.sh` before every commit on the branch (already mandatory). After merging into `main`, re-run the suite on `main` itself before pushing - the merged tree, not the pre-merge branch, is what gets pushed (on a clean fast-forward this verifies the merge landed, not the code). Hardware validation is a separate, later gate tied to *release*, not to push: pushing merged commits doesn't run anything on the box, so it belongs before `git tag`/`gh release`, not before `git push`. Full order for a feature: merge -> unit tests on `main` -> push (whenever) -> hardware validation -> release.
 
 ### Task Tracking Granularity
 
@@ -118,7 +128,7 @@ Address CRITICAL and HIGH issues before committing.
 
 Each step requires explicit user approval. Approval for one step does not imply approval for the next.
 
-1. **Worktree**: report when creating a new git worktree (e.g. via `superpowers:using-git-worktrees` or an `EnterWorktree`-style tool) - no need to ask first, since the Worktree Policy below already decides when one applies. It's local and reversible, unlike commit/push/release. Ask only when it's genuinely ambiguous whether a change counts as "behavior change" (worktree) vs. "trivial" (main) under that policy.
+1. **Branch**: create one without asking - it's local, reversible, and the Branch Policy below already decides when one applies. Just report it. A **worktree** is different: ask first and get explicit authorization, for one of the three reasons in that policy.
 2. **Commit**: propose the commit message and changed files, wait for approval before `git commit`.
 3. **Push**: wait for explicit approval before `git push`.
 4. **Release**: only the user can authorize a release. A release requires `git tag vX.Y.Z`, `git push origin vX.Y.Z`, and `gh release create vX.Y.Z` on `pereljon/dynavlan` (gh account: pereljon). Commit or push do not imply release.
