@@ -14,19 +14,17 @@ How to deploy dynavlan on a netplan/systemd-networkd Ubuntu box. This covers ins
 
 ## 2. Install
 
-**One-line install** (latest release, requires `curl`):
+**Recommended: one-line install** (latest release, requires `curl`). On an
+apt/dpkg system this adds the dynavlan APT repository and installs via
+`apt`; on any other system it falls back to a tarball + `install.sh` install:
 
 ```
 curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash
 ```
 
-A specific version:
-
-```
-curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v0.4.0
-```
-
-**Via apt** (if the box has `apt`/`dpkg`, `get.sh` does this automatically; shown here for manual setup or for adding the repo to a box already running dynavlan from a `.deb`):
+**Via apt, by hand** (what the one-liner does automatically on an apt/dpkg
+system; use this to add the repo to a box already running dynavlan from a
+`.deb`, without re-running `get.sh`):
 
 ```
 sudo mkdir -p /etc/apt/keyrings
@@ -49,13 +47,20 @@ box. A box already installed via `.deb` or `install.sh` needs no reinstall:
 adding the keyring + source is enough, since apt recognizes the existing
 install by package name/version.
 
-**From a local copy** (clone, SCP, or ZIP):
+**Alternatives**, for cases apt doesn't cover:
 
-```
-scp dynavlan dynavlan.conf dynavlan.service dynavlan-rescan.service dynavlan.timer install.sh <user>@<box>:
-ssh <user>@<box>
-sudo bash install.sh
-```
+- **Pin a specific version** (bypasses apt, always a tarball install):
+  ```
+  curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v0.4.0
+  ```
+- **No apt/dpkg at all** (any other netplan/systemd-networkd distro), or you
+  want full manual control over what's transferred: clone, SCP, or ZIP the
+  repo and run the installer directly:
+  ```
+  scp dynavlan dynavlan.conf dynavlan.service dynavlan-rescan.service dynavlan.timer install.sh <user>@<box>:
+  ssh <user>@<box>
+  sudo bash install.sh
+  ```
 
 `sudo bash install.sh` rather than `sudo ./install.sh` on purpose: transfers that do not carry Unix modes (a GitHub ZIP download, `rsync` without `-p`, anything routed through a filesystem with no permission bits) strip the executable bit, and `./install.sh` then fails with "Permission denied". Invoking the interpreter sidesteps it. The mode of `dynavlan` itself does not matter, since the installer places it with `install -m 0755`.
 

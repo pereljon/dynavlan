@@ -51,15 +51,22 @@ No dependency on NIC names, native VLAN, switch vendor, or the contents/filename
 
 Before your first `dynavlan --boot`, read [Safety](#safety): a bad apply can strand a headless box, so run the first attended with an out-of-band console.
 
-One-line install (latest release):
+**Recommended: one-line install** (latest release; on an apt/dpkg system this
+adds the dynavlan APT repository and installs via `apt`, so future releases
+arrive with `sudo apt upgrade` - on any other system it falls back to a
+tarball + `install.sh` install):
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash
 ```
 
-On an apt/dpkg system, `get.sh` adds the dynavlan APT repository automatically
-and installs via `apt` (future releases then arrive via `sudo apt upgrade`).
-To do it by hand instead:
+Upgrades are manual and attended by design (`sudo apt upgrade`) - dynavlan
+deliberately does not support unattended-upgrades; auto-deploying a
+network-touching tool to remote headless boxes at once is the exact
+recoverability footgun the project exists to avoid.
+
+To add the apt repository by hand instead of via `get.sh` (e.g. to add it to
+a box already running dynavlan from a `.deb`):
 
 ```sh
 sudo mkdir -p /etc/apt/keyrings
@@ -73,29 +80,25 @@ Signed-By: /etc/apt/keyrings/dynavlan.gpg" | sudo tee /etc/apt/sources.list.d/dy
 sudo apt update && sudo apt install dynavlan
 ```
 
-Upgrades are manual and attended by design (`sudo apt upgrade`) - dynavlan
-deliberately does not support unattended-upgrades; auto-deploying a
-network-touching tool to remote headless boxes at once is the exact
-recoverability footgun the project exists to avoid.
+**Alternatives**, for cases the one-liner doesn't cover:
 
-Or a specific version:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v0.4.0
-```
-
-From a `.deb` (attached to each [GitHub release](https://github.com/pereljon/dynavlan/releases)):
-
-```sh
-sudo dpkg -i dynavlan_0.4.0_all.deb
-sudo apt-get install -f   # if dependencies are missing
-```
-
-From a local clone:
-
-```sh
-sudo bash install.sh
-```
+- **Pin a specific version** (bypasses apt, always a tarball install):
+  ```sh
+  curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v0.4.0
+  ```
+- **Don't want to pipe `curl` into `sudo bash`, or need to transfer a file to
+  an offline/air-gapped box**: download the `.deb` from a
+  [GitHub release](https://github.com/pereljon/dynavlan/releases) and install
+  it directly:
+  ```sh
+  sudo dpkg -i dynavlan_0.4.0_all.deb
+  sudo apt-get install -f   # if dependencies are missing
+  ```
+- **No apt/dpkg at all** (any other netplan/systemd-networkd distro): clone
+  the repo and run the installer directly:
+  ```sh
+  sudo bash install.sh
+  ```
 
 Installs the script to `/usr/local/sbin/dynavlan`, the config template to `/etc/dynavlan.conf`, the systemd units, and a persistent-journald drop-in. It enables the boot service and rescan timer for the next boot but changes nothing on the network itself. Configure via `/etc/dynavlan.conf` (every key is documented at its default).
 
