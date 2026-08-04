@@ -29,12 +29,25 @@ rescan re-checks routing after the settle; additions on a mid-sniff-dead trunk a
 `--dry-run` no longer over-lists removals). Tagged/pushed/released `v0.4.0` on pereljon/dynavlan;
 GitHub Actions built and attached `dynavlan_0.4.0_all.deb`. The tag was deleted and redone once
 during release to fix a stale CHANGELOG line, so `v0.4.0` points at a commit with accurate docs.
-NEXT UP: v1.0 gate (1) of 4 is done (see `context/todo.md` v1.0 milestone); remaining gates are
-APT distribution, second-box/multi-site validation, and the 1.0.0 freeze+review itself.
 An earlier session in this same day also codified a Worktree Policy + Workflow Pipeline in
 `CLAUDE.md` (worktree for behavior changes, docs-only stays on `main`, merge-locally default,
 tag-time re-verification, release gate on shippable-artifact changes) - see `context/decisions.md`
 2026-08-03.
+
+STATE (2026-08-04, later): APT repository hosting (v1.0 gate 2) DONE and LIVE. GitHub Pages +
+`reprepro`, signed with a dedicated repo key, rebuilt from release `.deb` assets on every
+release; `get.sh` is apt-aware with a tarball fallback. Implemented + code-reviewed (6 findings,
+4 CONFIRMED + 2 PLAUSIBLE, all fixed) on branch `feature/apt-repository-hosting`, merged, pushed;
+no `ver=` bump. Republished the existing `v0.4.0` release (delete + retag, no new dynavlan
+version) to fire `publish-apt` for the first time; hit one undocumented repo-setup gap along the
+way - the `github-pages` deployment environment needs its own `v*` **tag** policy (not branch)
+under Settings -> Environments, separate from the Pages source setting - fixed via the GitHub
+API. Verified live (`https://pereljon.github.io/dynavlan` serves a signed `InRelease`/`Packages`
+listing dynavlan 0.4.0) and validated end-to-end on the Domotz test box (keyring + source added,
+`apt update`/`apt-cache policy`/`apt install --only-upgrade` all work correctly). Full detail:
+`context/decisions.md` 2026-08-04, `context/todo.md` APT repository hosting milestone.
+NEXT UP: v1.0 gates (1) and (2) of 4 are done; remaining gates are second-box/multi-site
+validation and the 1.0.0 freeze+review itself (see `context/todo.md` v1.0 milestone).
 
 Before coding a change, read in order:
 4. dev/SKELETON.md - logic flow and key invariants

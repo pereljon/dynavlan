@@ -120,6 +120,30 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
       attached `dynavlan_0.4.0_all.deb` to the release automatically. Release:
       https://github.com/pereljon/dynavlan/releases/tag/v0.4.0
 
+## Completed: APT repository hosting (v1.0 gate 2) - LIVE
+
+- [x] DONE 2026-08-04. Implemented per spec/plan on branch `feature/apt-repository-hosting`
+      (6 commits: signing key + reprepro config, `publish-apt` workflow job, apt-aware
+      `get.sh`, docs, then 2 code-review fix commits - see `context/decisions.md` 2026-08-04
+      for the full review outcome). Merged to `main`, pushed. No `ver=` bump.
+      Republished the existing `v0.4.0` release (deleted + retagged at the post-review
+      commit) to fire `publish-apt` for the first time, since no dynavlan script change
+      existed to justify a new version. Hit one one-time repo-setup gap not covered by the
+      original design: the `github-pages` deployment environment (auto-created when Pages
+      source = GitHub Actions) has its own branch/tag protection separate from the Pages
+      source setting, and defaults to allowing neither - `publish-apt` failed with "Tag
+      v0.4.0 is not allowed to deploy to github-pages" until a `v*` **tag** policy was added
+      to the environment (Settings -> Environments -> github-pages -> Deployment branches
+      and tags). A `v*` **branch** rule was tried first and did nothing (0 branches match,
+      since releases are tags) - fixed via `gh api .../deployment-branch-policies -f
+      name='v*' -f type='tag'`. VERIFIED LIVE: `https://pereljon.github.io/dynavlan`
+      serves a valid signed `InRelease`/`Packages` (dynavlan 0.4.0 listed, key fingerprint
+      matches `639F373F324DE8E23FF6E1DCCA1F8DAB3D00EC9D`); client onboarding tested on the
+      Domotz box (add keyring + `.sources` -> `apt update` fetches signed index -> `apt-cache
+      policy` resolves the repo candidate -> `apt install --only-upgrade dynavlan` correctly
+      reports already-current, since this republish carried no new dynavlan version).
+      `test-box-access` memory updated: upgrades on that box now go via `apt upgrade`.
+
 ## Completed: restart-on-new-subnet (v0.3.0) - RELEASED
 
 - [x] Restart-on-new-subnet (FR-40, minor bump -> v0.3.0, `ver=` already bumped). Restarts
@@ -147,31 +171,11 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 ## Next steps (not started)
 
 - [x] Test .deb build end-to-end (done 2026-08-03): installed the v0.3.0 release .deb on the Domotz box (Ubuntu 22.04), console-backed. Validated install.sh->.deb migration (old /etc/systemd/system units removed, /lib copies live), FR-38 build id (`814bcd1`, was `unknown`), conffile preserved, reboot + boot `--boot` apply (no-change, no revert), and real `domotzpro-agent-publicstore` snap restart. Box now dpkg-managed. Apply->netplan-try->revert path not exercised (no config diff); already hw-validated for v0.3.0.
-- [ ] APT repository: host a signed repo so `apt upgrade` picks up new versions.
-      DESIGNED + user-approved 2026-08-03 (spec:
-      `docs/superpowers/specs/2026-08-03-apt-repository-hosting-design.md`).
-      PLAN written 2026-08-04:
-      `docs/superpowers/plans/2026-08-04-apt-repository-hosting.md`.
-      Implementation on branch `feature/apt-repository-hosting`, 4 commits:
-      signing key generated + registered (RSA-4096 passphraseless,
-      `APT_GPG_PRIVATE_KEY` Actions secret, revocation cert + private-key
-      backup stored offline, Pages source set to "GitHub Actions", public
-      key committed as `dynavlan-archive-keyring.gpg`), `apt/conf/`
-      (distributions + options, `SignWith: CA1F8DAB3D00EC9D`), new
-      `publish-apt` job in `.github/workflows/release.yml`
-      (rebuild-from-assets: fetches every release `.deb`, reprepro against
-      an ephemeral db, deploys to Pages), `get.sh` apt-aware with tarball
-      fallback. REMAINING before this can be checked off: cut a real
-      release to exercise `publish-apt` end-to-end, verify the published
-      tree (`InRelease` signature, `Packages` index), and a client
-      onboarding test on the Domotz box (add source -> apt update -> apt
-      install --only-upgrade dynavlan -> dynavlan --version) - see the
-      plan's Task 6. No `ver=` bump (dynavlan script untouched).
 - [ ] v1.0 release. DEFINED 2026-08-03 (spec: local-only
       `docs/superpowers/specs/2026-08-03-v1.0-definition-design.md`; decision in
       context/decisions.md 2026-08-03). Four gates, all required before the 1.0.0 tag:
       (1) [x] DONE 2026-08-04: carrier-down VLAN removal shipped as v0.4.0 (see the v0.4.0 milestone above);
-      (2) APT distribution built + reference box upgrades via apt (see the APT milestone above);
+      (2) [x] DONE 2026-08-04: APT distribution built, live, and reference-box-validated (see the APT repository hosting milestone above);
       (3) second-box / multi-site validation on >=1 more box at a different site
       (non-Meraki switch requirement ALREADY MET via the v0.3.0 UniFi trunk validation);
       (4) 1.0.0 itself = config-surface freeze + `COMPATIBILITY.md` (deprecate-with-warning
