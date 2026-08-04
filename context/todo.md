@@ -8,8 +8,8 @@ Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 
 See `context/index.md` STATE line for the authoritative up-to-date summary (kept current
 there to avoid two places drifting). As of this date: v0.3.0 (restart-on-new-subnet)
-released; v0.4.0 (carrier-down VLAN removal, FR-41) merged to `main` and pushed,
-148 tests/0 failures, script ~1940 lines - pending code review + hardware validation
+released; v0.4.0 (carrier-down VLAN removal, FR-41) merged to `main` and pushed, then
+code-reviewed with 5 fix commits, 182 tests/0 failures - pending hardware validation
 before its own release (see the v0.4.0 milestone below). Superseded, kept for history:
 v0.2.1 was released and hardware-validated with 132 tests, ~1700 lines, on the commits
 below.
@@ -35,7 +35,7 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 - [x] .deb packaging: debian/, build-deb.sh, GitHub Actions workflow (done 2026-07-30)
 - [x] GitHub repo description updated for multi-trunk positioning (done 2026-07-30)
 
-## Active: carrier-down VLAN removal (v0.4.0) - CODE-COMPLETE, pending review + hardware validation
+## Active: carrier-down VLAN removal (v0.4.0) - REVIEWED, pending hardware validation
 
 - [x] Carrier-down VLAN removal (FR-41, minor bump -> v0.4.0, `ver=` already bumped). All
       7 plan tasks implemented on branch `worktree-carrier-down-vlan-removal` (7 commits):
@@ -68,11 +68,38 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
       MERGED to `main` 2026-08-03 (fast-forward, 148/148 tests re-verified post-merge
       per CLAUDE.md's merge -> verify -> push sequencing); worktree + feature branch
       removed (all commits preserved on `main`). Pushed to `origin/main` same day.
-      NEXT STEP: minor-release code review (all modified units, per CLAUDE.md Code
-      Review Before Release - NOT YET DONE), then hardware validation on the
-      Protectli box (console-backed, per CLAUDE.md - cannot claim this works until
-      it runs on the box) before the v0.4.0 release (`git tag`/`gh release`, both
-      user-authorized).
+- [x] Minor-release code review DONE 2026-08-03, on branch `worktree-review+0.4.0-fixes`.
+      Three parallel reviewers (removal state machine / never-strand safety /
+      spec-surface-tests), then a four-agent adversarial verification pass that
+      overturned five of ten verdicts - worth noting, since the first-round
+      recommendations for the two blockers were both wrong:
+      - C1 (CRITICAL, confirmed twice): `run_detection` returns non-zero iff it
+        detected nothing, so the `! run_detection` abort in boot/rescan/dry-run
+        fired on exactly FR-41's headline case (all trunks unplugged -> nothing to
+        detect -> dead trunk never pruned). Fix was NOT the proposed hard-failure
+        rc - nothing can produce one - but dropping the abort and branching on
+        `DETECTED_TRUNKS`.
+      - M2 rode with it: that abort was also what protected an all-dark box, so
+        `have_routing` now also requires a live physical NIC (tun/wireguard report
+        carrier whenever merely up). Shipped in one commit to avoid opening the
+        AC-4 hole between commits.
+      - H1: `do_rescan` gated on routing only BEFORE the settle; the post-apply
+        health check does not back that up (empty snapshot = unconditional PASS).
+      - H2 (downgraded to MEDIUM, still fixed): additions on a trunk that died
+        mid-sniff were created in the same apply that tore its old ones down.
+      - H3: `--dry-run` listed removals `--boot` would not perform. Defect predates
+        v0.4.0; fixed anyway since this release's test-doc asserts the corrected
+        behavior and dry-run is the pre-flight for hardware validation.
+      - H4 INVERTED: the PRD was right and SKELETON/CODEMAP/design doc were the
+        outliers, describing an intent the code never had.
+      - M1 documented not fixed (boot debounce is ~110s at `RESET_ON_BOOT=true`);
+        M3 clamps a sub-5s settle for the carrier samples only.
+      5 commits, 182/182 tests (148 baseline + 34 new: 1t rescan combine, 1u
+      mixed-trunk, 1v config validation + clamp, 1w `drop_iface_tokens`, 1s
+      extended). No version bump - all of it folds into the unreleased 0.4.0.
+      NEXT STEP: hardware validation on the Protectli box (console-backed, per
+      CLAUDE.md - cannot claim this works until it runs on the box) before the
+      v0.4.0 release (`git tag`/`gh release`, both user-authorized).
 
 ## Completed: restart-on-new-subnet (v0.3.0) - RELEASED
 
