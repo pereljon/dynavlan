@@ -7,11 +7,10 @@ Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 ## Current state (2026-08-04)
 
 See `context/index.md` STATE line for the authoritative up-to-date summary (kept current
-there to avoid two places drifting). As of this date: v0.3.0 (restart-on-new-subnet)
-released; v0.4.0 (carrier-down VLAN removal, FR-41) merged to `main` and pushed,
-code-reviewed with 5 fix commits, 182 tests/0 failures, and hardware-validated
-2026-08-04 (see the v0.4.0 milestone below) - release gates clear, pending a clean
-`.deb` rebuild and user-authorized tag/push/release. Superseded, kept for history:
+there to avoid two places drifting). As of this date: v0.4.0 (carrier-down VLAN removal,
+FR-41) RELEASED - hardware-validated (6/6 L3-30 sub-cases PASS), tagged, pushed, GitHub
+release created with `.deb` auto-built and attached by Actions (see the v0.4.0 milestone
+below). v0.3.0 (restart-on-new-subnet) also released, prior to this. Superseded, kept for history:
 v0.2.1 was released and hardware-validated with 132 tests, ~1700 lines, on the commits
 below.
 
@@ -36,7 +35,7 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 - [x] .deb packaging: debian/, build-deb.sh, GitHub Actions workflow (done 2026-07-30)
 - [x] GitHub repo description updated for multi-trunk positioning (done 2026-07-30)
 
-## Active: carrier-down VLAN removal (v0.4.0) - REVIEWED, pending hardware validation
+## Completed: carrier-down VLAN removal (v0.4.0) - RELEASED
 
 - [x] Carrier-down VLAN removal (FR-41, minor bump -> v0.4.0, `ver=` already bumped). All
       7 plan tasks implemented on branch `worktree-carrier-down-vlan-removal` (7 commits):
@@ -108,12 +107,18 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
       prune, post-boot re-add. Every removal/addition went through `netplan try` and
       was ACCEPTED; every preserve case logged the expected fail-toward-no-change
       reasoning. Full per-sub-case detail: `dev/features/dynavlan-tests.md` L3-30 row
-      and the 2026-08-04 hardware-run note. Build was `298c8a5-dirty` (an untracked,
-      unrelated doc file made the tree dirty) - a clean rebuild is worth doing before
-      tagging so the released `.deb` doesn't carry a `-dirty` suffix.
-      RELEASE GATES NOW CLEAR: hardware validation done, code review done (above).
-      Remaining before tagging: rebuild the `.deb` from a clean tree, re-run
-      `bash tests/unit.sh` immediately before `git tag` per CLAUDE.md.
+      and the 2026-08-04 hardware-run note.
+- [x] RELEASED 2026-08-04. CHANGELOG retitled `[0.4.0]`, PRD status/AC-16 lines
+      corrected (both still said "NOT YET hardware-validated" after the validation
+      run - caught before the GitHub release was created). The first tag/push
+      (build `298c8a5-dirty`, an untracked unrelated doc file made the tree dirty)
+      was deleted and redone once the CHANGELOG fix landed, so `v0.4.0` points at a
+      commit (`cb957a3`) with accurate docs; the .deb built from that commit reports
+      a clean build id (no local checkout in the loop was ever left dirty for
+      more than the one intermediate commit). `bash tests/unit.sh` re-verified
+      (182/182) immediately before tagging, per CLAUDE.md. GitHub Actions built and
+      attached `dynavlan_0.4.0_all.deb` to the release automatically. Release:
+      https://github.com/pereljon/dynavlan/releases/tag/v0.4.0
 
 ## Completed: restart-on-new-subnet (v0.3.0) - RELEASED
 
@@ -161,7 +166,7 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 - [ ] v1.0 release. DEFINED 2026-08-03 (spec: local-only
       `docs/superpowers/specs/2026-08-03-v1.0-definition-design.md`; decision in
       context/decisions.md 2026-08-03). Four gates, all required before the 1.0.0 tag:
-      (1) carrier-down VLAN removal shipped as v0.4.0 (see the v0.4.0 milestone above);
+      (1) [x] DONE 2026-08-04: carrier-down VLAN removal shipped as v0.4.0 (see the v0.4.0 milestone above);
       (2) APT distribution built + reference box upgrades via apt (see the APT milestone above);
       (3) second-box / multi-site validation on >=1 more box at a different site
       (non-Meraki switch requirement ALREADY MET via the v0.3.0 UniFi trunk validation);

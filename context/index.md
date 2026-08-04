@@ -16,25 +16,25 @@ Installing that .deb via `dpkg` was validated on the Domotz box (Ubuntu 22.04), 
 install.sh->.deb migration, FR-38 build id, conffile preservation, reboot + boot apply (no-change, no
 revert), and real Domotz snap restart all passed. That box is now dpkg-managed (no longer install.sh).
 
-NEXT UP: v0.4.0 (carrier-down VLAN removal, FR-41) is CODE-COMPLETE, MERGED to `main` + pushed,
-CODE-REVIEWED (2026-08-03), and HARDWARE-VALIDATED (2026-08-04), `ver=` bumped to 0.4.0. Prunes an
-owned trunk's VLANs after a debounced carrier-down loss (boot + rescan), gated on healthy routing;
-supersedes the hardware-validated L3-30 "carrier-pull preserve" result with a revised "carrier-pull
-prune" case - now itself hardware-validated (all 6 sub-cases PASS on the Protectli box, console-driven:
-carrier-pull prune, re-plug re-add, flap preserves, own-uplink-no-redundancy preserves, `--boot` prune,
-post-boot re-add; `dev/features/dynavlan-tests.md` L3-30 + 2026-08-04 hardware-run note).
-The minor-release review (3 reviewers + a 4-agent adversarial verification pass) produced 5 fix commits
-on `worktree-review+0.4.0-fixes`, 182/182 unit tests. It found FR-41 unreachable in its own headline
-case: `run_detection` returns non-zero iff it detected nothing, so the abort in boot/rescan/dry-run
-fired exactly when every owned trunk was unplugged. Fixing that removed the guard that also protected
-an all-dark box, so `have_routing` now additionally requires a live physical NIC (tun/wireguard netdevs
-report carrier whenever merely up). Also: rescan re-checks routing after its settle, additions on a
-trunk that died mid-sniff are dropped, and `--dry-run` no longer lists removals `--boot` would not
-perform. RELEASE GATES CLEAR: remaining before tagging is a clean `.deb` rebuild (the validation build
-was `298c8a5-dirty`, dirty from an untracked unrelated doc file) and user-authorized tag/push/release
-(`context/todo.md` v0.4.0 milestone). The same session also codified a Worktree Policy + Workflow Pipeline in `CLAUDE.md`
-(worktree for behavior changes, docs-only stays on `main`, merge-locally default, tag-time re-verification,
-release gate on shippable-artifact changes) - see `context/decisions.md` 2026-08-03.
+STATE (2026-08-04): v0.4.0 (carrier-down VLAN removal, FR-41) RELEASED. Prunes an owned trunk's
+VLANs after a debounced carrier-down loss (boot + rescan), gated on healthy routing; supersedes the
+old L3-30 "carrier-pull preserve" result with "carrier-pull prune". Hardware-validated on the
+Protectli box, console-driven: all 6 sub-cases PASS (carrier-pull prune, re-plug re-add, flap
+preserves, own-uplink-no-redundancy preserves, `--boot` prune, post-boot re-add;
+`dev/features/dynavlan-tests.md` L3-30 + 2026-08-04 hardware-run note). Code review (3 reviewers +
+a 4-agent adversarial pass) found and fixed FR-41 unreachable-in-its-headline-case (`run_detection`'s
+rc could not distinguish a probe failure from a quiet wire; boot/rescan/dry-run branch on
+`DETECTED_TRUNKS` instead) plus three more issues (`have_routing` needs a live physical NIC;
+rescan re-checks routing after the settle; additions on a mid-sniff-dead trunk are dropped;
+`--dry-run` no longer over-lists removals). Tagged/pushed/released `v0.4.0` on pereljon/dynavlan;
+GitHub Actions built and attached `dynavlan_0.4.0_all.deb`. The tag was deleted and redone once
+during release to fix a stale CHANGELOG line, so `v0.4.0` points at a commit with accurate docs.
+NEXT UP: v1.0 gate (1) of 4 is done (see `context/todo.md` v1.0 milestone); remaining gates are
+APT distribution, second-box/multi-site validation, and the 1.0.0 freeze+review itself.
+An earlier session in this same day also codified a Worktree Policy + Workflow Pipeline in
+`CLAUDE.md` (worktree for behavior changes, docs-only stays on `main`, merge-locally default,
+tag-time re-verification, release gate on shippable-artifact changes) - see `context/decisions.md`
+2026-08-03.
 
 Before coding a change, read in order:
 4. dev/SKELETON.md - logic flow and key invariants
