@@ -434,3 +434,47 @@ Rejected: incremental/persisted `reprepro` db across releases (the spec's explic
 Why: after the APT repository went live and was validated, the user asked whether apt should be the primary/preferred install method and whether other methods should be removed. `get.sh` already prefers apt in code (added earlier this session) - the ask was really about the docs not reflecting that hierarchy. Rejected removing any install path: the tarball fallback (`get.sh`'s `install_via_tarball`, and `install.sh` directly) is required for any non-Debian-family netplan/systemd-networkd box, which is a standing design principle (hardware- and vendor-agnostic); the direct `.deb` download covers operators who won't pipe `curl` into `sudo bash` or need to move a single file to an air-gapped box. Cutting either would be a real functional regression, not just a doc simplification.
 
 Instead, restructured `README.md` and `docs/deployment-guide.md`: the one-line `get.sh` install is now explicitly labeled "Recommended," followed by the manual apt setup (for boxes already on a `.deb`), then an "Alternatives" list (pin a version, avoid curl-pipe-to-shell / offline transfer, no apt/dpkg at all) each with a one-line reason to reach for it. Same four install paths as before, now presented as a hierarchy instead of flat peer options.
+
+## 2026-08-04 - External adversarial review (Codex) received, independently verified, logged as the gate-4 register; 1.0 freeze stays blocked
+
+Why: an independent OpenAI Codex review of the pre-v1 surface (`internal/codex-review-v0-4.md`,
+snapshot `main` @ `080abdc`, script still `ver=0.4.0`) landed 2 CRITICAL, 7 HIGH, 8 MEDIUM, 3
+plausible, and 10 doc/release-contract contradictions, verdict "NOT READY for the 1.0 config-surface
+freeze." This is effectively the gate-4 major-review (adversarial, other model) arriving early rather
+than a surprise. Every finding was independently re-verified by reading the cited code/docs (line by
+line): **20/20 code findings + 3 plausibles + 10 contradictions confirmed accurate, zero false
+positives** - the review's line references and control-flow claims all hold. `bash tests/unit.sh` is
+182/182 at this snapshot, but that suite is pure set arithmetic and does not touch the orchestration
+where the findings live.
+
+Decision: accept the findings as verified and log them as the fix register in
+`docs/superpowers/plans/2026-08-04-v1.0-gate4-review-fixes.md` (full per-finding detail: severity +
+my calibration, evidence file:line, verification verdict, reachability, fix sketch, `[STATUS]`).
+Nothing is fixed yet - all OPEN, no code changed. The v1.0 gate (4) freeze/tag stays BLOCKED until
+the CRITICAL + HIGH set is resolved with deterministic tests and console-backed hardware validation,
+then re-reviewed.
+
+Severity CALIBRATION where I differ from Codex (existence not disputed, only reach): C1
+(delete-the-default-route-interface) is unreachable at the default `VLAN_ROUTES=false` and bites only
+routed mode - I read it as HIGH-conditional, not a live default-config stranding path. H1
+(detector-failure-as-absence) needs a vendor whose LLDP advertises TAGGED VLANs plus a sniff failure;
+on Meraki/UniFi (sniff-primary, LLDP native-only) a sniff failure yields empty not partial - narrower
+than framed. Everything else stands as written. Cheapest/highest-value first: the doc-contradiction
+cluster (docs-only, lands on `main`), then M3/H7/H3; the real pre-freeze blockers are C2 (elapsed
+time is not apply evidence for removal-only/`--reapply`), H2 (config can override safety constants),
+and C1's routed-mode guard.
+
+Codex also independently examined ~14 prior decisions and found them sound within scope (inbound-only
+tcpdump, LLDP PVID exclusion, `run_detection` rc can't distinguish fail-from-empty so the fix is
+adding validity producers not reinterpreting rc, `have_routing`'s live-physical-NIC clause, deletion
+must stay after ACCEPT, fd-held flock, `get.sh` dpkg-managed guard, `publish-apt` serialization) -
+recorded in the register's "do NOT re-open" section.
+
+Rejected: (a) acting on any finding in this pass - the ask was to LOG in preparation for fixing, and
+fixes are branch + TDD + hardware-validation work per CLAUDE.md, taken deliberately, not folded into
+a logging step; (b) downgrading the "NOT READY" verdict - the two CRITICALs and the HIGH set are real
+at the boundaries between individually-correct pieces, exactly where a pre-1.0 adversarial pass should
+find things; (c) putting the 20-row register into a tracked `context/` file - it is a milestone's task
+decomposition, so it belongs in a plan file per the Task Tracking Granularity rule (this record +
+`context/todo.md` carry the tracked summary + pointer; the review and register are local-only in
+`internal/` and `docs/superpowers/`, consistent with the existing local-only plan/spec convention).

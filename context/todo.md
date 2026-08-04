@@ -191,6 +191,13 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
       (non-Meraki switch requirement ALREADY MET via the v0.3.0 UniFi trunk validation);
       (4) 1.0.0 itself = config-surface freeze + `COMPATIBILITY.md` (deprecate-with-warning
       policy) + version-gate git hooks + full major-review (adversarial, other models).
+      GATE-4 MAJOR-REVIEW RECEIVED 2026-08-04: independent Codex review of the pre-v1 surface
+      (2 CRITICAL, 7 HIGH, 8 MEDIUM, 3 plausible, 10 doc contradictions; verdict NOT READY
+      for freeze). Independently verified 20/20 code findings + 3 plausibles + 10
+      contradictions accurate, zero false positives. Findings logged, all OPEN (nothing fixed):
+      register `docs/superpowers/plans/2026-08-04-v1.0-gate4-review-fixes.md`; decision
+      `context/decisions.md` 2026-08-04. Freeze/tag BLOCKED until CRITICAL+HIGH resolved with
+      tests + console-backed hardware validation, then re-reviewed.
       Path: v0.4.0 -> APT + validation (parallel) -> freeze + tag 1.0.0 (last by construction).
       OUT OF SCOPE for 1.0 (documented limitations): IPv6, exhaustive vendor coverage,
       PER_VLAN_MAC (stays default off), automatic config-drift detection.
