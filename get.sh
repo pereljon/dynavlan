@@ -57,13 +57,13 @@ Components: main
 Signed-By: $APT_KEYRING
 EOF
 
-	if ! apt-get update; then
+	if ! DEBIAN_FRONTEND=noninteractive apt-get update; then
 		say "apt-get update failed against the dynavlan repo, falling back"
 		rm -f "$APT_SOURCE" "$APT_KEYRING"
 		return 1
 	fi
 
-	if ! apt-get install -y dynavlan; then
+	if ! DEBIAN_FRONTEND=noninteractive apt-get install -y dynavlan; then
 		say "apt-get install dynavlan failed, falling back"
 		rm -f "$APT_SOURCE" "$APT_KEYRING"
 		return 1

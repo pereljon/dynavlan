@@ -33,6 +33,9 @@ jobs:
   publish-apt:
     needs: build-deb
     runs-on: ubuntu-22.04
+    concurrency:
+      group: publish-apt
+      cancel-in-progress: false
     permissions:
       pages: write
       id-token: write
