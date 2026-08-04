@@ -227,6 +227,7 @@ Candidate formula: `candidates = detected ∩ [VLAN_MIN,VLAN_MAX] − VLAN_IGNOR
 - NFR-4 [LOW / CONTINUITY]: Time-to-monitor. Boot begins monitoring within roughly `CARRIER_WAIT + SNIFF_SECONDS` (+ `BOOT_SETTLE + SNIFF_SECONDS` when a removal pass runs) + lease settle.
 - NFR-5 [MEDIUM / RECOVERABILITY]: Privacy. VLAN interfaces contribute only subnet reachability (FR-14); sniff uses minimal snaplen and never persists frames (FR-5); logs contain site VLAN IDs/subnets (confidentiality-sensitive) and stay local by default.
 - NFR-6 [HIGH / CONTINUITY]: Dependencies. `tcpdump` (added to deployment packages), `lldpd`/`lldpctl` (already installed), netplan >= pinned min, systemd. Missing dependency for the requested `DETECT_METHOD` is a refuse-to-run (FR-0), not silent degradation. No `ethtool -K` needed on igb (offload off; promisc bypasses the filter).
+- NFR-7 [MEDIUM / RECOVERABILITY]: Distribution supports manual, attended upgrades only (public APT repository, `apt upgrade`). The repository is deliberately not structured for unattended-upgrades: auto-deploying a new release to remote headless boxes at once would bypass the box-by-box attended-first-run discipline the rest of this document is built around. Mechanism (hosting, signing, client setup) is documented in `docs/deployment-guide.md`, not here.
 
 ## 10. Validated hardware findings (lab box: Ubuntu 22.04.5, Protectli igb NIC)
 

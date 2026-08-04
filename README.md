@@ -57,6 +57,27 @@ One-line install (latest release):
 curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash
 ```
 
+On an apt/dpkg system, `get.sh` adds the dynavlan APT repository automatically
+and installs via `apt` (future releases then arrive via `sudo apt upgrade`).
+To do it by hand instead:
+
+```sh
+sudo mkdir -p /etc/apt/keyrings
+sudo curl -fsSL https://pereljon.github.io/dynavlan/dynavlan-archive-keyring.gpg \
+  -o /etc/apt/keyrings/dynavlan.gpg
+echo "Types: deb
+URIs: https://pereljon.github.io/dynavlan
+Suites: stable
+Components: main
+Signed-By: /etc/apt/keyrings/dynavlan.gpg" | sudo tee /etc/apt/sources.list.d/dynavlan.sources
+sudo apt update && sudo apt install dynavlan
+```
+
+Upgrades are manual and attended by design (`sudo apt upgrade`) - dynavlan
+deliberately does not support unattended-upgrades; auto-deploying a
+network-touching tool to remote headless boxes at once is the exact
+recoverability footgun the project exists to avoid.
+
 Or a specific version:
 
 ```sh

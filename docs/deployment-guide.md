@@ -26,6 +26,29 @@ A specific version:
 curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v0.4.0
 ```
 
+**Via apt** (if the box has `apt`/`dpkg`, `get.sh` does this automatically; shown here for manual setup or for adding the repo to a box already running dynavlan from a `.deb`):
+
+```
+sudo mkdir -p /etc/apt/keyrings
+sudo curl -fsSL https://pereljon.github.io/dynavlan/dynavlan-archive-keyring.gpg \
+  -o /etc/apt/keyrings/dynavlan.gpg
+echo "Types: deb
+URIs: https://pereljon.github.io/dynavlan
+Suites: stable
+Components: main
+Signed-By: /etc/apt/keyrings/dynavlan.gpg" | sudo tee /etc/apt/sources.list.d/dynavlan.sources
+sudo apt update && sudo apt install dynavlan
+```
+
+Upgrades are **manual and attended only** - run `sudo apt update && sudo apt
+upgrade` yourself when you want the latest release; dynavlan is not
+structured for unattended-upgrades. A conffile prompt can appear if both the
+shipped `/etc/dynavlan.conf` default changed and you edited yours - this can
+hang a headless upgrade, so don't run `apt upgrade` unattended on a remote
+box. A box already installed via `.deb` or `install.sh` needs no reinstall:
+adding the keyring + source is enough, since apt recognizes the existing
+install by package name/version.
+
 **From a local copy** (clone, SCP, or ZIP):
 
 ```

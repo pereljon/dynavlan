@@ -148,21 +148,25 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 
 - [x] Test .deb build end-to-end (done 2026-08-03): installed the v0.3.0 release .deb on the Domotz box (Ubuntu 22.04), console-backed. Validated install.sh->.deb migration (old /etc/systemd/system units removed, /lib copies live), FR-38 build id (`814bcd1`, was `unknown`), conffile preserved, reboot + boot `--boot` apply (no-change, no revert), and real `domotzpro-agent-publicstore` snap restart. Box now dpkg-managed. Apply->netplan-try->revert path not exercised (no config diff); already hw-validated for v0.3.0.
 - [ ] APT repository: host a signed repo so `apt upgrade` picks up new versions.
-      DESIGNED + user-approved 2026-08-03. Approach: GitHub Pages + reprepro,
-      public, manual/attended upgrades only (NOT unattended). Spec (local-only,
-      under git-excluded docs/superpowers/):
-      `docs/superpowers/specs/2026-08-03-apt-repository-hosting-design.md`.
-      Decision recorded in context/decisions.md (2026-08-03). NEXT STEP: write
-      the implementation plan (superpowers:writing-plans) - was pending user's
-      spec review at session end. Rejected Launchpad PPA (Ubuntu-only, breaks
-      distro-agnostic) and SaaS (Cloudsmith/packagecloud; third party in trust
-      path). Touches: get.sh (apt-aware + tarball fallback), release.yml (new
-      publish-apt job, rebuild-from-assets, actions/deploy-pages), new apt/conf/,
-      README/deployment-guide, one PRD NFR (manual-upgrade), CHANGELOG. No ver=
-      bump (dynavlan script untouched). Needs a locally-generated RSA-4096
-      passphraseless signing key in Actions secret APT_GPG_PRIVATE_KEY, plus
-      offline key backup + revocation cert before first publish. Pages source
-      must be set to "GitHub Actions".
+      DESIGNED + user-approved 2026-08-03 (spec:
+      `docs/superpowers/specs/2026-08-03-apt-repository-hosting-design.md`).
+      PLAN written 2026-08-04:
+      `docs/superpowers/plans/2026-08-04-apt-repository-hosting.md`.
+      Implementation on branch `feature/apt-repository-hosting`, 4 commits:
+      signing key generated + registered (RSA-4096 passphraseless,
+      `APT_GPG_PRIVATE_KEY` Actions secret, revocation cert + private-key
+      backup stored offline, Pages source set to "GitHub Actions", public
+      key committed as `dynavlan-archive-keyring.gpg`), `apt/conf/`
+      (distributions + options, `SignWith: CA1F8DAB3D00EC9D`), new
+      `publish-apt` job in `.github/workflows/release.yml`
+      (rebuild-from-assets: fetches every release `.deb`, reprepro against
+      an ephemeral db, deploys to Pages), `get.sh` apt-aware with tarball
+      fallback. REMAINING before this can be checked off: cut a real
+      release to exercise `publish-apt` end-to-end, verify the published
+      tree (`InRelease` signature, `Packages` index), and a client
+      onboarding test on the Domotz box (add source -> apt update -> apt
+      install --only-upgrade dynavlan -> dynavlan --version) - see the
+      plan's Task 6. No `ver=` bump (dynavlan script untouched).
 - [ ] v1.0 release. DEFINED 2026-08-03 (spec: local-only
       `docs/superpowers/specs/2026-08-03-v1.0-definition-design.md`; decision in
       context/decisions.md 2026-08-03). Four gates, all required before the 1.0.0 tag:

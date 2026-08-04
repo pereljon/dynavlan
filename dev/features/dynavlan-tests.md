@@ -366,6 +366,26 @@ Several of these (netplan-try accept/revert, promisc sniff of an unconfigured VL
 
 **Hardware run 2026-07-30 (FR-40, SSH-driven with real Domotz snap):** L3-33..36 all PASS on the Protectli box, restart target = the real `domotzpro-agent-publicstore` snap, observed via its `ExecMainStartTimestamp` plus the `dynavlan` journal. enp2s0 was the test NIC (enp1s0 = the Meraki trunk / SSH path, untouched). L3-33 verified on a UniFi access port AND a Meraki access port (base `enp2s0:<subnet>` new token -> exactly one restart), and on a full UniFi trunk (7 newly-leased `enp2s0.*` VLAN subnets -> one restart, no re-provision since already owned). L3-34: a second rescan with no change restarts nothing. L3-35: on reboot, `/run/dynavlan/seen` is empty, Domotz's snap started at boot (05:48:30) and the `--boot` run restarted it (05:51:01) after settle - the `dynavlan.service` journal shows `new IPv4 subnet(s) [16 subnets]; restarting monitoring targets` with `no change ... zero applies/restarts` (no netplan apply). L3-36: `--dry-run` and `--status` print the would-restart delta and leave `/run/dynavlan/seen` mtime unchanged, no restart. Also confirmed: disappearance never restarts (monotonic `seen` retains a departed subnet), flap of an already-seen subnet is idempotent, and interface-in-the-key holds (`enp2s0:192.168.22.0/24` counts as new even with `enp2s0.22:192.168.22.0/24` already seen). Timer FR-21a health reconfirmed after a stop/start (`NextElapseUSecMonotonic` finite once the activated rescan settles; the transient `n/a` is only while the rescan service is mid-run).
 
+## Layer 4 - APT repository verification (infra, not unit-testable)
+
+- **Repo build (CI):** after a release publishes, `publish-apt` runs; confirm
+  the Actions run is green and `https://pereljon.github.io/dynavlan/dists/stable/InRelease`
+  is fetchable and its signature verifies against the published
+  `dynavlan-archive-keyring.gpg`.
+- **Packages index:** `dists/stable/main/binary-amd64/Packages` and
+  `binary-arm64/Packages` both list `dynavlan` at the just-released version.
+- **Client onboarding (Domotz box, SSH-safe - no `--boot`/`--rescan` runs):**
+  add the keyring + `.sources`, `apt update`, `apt install --only-upgrade
+  dynavlan`, then `dynavlan --version` shows the expected build. Console is
+  only needed if an apply is exercised afterward, which this test does not do.
+- **`get.sh` apt path:** on a fresh apt-based VM/box, run `get.sh` and confirm
+  it installs via apt (not the tarball path) and the box is subsequently
+  `apt upgrade`-able.
+- **`get.sh` fallback:** confirm the tarball path still works standalone
+  (non-apt system, or apt path forced to fail) - exercised on a macOS dev
+  machine (no `apt-get`) 2026-08-04; the apt-present repo-404 branch still
+  needs a real apt-based box.
+
 ## Acceptance-criteria traceability
 
 | AC | Method |

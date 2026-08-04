@@ -2,6 +2,19 @@
 
 Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle that section to `## [x.y.z] - YYYY-MM-DD`.
 
+## Unreleased
+
+### Added
+
+- Public APT repository (GitHub Pages + `reprepro`, signed with a dedicated
+  repo key) so `sudo apt update && sudo apt upgrade` picks up new dynavlan
+  releases. Rebuilt from the GitHub release `.deb` assets on every release
+  (nothing stored in git); manual/attended upgrades only by design, not
+  structured for unattended-upgrades. `get.sh` is now apt-aware (adds the
+  repo + installs via apt when apt/dpkg is present) and falls back to the
+  existing tarball + `install.sh` path otherwise, or if the repo isn't
+  reachable. No `ver=` bump - the `dynavlan` script itself is untouched.
+
 ## [0.4.0] - 2026-08-04
 
 ### Added
