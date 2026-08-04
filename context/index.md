@@ -16,10 +16,13 @@ Installing that .deb via `dpkg` was validated on the Domotz box (Ubuntu 22.04), 
 install.sh->.deb migration, FR-38 build id, conffile preservation, reboot + boot apply (no-change, no
 revert), and real Domotz snap restart all passed. That box is now dpkg-managed (no longer install.sh).
 
-NEXT UP: v0.4.0 (carrier-down VLAN removal, FR-41) is CODE-COMPLETE, MERGED to `main` + pushed, and
-CODE-REVIEWED (2026-08-03), `ver=` bumped to 0.4.0. Prunes an owned trunk's VLANs after a debounced
-carrier-down loss (boot + rescan), gated on healthy routing; supersedes the hardware-validated L3-30
-"carrier-pull preserve" result with a revised "carrier-pull prune" case, NOT YET run on hardware.
+NEXT UP: v0.4.0 (carrier-down VLAN removal, FR-41) is CODE-COMPLETE, MERGED to `main` + pushed,
+CODE-REVIEWED (2026-08-03), and HARDWARE-VALIDATED (2026-08-04), `ver=` bumped to 0.4.0. Prunes an
+owned trunk's VLANs after a debounced carrier-down loss (boot + rescan), gated on healthy routing;
+supersedes the hardware-validated L3-30 "carrier-pull preserve" result with a revised "carrier-pull
+prune" case - now itself hardware-validated (all 6 sub-cases PASS on the Protectli box, console-driven:
+carrier-pull prune, re-plug re-add, flap preserves, own-uplink-no-redundancy preserves, `--boot` prune,
+post-boot re-add; `dev/features/dynavlan-tests.md` L3-30 + 2026-08-04 hardware-run note).
 The minor-release review (3 reviewers + a 4-agent adversarial verification pass) produced 5 fix commits
 on `worktree-review+0.4.0-fixes`, 182/182 unit tests. It found FR-41 unreachable in its own headline
 case: `run_detection` returns non-zero iff it detected nothing, so the abort in boot/rescan/dry-run
@@ -27,8 +30,9 @@ fired exactly when every owned trunk was unplugged. Fixing that removed the guar
 an all-dark box, so `have_routing` now additionally requires a live physical NIC (tun/wireguard netdevs
 report carrier whenever merely up). Also: rescan re-checks routing after its settle, additions on a
 trunk that died mid-sniff are dropped, and `--dry-run` no longer lists removals `--boot` would not
-perform. ONE gate remains before release: console-backed hardware validation on the Protectli box
-(`context/todo.md` Next steps). The same session also codified a Worktree Policy + Workflow Pipeline in `CLAUDE.md`
+perform. RELEASE GATES CLEAR: remaining before tagging is a clean `.deb` rebuild (the validation build
+was `298c8a5-dirty`, dirty from an untracked unrelated doc file) and user-authorized tag/push/release
+(`context/todo.md` v0.4.0 milestone). The same session also codified a Worktree Policy + Workflow Pipeline in `CLAUDE.md`
 (worktree for behavior changes, docs-only stays on `main`, merge-locally default, tag-time re-verification,
 release gate on shippable-artifact changes) - see `context/decisions.md` 2026-08-03.
 

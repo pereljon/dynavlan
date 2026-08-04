@@ -4,13 +4,14 @@ Owns: open tasks and their status. Does NOT hold permanent facts or decisions (t
 Maintain: update whenever a task is added, changes state, or completes.
 Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 
-## Current state (2026-08-03)
+## Current state (2026-08-04)
 
 See `context/index.md` STATE line for the authoritative up-to-date summary (kept current
 there to avoid two places drifting). As of this date: v0.3.0 (restart-on-new-subnet)
-released; v0.4.0 (carrier-down VLAN removal, FR-41) merged to `main` and pushed, then
-code-reviewed with 5 fix commits, 182 tests/0 failures - pending hardware validation
-before its own release (see the v0.4.0 milestone below). Superseded, kept for history:
+released; v0.4.0 (carrier-down VLAN removal, FR-41) merged to `main` and pushed,
+code-reviewed with 5 fix commits, 182 tests/0 failures, and hardware-validated
+2026-08-04 (see the v0.4.0 milestone below) - release gates clear, pending a clean
+`.deb` rebuild and user-authorized tag/push/release. Superseded, kept for history:
 v0.2.1 was released and hardware-validated with 132 tests, ~1700 lines, on the commits
 below.
 
@@ -97,9 +98,22 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
       5 commits, 182/182 tests (148 baseline + 34 new: 1t rescan combine, 1u
       mixed-trunk, 1v config validation + clamp, 1w `drop_iface_tokens`, 1s
       extended). No version bump - all of it folds into the unreleased 0.4.0.
-      NEXT STEP: hardware validation on the Protectli box (console-backed, per
-      CLAUDE.md - cannot claim this works until it runs on the box) before the
-      v0.4.0 release (`git tag`/`gh release`, both user-authorized).
+- [x] Hardware validation DONE 2026-08-04 on the Protectli box, console-driven (serial
+      `screen` session, SSH for the .deb transfer only). v0.4.0 deployed via `.deb`
+      upgrade over the box's existing v0.3.0 dpkg install (kept the box's customized
+      `dynavlan.conf` at the conffile prompt - diff was comment-only). All 6 L3-30
+      sub-cases PASS: carrier-pull prune (rescan), re-plug re-add (rescan), flap
+      shorter than the settle preserves, box's own uplink with no redundant route
+      preserves (`have_routing` false -> "no healthy routing; preserving"), `--boot`
+      prune, post-boot re-add. Every removal/addition went through `netplan try` and
+      was ACCEPTED; every preserve case logged the expected fail-toward-no-change
+      reasoning. Full per-sub-case detail: `dev/features/dynavlan-tests.md` L3-30 row
+      and the 2026-08-04 hardware-run note. Build was `298c8a5-dirty` (an untracked,
+      unrelated doc file made the tree dirty) - a clean rebuild is worth doing before
+      tagging so the released `.deb` doesn't carry a `-dirty` suffix.
+      RELEASE GATES NOW CLEAR: hardware validation done, code review done (above).
+      Remaining before tagging: rebuild the `.deb` from a clean tree, re-run
+      `bash tests/unit.sh` immediately before `git tag` per CLAUDE.md.
 
 ## Completed: restart-on-new-subnet (v0.3.0) - RELEASED
 
@@ -127,14 +141,6 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 
 ## Next steps (not started)
 
-- [ ] Hardware-validate carrier-down VLAN removal (revised L3-30, "carrier-pull prune")
-      on the Protectli box, console-backed. Code-complete in the v0.4.0 milestone above
-      but NOT YET run on hardware - cannot be claimed working until it is (CLAUDE.md).
-      Confirm `dynavlan --version` reports 0.4.0 first, then: unplug a duplicate trunk
-      and confirm removal within two rescan cycles + settle AND at boot; a flap shorter
-      than the settle preserves; pulling the box's own uplink (no redundant route)
-      preserves; re-plug re-adds. This plus the minor-release code review are the
-      release gates for v0.4.0.
 - [x] Test .deb build end-to-end (done 2026-08-03): installed the v0.3.0 release .deb on the Domotz box (Ubuntu 22.04), console-backed. Validated install.sh->.deb migration (old /etc/systemd/system units removed, /lib copies live), FR-38 build id (`814bcd1`, was `unknown`), conffile preserved, reboot + boot `--boot` apply (no-change, no revert), and real `domotzpro-agent-publicstore` snap restart. Box now dpkg-managed. Apply->netplan-try->revert path not exercised (no config diff); already hw-validated for v0.3.0.
 - [ ] APT repository: host a signed repo so `apt upgrade` picks up new versions.
       DESIGNED + user-approved 2026-08-03. Approach: GitHub Pages + reprepro,
