@@ -29,3 +29,57 @@ jobs:
           TAG_NAME: ${{ github.ref_name }}
           PKG_VERSION: ${{ steps.version.outputs.version }}
         run: gh release upload "$TAG_NAME" "dynavlan_${PKG_VERSION}_all.deb"
+
+  publish-apt:
+    needs: build-deb
+    runs-on: ubuntu-22.04
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install reprepro
+        run: sudo apt-get update && sudo apt-get install -y reprepro
+
+      - name: Import signing key
+        env:
+          APT_GPG_PRIVATE_KEY: ${{ secrets.APT_GPG_PRIVATE_KEY }}
+        run: echo "$APT_GPG_PRIVATE_KEY" | gpg --batch --import
+
+      - name: Fetch every release .deb
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p debs
+          for tag in $(gh release list --repo "${{ github.repository }}" --json tagName -q '.[].tagName'); do
+            gh release download "$tag" --repo "${{ github.repository }}" \
+              --pattern '*.deb' --dir debs --clobber || true
+          done
+          ls -la debs
+
+      - name: Build the signed repo (ephemeral reprepro db)
+        run: |
+          mkdir -p apt/pool apt/dists apt/db
+          for deb in debs/*.deb; do
+            reprepro -b apt -C main includedeb stable "$deb"
+          done
+
+      - name: Add public keyring to the published tree
+        run: cp dynavlan-archive-keyring.gpg apt/dynavlan-archive-keyring.gpg
+
+      - name: Prune the reprepro working db (not part of the published tree)
+        run: rm -rf apt/db apt/conf apt/logs
+
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: apt
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
