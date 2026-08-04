@@ -561,6 +561,19 @@ load_config() {
 		log err "invalid REMOVE_ON_CARRIER_LOSS=$REMOVE_ON_CARRIER_LOSS"
 		return 1
 	}
+
+	# The FR-41 debounce reuses BOOT_SETTLE_SECONDS as the gap between its two
+	# carrier samples. At 0 they are taken back-to-back, so a cable reseat or a port
+	# bounce is indistinguishable from a sustained loss and prunes the trunk's whole
+	# owned set. Clamp rather than reject: dynavlan.conf is a dpkg conffile, so a box
+	# already deployed with 0 would otherwise fail load_config after an upgrade and
+	# stop reconciling silently. Only when the destructive path is armed - with the
+	# knob off, 0 merely weakens a sniff comparison, exactly as before v0.4.0.
+	CARRIER_DEBOUNCE_SECONDS="$BOOT_SETTLE_SECONDS"
+	if [ "$REMOVE_ON_CARRIER_LOSS" = true ] && [ "$BOOT_SETTLE_SECONDS" -lt 5 ]; then
+		CARRIER_DEBOUNCE_SECONDS=5
+		log warning "BOOT_SETTLE_SECONDS=$BOOT_SETTLE_SECONDS is too short to debounce a carrier flap; using ${CARRIER_DEBOUNCE_SECONDS}s for the FR-41 carrier samples (set REMOVE_ON_CARRIER_LOSS=false to opt out of carrier-down removal)"
+	fi
 	in_list "$VLAN_ROUTES" "true false" || {
 		log err "invalid VLAN_ROUTES=$VLAN_ROUTES"
 		return 1
@@ -1454,8 +1467,15 @@ do_boot() {
 	[ "$REMOVE_ON_CARRIER_LOSS" = true ] && [ "$any_owned_down" = true ] && need_pass2=true
 
 	if [ "$need_pass2" = true ]; then
-		log info "boot pass 2 in ${BOOT_SETTLE_SECONDS}s..."
-		sleep "$BOOT_SETTLE_SECONDS"
+		# The clamped interval applies only when this settle is actually serving the
+		# carrier debounce; a pass 2 that exists purely for the detection diff keeps
+		# the configured value.
+		local settle="$BOOT_SETTLE_SECONDS"
+		if [ "$REMOVE_ON_CARRIER_LOSS" = true ] && [ "$any_owned_down" = true ]; then
+			settle="$CARRIER_DEBOUNCE_SECONDS"
+		fi
+		log info "boot pass 2 in ${settle}s..."
+		sleep "$settle"
 		# Re-detect only when RESET_ON_BOOT drives the detection-diff path. When pass 2
 		# exists solely for the carrier re-sample (RESET_ON_BOOT=false, a trunk down),
 		# the carrier-down branch reads /sys + the owned set and never consults
@@ -1575,8 +1595,8 @@ do_rescan() {
 			has_carrier "$trunk" || down_trunks="$down_trunks $trunk"
 		done
 		if [ -n "$down_trunks" ] && have_routing; then
-			log info "rescan: owned trunk(s) carrier-down [${down_trunks# }]; confirming over ${BOOT_SETTLE_SECONDS}s..."
-			sleep "$BOOT_SETTLE_SECONDS"
+			log info "rescan: owned trunk(s) carrier-down [${down_trunks# }]; confirming over ${CARRIER_DEBOUNCE_SECONDS}s..."
+			sleep "$CARRIER_DEBOUNCE_SECONDS"
 			# Re-check routing AFTER the settle, not only before it. The uplink can
 			# drop DURING the sleep (a switch reboot takes both ports), and nothing
 			# downstream would catch it: with the uplink already gone the pre-apply

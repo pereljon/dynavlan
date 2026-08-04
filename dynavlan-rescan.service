@@ -1,5 +1,5 @@
 [Unit]
-Description=dynavlan timer rescan (add-only VLAN discovery)
+Description=dynavlan timer rescan (VLAN discovery; prunes a carrier-down trunk)
 Documentation=file:/usr/local/sbin/dynavlan
 After=systemd-networkd.service
 

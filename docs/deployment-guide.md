@@ -58,6 +58,7 @@ The keys most deployments touch:
 # RESTART_SERVICES=""              # systemd services to restart after a VLAN change
 # RESTART_ON_NEW_SUBNET=true       # also restart targets when a new IPv4 subnet appears, not only on a VLAN change
 # RESCAN_MINUTES=5                 # timer interval (run --reconfigure after changing)
+# REMOVE_ON_CARRIER_LOSS=true      # prune a trunk's VLANs once its link stays down (see "Steady state")
 # VLAN_ROUTES=false                # opt-in: accept DHCP routes per VLAN at per-VLAN metrics
 ```
 
@@ -152,12 +153,18 @@ Caveat: routed mode makes the interfaces routable, but the box still has one act
 | Apply a new build's config to existing VLANs | `sudo dynavlan --reapply` (run after every upgrade) |
 | See owned vs detected VLANs | `sudo dynavlan --status` |
 | Preview what a reconcile would do | `sudo dynavlan --dry-run` |
-| Force an add-only rescan now | `sudo systemctl start dynavlan-rescan.service` |
+| Force a rescan now | `sudo systemctl start dynavlan-rescan.service` |
 | Full reconcile (adds + removals) | `sudo dynavlan --boot` (or reboot) |
 | Change the rescan interval | edit `RESCAN_MINUTES`, then `sudo dynavlan --reconfigure` |
 | Run history | `journalctl -t dynavlan` |
 
-Steady state is hands-off: boot reconciles the VLAN set against every trunk the box carries (two-pass per trunk, with guards against removing anything on faulty detection); the timer adds newly appearing VLANs on any trunk between boots. VLANs that disappear from a trunk are removed at the next boot reconcile, never by the timer. A trunk that goes fully dark (unplugged, or the switch stops trunking it) keeps its owned VLANs rather than losing them - only VLANs individually absent from a still-live trunk are removed.
+Steady state is hands-off: boot reconciles the VLAN set against every trunk the box carries (two-pass per trunk, with guards against removing anything on faulty detection); the timer adds newly appearing VLANs on any trunk between boots.
+
+Removals depend on *why* a VLAN went away:
+
+- **Individually absent from a still-live trunk** (the switch stopped trunking it, but the port is up): removed at the next boot reconcile, never by the timer.
+- **The whole trunk went carrier-down** (unplugged, switch port disabled, cable pulled): the trunk's entire owned set is pruned, at boot *or* on the timer, once the link has stayed down across a two-sample debounce and the box still has a healthy default route. Governed by `REMOVE_ON_CARRIER_LOSS` (default `true`); set it to `false` for the pre-v0.4.0 behavior of keeping those VLANs indefinitely. A brief flap does not trigger it, and neither does a box with no working uplink of its own - if the dead trunk was the only route out, everything is preserved.
+- **Carrier is up but nothing is detected** (a quiet or slow-to-converge trunk): preserved. Detection uncertainty never removes anything.
 
 ## 6. Files on the box
 

@@ -82,7 +82,7 @@ Installs the script to `/usr/local/sbin/dynavlan`, the config template to `/etc/
 
 ```
 dynavlan --boot         # reconcile at boot (add + remove VLANs to match every trunk)
-dynavlan --rescan       # add-only reconcile across every trunk (what the timer runs)
+dynavlan --rescan       # reconcile across every trunk: adds VLANs, prunes a debounced carrier-down trunk (what the timer runs)
 dynavlan --reapply      # regenerate + apply the current VLAN set with this build's config,
                         #   only if it differs from what's on disk (use after an upgrade or a
                         #   config change like VLAN_ROUTES; no-ops if nothing changed)

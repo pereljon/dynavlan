@@ -1,5 +1,5 @@
 [Unit]
-Description=Periodic dynavlan rescan (add-only VLAN discovery)
+Description=Periodic dynavlan rescan (VLAN discovery; prunes a carrier-down trunk)
 Documentation=file:/usr/local/sbin/dynavlan
 
 [Timer]

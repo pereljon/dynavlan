@@ -881,6 +881,28 @@ refuses "1v invalid value refuses to run" "REMOVE_ON_CARRIER_LOSS=yes"
 refuses "1v empty value refuses to run"   "REMOVE_ON_CARRIER_LOSS="
 refuses "1v numeric value refuses to run" "REMOVE_ON_CARRIER_LOSS=1"
 
+# CARRIER_DEBOUNCE_SECONDS: a settle too short to tell a port bounce from a real
+# loss is clamped for the FR-41 samples, but only while the destructive path is
+# armed, and BOOT_SETTLE_SECONDS itself is never rewritten (the sniff comparison
+# keeps the configured value).
+_debounce_with() { # CONF_BODY -> "BOOT_SETTLE/CARRIER_DEBOUNCE"
+	printf '%s\n' "$1" >"$_conf_dir/dynavlan.conf"
+	CONF_FILE="$_conf_dir/dynavlan.conf"
+	load_config >/dev/null 2>&1 || return 1
+	printf '%s/%s' "$BOOT_SETTLE_SECONDS" "$CARRIER_DEBOUNCE_SECONDS"
+}
+
+call _debounce_with "BOOT_SETTLE_SECONDS=20"
+ok "1v normal settle is used as-is" "20/20"
+call _debounce_with "BOOT_SETTLE_SECONDS=0"
+ok "1v zero settle clamped for carrier samples only" "0/5"
+call _debounce_with "BOOT_SETTLE_SECONDS=4"
+ok "1v sub-floor settle clamped" "4/5"
+call _debounce_with "BOOT_SETTLE_SECONDS=5"
+ok "1v settle at the floor is unchanged" "5/5"
+call _debounce_with "$(printf 'BOOT_SETTLE_SECONDS=0\nREMOVE_ON_CARRIER_LOSS=false')"
+ok "1v knob off leaves a zero settle alone" "0/0"
+
 rm -rf "$_conf_dir"
 CONF_FILE="$_conf_saved"
 unset _conf_dir _conf_saved
