@@ -1,0 +1,8 @@
+Origin: dynavlan
+Label: dynavlan
+Suite: stable
+Codename: stable
+Architectures: amd64 arm64
+Components: main
+Description: dynavlan APT repository
+SignWith: CA1F8DAB3D00EC9D
