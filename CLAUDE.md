@@ -46,7 +46,7 @@ Infrastructure, not a framework. Never surprise the operator; never strand the b
 - Lead with the answer or result, then supporting detail. Reference code as `file_path:line_number`.
 - Write like a developer. No LLM-stereotype language ("delve", "leverage", "streamline", "excited to").
 - Default to no code comments; add one only when the reason behind the code is non-obvious (a constraint, invariant, or workaround). Match the conventions already in the file.
-- `dynavlan` is intentionally a single self-contained file (design §1); file-size caps from global rules (e.g. an 800-line limit) do NOT apply here. Optimize for clarity, never compress logic or drop comments to hit a line count. Expanded multi-line guards are preferred over dense one-liners.
+- `dynavlan` is intentionally a single self-contained file (design §1). Optimize for clarity: expanded multi-line guards over dense one-liners, never compressed to save lines.
 
 ## Documentation Roles
 
@@ -62,59 +62,62 @@ Runs as root, typically on a remote, headless, or unattended box. The threat mod
 
 **No real MACs or PII in committed files or commit messages.** This is a public repo. Never commit a real MAC address, and no personally identifying information beyond the maintainer's name (Jonathan Perel) -- no personal email addresses (the Debian `Maintainer` field uses a GitHub noreply address). This applies to commit messages too, not only file contents: never quote a real MAC or personal email in a commit message, including when the commit's purpose is to *remove* that value (describe it as "the personal email" / "the real MAC", never the literal). When a real capture, log excerpt, or hardware detail illustrates a point (e.g. in `context/decisions.md`), redact the MAC to an RFC 7042 documentation value (`00:00:5e:00:53:xx`) before committing. IP addresses and VLAN IDs are not PII and are fine.
 
+## Testing Plan
+
+Before coding a new feature or change, review with the user: happy path, edge cases, flag/config conflicts, interface updates. Get confirmation before writing code.
+
+Type checks and tests verify code correctness, not feature correctness. Exercise the feature in the real environment before claiming it works; if you can't, say so explicitly. Never claim a feature works until it has run on the box.
+
 ## Development Workflow
 
 - Before coding any change: read `dev/SKELETON.md` + `dev/CODEMAP.md` (and `dev/features/dynavlan.md` for design depth) to identify the blast radius, then locate the specific functions. Don't start editing until you know what's affected.
-- New logic: TDD pure helpers in `tests/unit.sh` first (RED before GREEN, per `superpowers:test-driven-development`); wire integration code cohesively - the apply/rollback state machine is too coupled for subagent fan-out.
+- New logic: TDD pure helpers in `tests/unit.sh` first (RED before GREEN); wire integration code cohesively - the apply/rollback state machine is too coupled for subagent fan-out.
 - There is no hot-reload: dynavlan installs as a systemd service + timer. Hardware testing happens on the real appliance on the real trunk with console access, never only over SSH (a bad apply drops the connection). No VM.
 
 ### Workflow Pipeline
 
-The canonical order of a change, start to finish. This is the *sequence*; the detailed rules live in the sections it links to - do not duplicate them here.
+Canonical order of a change; detail lives in the section named.
 
-1. **Read state** - `context/index.md` -> `context/todo.md`/`open_questions.md`/`decisions.md` (Start Here).
-2. **Scope the change** - review with the user: happy path, edge cases, flag/config conflicts, interface updates (Testing Plan). Confirm before coding.
-3. **Create a branch** (see Branch Policy below; worktrees need explicit authorization). Then read `dev/SKELETON.md` + `dev/CODEMAP.md` to find the blast radius (Development Workflow, above).
-4. **Code** - TDD pure helpers RED-before-GREEN in `tests/unit.sh`; wire coupled integration code inline, never fanned out to subagents.
-5. **Code review** - scope by version bump (Code Review Before Release); fix CRITICAL/HIGH before committing.
-6. **Update docs** - the Change Checklist GATE, done after review so docs describe the final code, not a draft of it.
-7. **Test** - `bash tests/unit.sh` (mandatory before every commit). Exercise the feature for real; hardware validation is a separate, later gate and is never satisfied by unit tests alone (Testing Plan).
-8. **Commit** - [approval gate] (Git Approvals).
-9. **Merge** - `git merge --ff-only` to `main` locally by default (Branch Policy), then re-run `bash tests/unit.sh` on `main` itself before pushing.
-10. **Push** - [approval gate] (Git Approvals).
-11. **Release** - [approval gate]; hardware-validate first (cannot claim it works until it has run on the box); confirm version/build identity is current; `git tag` -> `git push origin TAG` -> `gh release create` (Git Approvals).
-12. **Session hygiene** - update `context/` files, then clear or compact to start the next cycle fresh (Session Hygiene).
+1. **Read state** - `context/index.md` (Start Here).
+2. **Scope the change** with the user; confirm before coding (Testing Plan).
+3. **Branch** (Branch Policy), then find the blast radius (Development Workflow).
+4. **Code** - TDD, RED before GREEN.
+5. **Code review** (Code Review Before Release).
+6. **Update docs** (Change Checklist), after review so docs describe final code.
+7. **Test** - `bash tests/unit.sh`.
+8. **Commit** (Git Approvals).
+9. **Merge** `--ff-only` to `main`, then re-run tests on `main`.
+10. **Push** (Git Approvals).
+11. **Release** (Git Approvals); hardware-validate first.
+12. **Session hygiene** (Session Hygiene).
 
 ### Branch Policy
 
-**Use a branch, not a worktree.** Isolation from `main` comes from the branch; a worktree only adds a second working directory, which this project has no standing need for.
+**Branch, not worktree.** A worktree needs explicit authorization (below); a branch doesn't.
 
-- **Behavior changes to `dynavlan`** (new FR, config key, or apply/rollback/detection logic) get a branch before landing on `main`: `git switch -c <name>`, then `git switch main && git merge --ff-only <name> && git branch -d <name>`.
-- **Docs-only or trivial fixes** (typos, one-line comment/doc corrections) land directly on `main`.
-- **Code review runs on the same branch**, not a separate one: review the diff before merging, fix findings there, then merge. Review is part of finishing the change, not a new one.
-- **A major-release review (X.0.0)** gets its own branch (e.g. `release/1.0.0-review`), separate from any feature's, since it reviews the accumulated surface across several features and may collect multiple fix commits before one merge + tag. Create it only once the release's other gates are met.
-- Solo-maintainer project: default to **Option 1 (merge locally)** from `superpowers:finishing-a-development-branch` unless the user asks for a PR - there is no second reviewer requiring one.
+- **Behavior changes to `dynavlan`** (new FR, config key, apply/rollback/detection logic) get a branch.
+- **Docs-only or trivial fixes** land directly on `main`.
+- **Review happens on the branch**, before merging - not after, not on a separate one.
+- **A major-release review (X.0.0)** gets its own branch (e.g. `release/1.0.0-review`): it covers the accumulated surface across several features and may take multiple fix commits before one merge + tag.
+- Solo-maintainer project: default to **Option 1 (merge locally)** from `superpowers:finishing-a-development-branch` unless the user asks for a PR.
 
-**Worktrees require explicit user authorization** and are justified only by one of these, none of which is routine here:
+**Worktree only for:**
 
-1. A second Claude session is active on this repo - two sessions sharing one checkout will collide.
-2. `main` must stay deployable while the work is in flight (a hotfix might need cutting).
-3. The change may be abandoned outright, and `git reset --hard` on the only checkout would be uncomfortable.
+1. A second Claude session is active on this repo.
+2. `main` must stay deployable mid-work.
+3. The change may be abandoned outright, and `git reset --hard` on the only checkout would be unwelcome.
 
-Absent one of those, do not create a worktree even though `superpowers:using-git-worktrees` fires automatically - this is the project-specific override to its default. The overhead is not theoretical: a worktree omits untracked and `.git/info/exclude`-hidden files (`docs/superpowers/plans/` among them), so design and plan docs go missing, and finishing requires an exit-and-merge dance a branch does not.
-- **Testing sequence: merge -> verify -> push.** Run `bash tests/unit.sh` before every commit on the branch (already mandatory). After merging into `main`, re-run the suite on `main` itself before pushing - the merged tree, not the pre-merge branch, is what gets pushed (on a clean fast-forward this verifies the merge landed, not the code). Hardware validation is a separate, later gate tied to *release*, not to push: pushing merged commits doesn't run anything on the box, so it belongs before `git tag`/`gh release`, not before `git push`. Full order for a feature: merge -> unit tests on `main` -> push (whenever) -> hardware validation -> release.
+Otherwise skip it, even though `superpowers:using-git-worktrees` fires automatically - a worktree omits untracked and `.git/info/exclude`-hidden files (`docs/superpowers/plans/` among them), and finishing requires an extra exit-and-merge step a branch doesn't.
 
 ### Task Tracking Granularity
 
 Three layers, kept distinct - do not conflate them:
 
-- **`context/todo.md` holds milestones only.** A milestone is a project-state unit a fresh session must know to understand where things stand: a feature moving through `designed → planned → code-complete → hardware-validated → released`. One line per milestone. This is the project's source of truth for status (see Documentation Roles).
-- **The plan file** (`docs/superpowers/plans/YYYY-MM-DD-<feature>.md`) holds the task/step decomposition of a single milestone. Plan *tasks* are sized per `superpowers:writing-plans` (Task Right-Sizing: the smallest unit that carries its own test cycle and is worth a fresh reviewer's gate); *steps* are the bite-sized actions inside a task. These live in the plan, never in `context/todo.md`.
-- **The in-session task tool** (TaskCreate/TaskUpdate) tracks plan *tasks* while executing, per `superpowers:executing-plans` ("create todos for the plan items"). Track at task granularity, never per step; it is ephemeral execution scaffolding and is never mirrored into `context/todo.md`.
+- **`context/todo.md`**: milestones only, one line each (`designed → planned → code-complete → hardware-validated → released`). Source of truth for project status.
+- **Plan file** (`docs/superpowers/plans/YYYY-MM-DD-<feature>.md`): the task/step decomposition of one milestone.
+- **In-session task tool** (TaskCreate/TaskUpdate): tracks plan tasks while executing, never per step; never mirrored into `context/todo.md`.
 
-Placement test: "If I cleared the session now, would a new session need this line to know where the project stands?" Yes -> milestone in `context/todo.md`. No -> a task/step in the plan file.
-
-Coupled work is executed inline, not fanned out: per `superpowers:subagent-driven-development` (tightly-coupled tasks -> manual execution), the apply/rollback state machine is not dispatched to parallel subagents (restates the TDD bullet above).
+Placement test: would a fresh session need this line to know where the project stands? Yes -> `context/todo.md`. No -> the plan file.
 
 ### Code Review Before Release
 
@@ -123,29 +126,6 @@ Coupled work is executed inline, not fanned out: per `superpowers:subagent-drive
 - **Major (X.0.0)**: full review of the relevant surface
 
 Address CRITICAL and HIGH issues before committing.
-
-## Git Approvals
-
-Each step requires explicit user approval. Approval for one step does not imply approval for the next.
-
-1. **Branch**: create one without asking - it's local, reversible, and the Branch Policy below already decides when one applies. Just report it. A **worktree** is different: ask first and get explicit authorization, for one of the three reasons in that policy.
-2. **Commit**: propose the commit message and changed files, wait for approval before `git commit`.
-3. **Push**: wait for explicit approval before `git push`.
-4. **Release**: only the user can authorize a release. A release requires `git tag vX.Y.Z`, `git push origin vX.Y.Z`, and `gh release create vX.Y.Z` on `pereljon/dynavlan` (gh account: pereljon). Commit or push do not imply release.
-   - **Immediately before `git tag`**, re-run `bash tests/unit.sh` and confirm `dynavlan --version` reports the expected version - never tag off a state that hasn't been freshly verified (see Version and build identity below; this is the same discipline, applied at the one moment it matters most).
-   - **Release gate**: only tag a release if the deliverable script, its installer, or its packaged config/service templates changed since the last release - those are the only assets an install or upgrade actually consumes. Docs-only changes are already available via the repo and don't need a release.
-
-After completing work, ask which steps the user wants: "Want to commit, push, or release?"
-
-## Session Hygiene
-
-Before starting a new task, close out the current one: update `context/` files (todo, decisions, open questions), commit, and compact or clear the session to start fresh. Stale context from a long session compounds errors.
-
-## Testing Plan
-
-Before coding a new feature or change, review with the user: happy path, edge cases, flag/config conflicts, interface updates. Get confirmation before writing code.
-
-Type checks and tests verify code correctness, not feature correctness. Exercise the feature in the real environment before claiming it works; if you can't, say so explicitly. Never claim a feature works until it has run on the box.
 
 ## Change Checklist
 
@@ -162,7 +142,7 @@ After any code change, check whether these need updating:
 - `context/` files (todo, decisions, open questions) - keep current; stale context compounds errors downstream
 - `CLAUDE.md` (if conventions or guardrails changed)
 - `CHANGELOG.md` (new features, fixes, removals per release)
-- version in the `dynavlan` script (`ver=` variable) - see **Version and build identity** below; this is a gate, not a judgement call
+- version in the `dynavlan` script (`ver=` variable) - see **Version and build identity** below
 - systemd units (`dynavlan.service`/`dynavlan-rescan.service`/`dynavlan.timer`) and `install.sh` if artifacts change
 - **When adding a config key**: default + `in_list`/range validation in `load_config`, a commented template entry in `dynavlan.conf` at its default, and the FR/config-surface section in `docs/dynavlan-PRD.md`.
 - **When adding a CLI mode/flag**: the dispatch in `main`, the Usage section in `README.md`, and the corresponding FR/AC in `docs/dynavlan-PRD.md`.
@@ -171,13 +151,29 @@ When making multiple changes, consider logical ordering: some changes should com
 
 ### Version and build identity (FR-38) - MANDATORY
 
-A box must always be able to answer "what code is running here." That guarantee is cheap to maintain and was expensive to lack: on 2026-07-25 a deploy landed between two edits, and because nothing could distinguish the running build from the intended one, a working fix was diagnosed as broken. Do not let it decay.
+A box must always be able to answer "what code is running here" (incident record: `context/decisions.md`, 2026-07-25, FR-38).
 
 **Every change to the `dynavlan` script:**
 
-1. **Bump `ver=`** whenever behavior, output, config surface, or generated YAML changes. Patch for fixes, minor for new behavior or config keys, major for breaking changes. If you genuinely believe no bump applies (comments, docs, tests only), say so explicitly in the commit message rather than leaving it unstated - an unbumped version must be a decision on the record, never an omission.
-2. **Never touch the `build=` line.** `install.sh` stamps it by matching `/^build=/`. It must stay a single, unindented, literal assignment at column 0. Do not rename it, indent it, compute it, or add a second one. `tests/unit.sh` section 1l enforces this and will fail loudly - if it does, fix the script, never the test.
-3. **Never gate `--version` behind root or a valid config.** It is dispatched before `load_config` and before the root check on purpose: an unprivileged shell or a broken config are exactly when the question gets asked.
-4. **Run `bash tests/unit.sh`** before proposing a commit. Sections 1k/1l cover the identity helper and the cross-file stamp contract.
+1. **Bump `ver=`** for any behavior, output, config, or generated-YAML change - patch/minor/major by semver. No bump is itself a decision: say so explicitly in the commit message, never leave it silent.
+2. **Never touch `build=`.** `install.sh` stamps it by matching `/^build=/`; it must stay a single, unindented, literal assignment at column 0 (`tests/unit.sh` §1l enforces this).
+3. **`--version` must work before `load_config` and before the root check** - an unprivileged shell or a broken config is exactly when it's needed.
 
-**Every deploy to a box:** run `dynavlan --version` first and confirm the build is the one you intended, BEFORE drawing any conclusion from its behavior. A `-dirty` suffix means the tree had uncommitted changes and the build matches no commit. Never infer which code is running from whether a symptom persists; that inference has already been wrong once.
+**Every deploy to a box:** run `dynavlan --version` first and confirm the build is the one you intended, BEFORE drawing any conclusion from its behavior. A `-dirty` suffix means the tree had uncommitted changes and the build matches no commit.
+
+## Git Approvals
+
+Each step requires explicit user approval. Approval for one step does not imply approval for the next.
+
+1. **Branch**: create one without asking - it's local, reversible, and the Branch Policy above already decides when one applies. Just report it. A **worktree** is different: ask first and get explicit authorization, for one of the three reasons in that policy.
+2. **Commit**: propose the commit message and changed files, wait for approval before `git commit`.
+3. **Push**: wait for explicit approval before `git push`.
+4. **Release**: only the user can authorize a release. A release requires `git tag vX.Y.Z`, `git push origin vX.Y.Z`, and `gh release create vX.Y.Z` on `pereljon/dynavlan` (gh account: pereljon). Commit or push do not imply release.
+   - **Immediately before `git tag`**, re-run `bash tests/unit.sh` and confirm `dynavlan --version` reports the expected version - never tag off a state that hasn't been freshly verified (see Version and build identity above; this is the same discipline, applied at the one moment it matters most).
+   - **Release gate**: only tag a release if the deliverable script, its installer, or its packaged config/service templates changed since the last release - those are the only assets an install or upgrade actually consumes. Docs-only changes are already available via the repo and don't need a release.
+
+After completing work, ask which steps the user wants: "Want to commit, push, or release?"
+
+## Session Hygiene
+
+Before starting a new task, close out the current one: update `context/` files (todo, decisions, open questions), commit, and compact or clear the session to start fresh. Stale context from a long session compounds errors.
