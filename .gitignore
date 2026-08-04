@@ -41,4 +41,6 @@ build/
 *.o
 *.so
 *.dylib
+*.deb
+apt/
 .claudemux-*

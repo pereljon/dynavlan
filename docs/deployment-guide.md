@@ -47,6 +47,13 @@ box. A box already installed via `.deb` or `install.sh` needs no reinstall:
 adding the keyring + source is enough, since apt recognizes the existing
 install by package name/version.
 
+An upgrade preserves the timer/service state you left them in: if you had
+`systemctl disable`d or stopped `dynavlan.timer`, the upgrade will not silently
+re-enable or re-start it. (The one exception is the first upgrade onto a build
+carrying this behavior from an older package: the outgoing package cannot record
+the timer's running state, so that first upgrade restarts a timer that was
+stopped-but-still-enabled; a disabled timer is never re-enabled.)
+
 **Alternatives**, for cases apt doesn't cover:
 
 - **Pin a specific version** (bypasses apt, always a tarball install):

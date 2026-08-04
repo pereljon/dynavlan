@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.0"
+ver="0.4.1"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -1774,15 +1774,22 @@ do_dryrun() {
 		return 1
 	fi
 	NETPLAN_FILE="$saved"
+	# A failed validation must exit non-zero: --dry-run is the attended pre-flight,
+	# and a caller (operator or script) that checks $? has to be able to see the
+	# FAIL, not just read it in the printed output.
+	local vstatus=0
 	if backend_validate "$tree"; then
 		printf '  validate:  OK\n'
 	elif [ "$VALIDATE_ERRSRC" = base ]; then
 		printf '  validate:  FAIL - a BASE netplan file is invalid (not dynavlan): %s\n' "$VALIDATE_ERRMSG"
+		vstatus=1
 	else
 		printf '  validate:  FAIL - dynavlan config invalid: %s\n' "$VALIDATE_ERRMSG"
+		vstatus=1
 	fi
 	rm -rf "$tree"
 	printf '  (dry-run only: no netplan try, no apply, no restart)\n'
+	return "$vstatus"
 }
 
 # FR-39: regenerate the OWNED set with the current build and apply only if the

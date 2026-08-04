@@ -15,6 +15,28 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
   existing tarball + `install.sh` path otherwise, or if the repo isn't
   reachable. No `ver=` bump - the `dynavlan` script itself is untouched.
 
+### Fixed
+
+- `--dry-run` now exits non-zero when `netplan generate` rejects the candidate
+  config; it previously printed `validate: FAIL` but exited 0, so a scripted or
+  attended pre-flight keying on `$?` could not tell a bad config from a good one.
+  The printed line and `VALIDATE_ERRSRC` still distinguish our-YAML from a
+  pre-existing base-file error. (`ver=` 0.4.0 -> 0.4.1.)
+- Debian upgrades preserve the operator's timer/service state instead of
+  unconditionally re-enabling and starting the timer on every configure. `prerm`
+  records the prior enabled/active state before stopping; `postinst` restores it,
+  so an upgrade never re-arms a `dynavlan.timer` the operator deliberately
+  disabled. First install is unchanged (enable for next boot, never start). On
+  the first upgrade FROM a pre-fix package the outgoing `prerm` cannot record
+  state, so `postinst` falls back to live `is-enabled` (which `stop` does not
+  clear) for the enable dimensions and only defaults the unrecoverable
+  running-state to preserve-running.
+- `build-deb.sh` refuses to build when the requested version (the release job
+  passes the git tag) differs from the script's `ver=`, so a tag that outran a
+  `ver=` bump fails the build instead of publishing a package whose `--version`
+  disagrees with its label (FR-38). Checked before the `dpkg-deb` requirement so
+  the version mismatch is the reported failure.
+
 ## [0.4.0] - 2026-08-04
 
 ### Added

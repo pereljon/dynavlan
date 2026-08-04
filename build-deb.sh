@@ -17,13 +17,21 @@ SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 say() { printf '[build-deb] %s\n' "$*"; }
 die() { printf '[build-deb] ERROR: %s\n' "$*" >&2; exit 1; }
 
-command -v dpkg-deb >/dev/null 2>&1 || die "dpkg-deb not found (install dpkg or dpkg-dev)"
+# FR-38: the packaged version MUST equal the script's self-reported ver=, or the
+# .deb (and the --version it installs) would misreport the build. A release is
+# tag-triggered and CI passes the tag-derived version here; a tag that outran a
+# ver= bump must FAIL the build, never publish a mislabeled package. Checked
+# before the dpkg-deb requirement so the mismatch is the reported failure, not an
+# incidental missing-tool error on a cross-build host.
+SCRIPT_VER=$(grep '^ver=' "$SRC_DIR/dynavlan" | head -1 | sed 's/ver="\(.*\)"/\1/')
+[ -n "$SCRIPT_VER" ] || die "could not extract ver= from dynavlan script"
 
-VERSION="${1:-}"
-if [ -z "$VERSION" ]; then
-    VERSION=$(grep '^ver=' "$SRC_DIR/dynavlan" | head -1 | sed 's/ver="\(.*\)"/\1/')
-    [ -n "$VERSION" ] || die "could not extract version from dynavlan script"
+VERSION="${1:-$SCRIPT_VER}"
+if [ "$VERSION" != "$SCRIPT_VER" ]; then
+    die "requested version $VERSION does not match script ver= $SCRIPT_VER (bump ver= or pass the matching version)"
 fi
+
+command -v dpkg-deb >/dev/null 2>&1 || die "dpkg-deb not found (install dpkg or dpkg-dev)"
 
 # Build identity (same logic as install.sh)
 if build_id=$(git -C "$SRC_DIR" rev-parse --short HEAD 2>/dev/null) && [ -n "$build_id" ]; then

@@ -198,6 +198,13 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
       register `docs/superpowers/plans/2026-08-04-v1.0-gate4-review-fixes.md`; decision
       `context/decisions.md` 2026-08-04. Freeze/tag BLOCKED until CRITICAL+HIGH resolved with
       tests + console-backed hardware validation, then re-reviewed.
+      FIX PROGRESS: Unit 1 (doc-contradiction cluster D1-D10 + README) landed on main
+      2026-08-04. Unit 2 (M3 dry-run exit code, H7 build-deb version binding, H3 Debian
+      upgrade-state preservation) CODE-COMPLETE + branch-reviewed on
+      `fix/gate4-unit2-correctness` (ver 0.4.0 -> 0.4.1), unit suite 183/183; H3/M3 still
+      need console-backed hardware validation (L3-37 upgrade matrix, dry-run exit check)
+      before the release. Remaining: C2/H2/C1 (pre-freeze blockers), then contract
+      decisions (M7/D5-done/H6+M1), robustness (H1/H5/H4/M2/M4/M5/M6) + state-machine harness.
       Path: v0.4.0 -> APT + validation (parallel) -> freeze + tag 1.0.0 (last by construction).
       OUT OF SCOPE for 1.0 (documented limitations): IPv6, exhaustive vendor coverage,
       PER_VLAN_MAC (stays default off), automatic config-drift detection.

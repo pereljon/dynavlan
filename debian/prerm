@@ -4,8 +4,25 @@ set -e
 LOCK_FILE="/run/dynavlan.lock"
 LOCK_WAIT=300
 
+STATE_DIR="/run/dynavlan"
+STATE_FILE="$STATE_DIR/upgrade-state"
+
 case "$1" in
 remove|upgrade)
+    # On upgrade, capture the operator's current enable/active state BEFORE we
+    # stop anything, so postinst can restore it exactly and never re-arm a unit
+    # the operator deliberately disabled. dpkg runs prerm then the new postinst in
+    # one transaction with no reboot between, so /run (tmpfs) persists across the
+    # swap and self-cleans on the next boot. remove does not need this.
+    if [ "$1" = upgrade ]; then
+        mkdir -p "$STATE_DIR" || true
+        {
+            printf 'svc_enabled=%s\n' "$(systemctl is-enabled --quiet dynavlan.service 2>/dev/null && echo 1 || echo 0)"
+            printf 'tmr_enabled=%s\n' "$(systemctl is-enabled --quiet dynavlan.timer 2>/dev/null && echo 1 || echo 0)"
+            printf 'tmr_active=%s\n'  "$(systemctl is-active  --quiet dynavlan.timer 2>/dev/null && echo 1 || echo 0)"
+        } > "$STATE_FILE" || true
+    fi
+
     # Stop the timer so no new runs start during the swap
     systemctl stop dynavlan.timer 2>/dev/null || true
 

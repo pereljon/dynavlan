@@ -26,15 +26,40 @@ JEOF
     systemctl daemon-reload
     /usr/local/sbin/dynavlan --reconfigure 2>/dev/null || true
 
-    # Enable for next boot (never --now: install must not trigger a network change)
-    systemctl enable dynavlan.service 2>/dev/null || true
-    systemctl enable dynavlan.timer 2>/dev/null || true
+    if [ -z "$2" ]; then
+        # First install ($2 empty): enable both for next boot; never start (an
+        # install must not trigger a network change).
+        systemctl enable dynavlan.service 2>/dev/null || true
+        systemctl enable dynavlan.timer 2>/dev/null || true
+    else
+        # Upgrade: restore the operator's EXACT prior enable/active state (captured
+        # by prerm), never re-arm a unit they deliberately disabled. If the state
+        # file is missing (upgrade FROM a pre-H3 package whose prerm did not record
+        # it), fall back to LIVE state: prerm's `systemctl stop` clears neither
+        # unit's enablement, so is-enabled still reflects the operator's choice and
+        # we must not re-enable a disabled unit. Only tmr_active is unrecoverable on
+        # that transitional upgrade (the timer is already stopped), so it alone
+        # defaults to 1 (preserve-running, availability-biased).
+        systemctl is-enabled --quiet dynavlan.service 2>/dev/null && svc_enabled=1 || svc_enabled=0
+        systemctl is-enabled --quiet dynavlan.timer   2>/dev/null && tmr_enabled=1 || tmr_enabled=0
+        tmr_active=1
+        [ -f /run/dynavlan/upgrade-state ] && . /run/dynavlan/upgrade-state
 
-    # On upgrade, restart the timer if it was running
-    if [ -n "$2" ]; then
-        if systemctl is-enabled --quiet dynavlan.timer 2>/dev/null; then
+        if [ "${svc_enabled:-1}" = 1 ]; then
+            systemctl enable dynavlan.service 2>/dev/null || true
+        else
+            systemctl disable dynavlan.service 2>/dev/null || true
+        fi
+        if [ "${tmr_enabled:-1}" = 1 ]; then
+            systemctl enable dynavlan.timer 2>/dev/null || true
+        else
+            systemctl disable dynavlan.timer 2>/dev/null || true
+        fi
+        if [ "${tmr_active:-1}" = 1 ]; then
             systemctl start dynavlan.timer 2>/dev/null || true
         fi
+
+        rm -f /run/dynavlan/upgrade-state
     fi
     ;;
 esac

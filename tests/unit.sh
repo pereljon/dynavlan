@@ -441,6 +441,26 @@ assert_eq "$(bash "$src" --version)" "dynavlan $ver (build source)" "1l unstampe
 rm -f "$stamp_tmp"
 
 # ---------------------------------------------------------------------------
+# 1x. build-deb.sh binds the packaged version to the script's ver= (H7/FR-38)
+#     A release is tag-triggered and CI passes the tag-derived version to
+#     build-deb.sh. If that version disagrees with the script's ver=, the
+#     package (and its --version) would misreport the build. build-deb.sh MUST
+#     refuse rather than publish a mislabeled package. Asserted on the mismatch
+#     MESSAGE, not a bare non-zero: a dev box without dpkg-deb also exits
+#     non-zero, which would mask a missing guard.
+# ---------------------------------------------------------------------------
+
+mismatch_out="$(bash "${here}/../build-deb.sh" 9.9.9 2>&1)"; mismatch_rc=$?
+tests=$((tests + 1))
+if [ "$mismatch_rc" -ne 0 ] && printf '%s' "$mismatch_out" | grep -q "does not match"; then
+	printf 'ok   - %s\n' "1x build-deb refuses a version != script ver="
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       expected non-zero + "does not match", rc=%s out=[%s]\n' \
+		"1x build-deb refuses a version != script ver=" "$mismatch_rc" "$mismatch_out"
+fi
+
+# ---------------------------------------------------------------------------
 # 1m. config_body_differs - FR-39 reapply comparison
 #
 # Line 1 is the `# Managed by dynavlan <ver> (build <id>)` header. FR-38 put the

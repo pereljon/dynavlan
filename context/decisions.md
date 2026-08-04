@@ -478,3 +478,28 @@ find things; (c) putting the 20-row register into a tracked `context/` file - it
 decomposition, so it belongs in a plan file per the Task Tracking Granularity rule (this record +
 `context/todo.md` carry the tracked summary + pointer; the review and register are local-only in
 `internal/` and `docs/superpowers/`, consistent with the existing local-only plan/spec convention).
+
+## 2026-08-04 - Gate-4 fix Unit 2 (M3/H7/H3): Debian upgrade-state preservation and its transitional gap
+
+Fixed three gate-4 findings on `fix/gate4-unit2-correctness` (ver 0.4.0 -> 0.4.1): M3 (`--dry-run`
+now exits non-zero on validation FAIL), H7 (`build-deb.sh` refuses a version != script `ver=`, so a
+tag that outran the bump fails the build instead of publishing a mislabeled package), and H3 (Debian
+upgrades restore the operator's prior timer/service enabled+active state instead of unconditionally
+re-enabling+starting the timer). Branch-reviewed (adversarial subagent): no CRITICAL; the one
+Important was accepted and fixed before commit.
+
+DECISION on the H3 dpkg handshake and its unavoidable transitional gap. dpkg runs the OUTGOING
+package's `prerm upgrade` first, then the INCOMING `postinst configure`. So the prior enabled/active
+state is recorded by the *old* package's prerm into `/run/dynavlan/upgrade-state`; the new postinst
+restores it. Consequence: on the FIRST upgrade onto this fix (from a pre-H3 package whose prerm
+records nothing), postinst finds no state file. Rather than defaulting all three dimensions to
+"on" (which would re-arm a deliberately disabled timer - the exact footgun), postinst falls back to
+LIVE `systemctl is-enabled` for the two ENABLE dimensions (a `systemctl stop` does not clear
+enablement, so is-enabled still reflects the operator's choice) and defaults only the unrecoverable
+`tmr_active` to 1 (preserve-running, availability-biased). Net: a disabled timer is never re-enabled
+even on the transitional upgrade; only a stopped-but-still-enabled timer is (wrongly) re-started that
+one time, and never again. Chose this over (a) hardcoding all defaults to 1 (re-arms disabled units)
+and (b) trying to make the old package cooperate (impossible - it is already installed). Documented in
+the deployment guide and CHANGELOG; the four-state upgrade matrix + the pre-fix transitional case are
+L3-37, pending console-backed hardware validation before the release. State file lives in `/run`
+(tmpfs, root-only), which is safe to source as root under the footgun-not-adversary threat model.

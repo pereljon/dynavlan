@@ -124,7 +124,7 @@ dynavlan is built for boxes that may be remote, headless, or unattended, where a
 - dynavlan owns one generated netplan file and never reads or writes any other config.
 - Boot reconcile never reads "detected nothing" as "remove everything": a carrier-up trunk with no tags is preserved (detection is uncertain), while a carrier-down trunk is pruned only after a two-sample debounce and only if the box still has a healthy uplink route. Detection has no distinct failure signal, so zero detection blocks additions, but the carrier signal (independent of detection) still governs pruning.
 
-A bad apply can drop an SSH session, so if possible, run the first `--boot` with an out-of-band fallback (serial console, IPMI, or physical access). If that is not available, `--dry-run` previews the change without applying it.
+A bad apply can drop an SSH session, so if possible, run the first `--boot` with an out-of-band fallback (serial console, IPMI, or physical access). If that is not available, `--dry-run` previews the change without applying it, and exits non-zero if the candidate config fails validation, so it doubles as a scripted pre-flight check.
 
 ## Documentation
 
