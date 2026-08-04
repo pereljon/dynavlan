@@ -45,6 +45,7 @@ install_via_apt() {
 	mkdir -p /etc/apt/keyrings
 	if ! curl -fsSL "$APT_REPO_URL/dynavlan-archive-keyring.gpg" -o "$APT_KEYRING"; then
 		say "could not fetch the APT signing key (repo not live yet?), falling back"
+		rm -f "$APT_KEYRING"
 		return 1
 	fi
 
@@ -104,5 +105,8 @@ install_via_tarball() {
 }
 
 if ! install_via_apt; then
+	if [ -z "$TAG" ] && command -v dpkg >/dev/null 2>&1 && dpkg -s dynavlan >/dev/null 2>&1; then
+		die "dynavlan is already installed via apt/dpkg but the apt install path just failed for an unrelated reason (not simply 'repo not live yet'); fix apt manually (e.g. 'sudo apt-get install -f') rather than falling back to a non-apt-managed tarball install, which would leave dpkg's records out of sync with what's on disk"
+	fi
 	install_via_tarball
 fi

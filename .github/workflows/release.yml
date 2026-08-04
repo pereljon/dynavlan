@@ -57,15 +57,18 @@ jobs:
         run: |
           mkdir -p debs
           for tag in $(gh release list --repo "${{ github.repository }}" --json tagName -q '.[].tagName'); do
-            gh release download "$tag" --repo "${{ github.repository }}" \
-              --pattern '*.deb' --dir debs --clobber || true
+            if ! gh release download "$tag" --repo "${{ github.repository }}" \
+              --pattern '*.deb' --dir debs --clobber; then
+              echo "::warning::could not fetch a .deb for release $tag (no asset, or a fetch error)"
+            fi
           done
           ls -la debs
+          compgen -G "debs/*.deb" >/dev/null || { echo "::error::no .deb assets found across any release"; exit 1; }
 
       - name: Build the signed repo (ephemeral reprepro db)
         run: |
           mkdir -p apt/pool apt/dists apt/db
-          for deb in debs/*.deb; do
+          for deb in $(ls -v debs/*.deb); do
             reprepro -b apt -C main includedeb stable "$deb"
           done
 
