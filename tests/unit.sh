@@ -124,24 +124,55 @@ call carrier_removals ""         down down; ok "1r empty owned -> none"         
 call carrier_removals "22 18 21" down down; ok "1r output is sorted"              "18 21 22"
 
 # ---------------------------------------------------------------------------
-# 1s. have_routing - true iff a default route exists AND its dev has carrier.
-#     Stubs snapshot_default_route + has_carrier; restores them after.
+# 1s. have_routing - true iff a default route exists, its dev has carrier, AND at
+#     least one physical NIC has carrier. The third clause is what stops a
+#     tun/wireguard default (which reports carrier=1 whenever merely up) from
+#     making an all-dark box look healthy and re-enabling FR-41 pruning (AC-4).
+#     Stubs snapshot_default_route + has_carrier + discover_phys_ifaces.
 # ---------------------------------------------------------------------------
 
 _sdr_saved=$(declare -f snapshot_default_route)
 _hc_saved=$(declare -f has_carrier)
+_dpi_saved=$(declare -f discover_phys_ifaces)
 
+# STUB_UP is the set of ifaces with carrier; STUB_PHYS is what the box has.
 snapshot_default_route() { printf '%s' "$STUB_DEV"; }
-has_carrier() { [ -n "$STUB_DEV" ] && [ "$STUB_CARRIER" = up ]; }
+has_carrier() { case " $STUB_UP " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+discover_phys_ifaces() { printf '%s\n' $STUB_PHYS; }
 routing_says() { if have_routing; then echo yes; else echo no; fi; }
 
-STUB_DEV=enp1s0; STUB_CARRIER=up;   call routing_says; ok "1s default route + carrier -> routing"        "yes"
-STUB_DEV=enp1s0; STUB_CARRIER=down; call routing_says; ok "1s default route, dead egress -> no routing"  "no"
-STUB_DEV="";     STUB_CARRIER=up;   call routing_says; ok "1s no default route -> no routing"            "no"
+STUB_PHYS="enp1s0 enp2s0"
+
+STUB_DEV=enp1s0; STUB_UP="enp1s0"; call routing_says
+ok "1s default route + carrier -> routing" "yes"
+STUB_DEV=enp1s0; STUB_UP="enp2s0"; call routing_says
+ok "1s default route, dead egress -> no routing" "no"
+STUB_DEV="";     STUB_UP="enp1s0"; call routing_says
+ok "1s no default route -> no routing" "no"
+
+# Default egresses a live physical NIC while a second trunk is dark: still healthy.
+# This is the mixed case FR-41 prunes in - it must NOT be blocked.
+STUB_DEV=enp1s0; STUB_UP="enp1s0"; STUB_PHYS="enp1s0 enp2s0"; call routing_says
+ok "1s live uplink + dark second trunk -> routing (prune allowed)" "yes"
+
+# Tunnel default, every physical NIC dark: the wireguard netdev reports carrier,
+# but the box is all-dark and must preserve.
+STUB_DEV=wg0; STUB_UP="wg0"; STUB_PHYS="enp1s0 enp2s0"; call routing_says
+ok "1s tunnel default, all physical dark -> no routing" "no"
+
+# Tunnel default over a live physical uplink: legitimately routed VPN box, and
+# FR-41 must keep working there.
+STUB_DEV=wg0; STUB_UP="wg0 enp1s0"; STUB_PHYS="enp1s0 enp2s0"; call routing_says
+ok "1s tunnel default over a live NIC -> routing" "yes"
+
+# No physical NICs discovered at all (nothing to vouch for the route).
+STUB_DEV=wg0; STUB_UP="wg0"; STUB_PHYS=""; call routing_says
+ok "1s no physical NICs -> no routing" "no"
 
 eval "$_sdr_saved"
 eval "$_hc_saved"
-unset STUB_DEV STUB_CARRIER
+eval "$_dpi_saved"
+unset STUB_DEV STUB_UP STUB_PHYS
 
 # ---------------------------------------------------------------------------
 # 1f. vlan_guard / limit_fill - VLAN_WARN / VLAN_LIMIT gate (0 = unlimited)
@@ -709,6 +740,124 @@ call ipv4_network 172.16.9.4 12;  ok "1q /12 masks into the third octet"   "172.
 call ipv4_network 10.11.12.13 8;  ok "1q /8 keeps only first octet"        "10.0.0.0"
 call ipv4_network 10.0.5.55 32;   ok "1q /32 is the host itself"           "10.0.5.55"
 call ipv4_network 192.168.1.1 0;  ok "1q /0 is all-zero network"           "0.0.0.0"
+
+# ---------------------------------------------------------------------------
+# 1t. Rescan combine math (FR-41) - rescan's first removal path.
+#
+# Through v3.6 rescan was add-only, so `owned` fed gate_vlan_count and set_union
+# directly. It now feeds `set_minus owned all_removals`. These pin that
+# composition: a removal must shrink the count the gate sees, and must not
+# survive into the target.
+# ---------------------------------------------------------------------------
+
+_owned="enp1s0.18 enp1s0.21 enp2s0.30"
+
+# Carrier teardown of enp2s0 while enp1s0 gains a VLAN.
+call carrier_removals "30" down down; _rm_ids="$OUT"
+call tag_tokens "enp2s0" "$_rm_ids"; _rm="$OUT"
+ok "1t carrier removal tagged to its trunk" "enp2s0.30"
+
+call tag_tokens "enp1s0" "100"; _add="$OUT"
+call set_minus "$_owned" "$_rm"; _kept="$OUT"
+ok "1t kept set excludes the carrier removal" "enp1s0.18 enp1s0.21"
+
+call set_union "$_kept" "$_add"
+ok "1t target = kept + additions, removal gone" "enp1s0.100 enp1s0.18 enp1s0.21"
+
+# The gate counts the shrunken kept set, not the pre-removal owned set.
+call count_ids "$_kept"; ok "1t gate sees the shrunken kept count" "2"
+
+# Removals-only rescan: no additions, target is just the survivors.
+call set_minus "$_owned" "$_rm"; _kept2="$OUT"
+call set_union "$_kept2" ""
+ok "1t removals-only target is the survivors" "enp1s0.18 enp1s0.21"
+
+# Full teardown of every owned trunk collapses the target to empty.
+call carrier_removals "18 21" down down; _rm_all1="$OUT"
+call tag_tokens "enp1s0" "$_rm_all1"; _rt1="$OUT"
+call set_union "$_rt1" "$_rm"; _rm_all="$OUT"
+call set_minus "$_owned" "$_rm_all"
+ok "1t full teardown leaves an empty target" ""
+
+# ---------------------------------------------------------------------------
+# 1u. Mixed-trunk removal composition (FR-41 + FR-23).
+#
+# One trunk contributes a detection-diff removal (carrier UP, VLAN gone from
+# both boot passes) while another contributes a carrier full-teardown, both
+# into the same apply. The two producers are independent; this pins that their
+# outputs combine without clobbering each other.
+# ---------------------------------------------------------------------------
+
+# enp1s0: carrier up, owns 18/21/100; 100 absent from both passes -> diff removal.
+call boot_removals "18 21 100" "18 21" "18 21"; _d_ids="$OUT"
+ok "1u detection-diff removal on the live trunk" "100"
+call tag_tokens "enp1s0" "$_d_ids"; _d="$OUT"
+
+# enp2s0: carrier down both samples, owns 30/31 -> full teardown.
+call carrier_removals "30 31" down down; _c_ids="$OUT"
+ok "1u carrier teardown on the dead trunk" "30 31"
+call tag_tokens "enp2s0" "$_c_ids"; _c="$OUT"
+
+call set_union "$_d" "$_c"; _mixed="$OUT"
+ok "1u mixed removals combine, both trunks represented" "enp1s0.100 enp2s0.30 enp2s0.31"
+
+# The live trunk keeps its still-detected VLANs; the dead trunk keeps nothing.
+_owned_mixed="enp1s0.18 enp1s0.21 enp1s0.100 enp2s0.30 enp2s0.31"
+call set_minus "$_owned_mixed" "$_mixed"
+ok "1u mixed target keeps only the live trunk's survivors" "enp1s0.18 enp1s0.21"
+
+# A live trunk may add while a dead one is torn down, in one apply.
+call tag_tokens "enp1s0" "22"; _mixed_add="$OUT"
+call set_minus "$_owned_mixed" "$_mixed"; _mixed_kept="$OUT"
+call set_union "$_mixed_kept" "$_mixed_add"
+ok "1u mixed apply adds on the live trunk while pruning the dead one" "enp1s0.18 enp1s0.21 enp1s0.22"
+
+# Idempotence: re-running against the already-pruned set removes nothing more.
+call set_minus "enp1s0.18 enp1s0.21" "$_mixed"
+ok "1u re-applying the removal set is a no-op" "enp1s0.18 enp1s0.21"
+
+# ---------------------------------------------------------------------------
+# 1v. load_config validation of REMOVE_ON_CARRIER_LOSS (FR-41 config surface).
+#
+# The knob gates a destructive path, so a typo must refuse to run rather than
+# silently defaulting. Uses a CONF_FILE fixture; the root-ownership guard is
+# skipped when not running as root, so this works unprivileged.
+# ---------------------------------------------------------------------------
+
+_conf_saved="$CONF_FILE"
+_conf_dir=$(mktemp -d)
+
+_load_with() { # CONF_BODY -> echoes the effective value, rc from load_config
+	printf '%s\n' "$1" >"$_conf_dir/dynavlan.conf"
+	CONF_FILE="$_conf_dir/dynavlan.conf"
+	load_config >/dev/null 2>&1 || return 1
+	printf '%s' "$REMOVE_ON_CARRIER_LOSS"
+}
+
+call _load_with "REMOVE_ON_CARRIER_LOSS=true";  ok "1v explicit true accepted"  "true"
+call _load_with "REMOVE_ON_CARRIER_LOSS=false"; ok "1v explicit false accepted" "false"
+call _load_with "# nothing set";                ok "1v default is true"         "true"
+
+refuses() { # DESC CONF_BODY  (asserts load_config exits non-zero)
+	local rc
+	_load_with "$2" >/dev/null 2>&1
+	rc=$?
+	tests=$((tests + 1))
+	if [ "$rc" -ne 0 ]; then
+		printf 'ok   - %s\n' "$1"
+	else
+		fails=$((fails + 1))
+		printf 'FAIL - %s (expected rc 1, got 0)\n' "$1"
+	fi
+}
+
+refuses "1v invalid value refuses to run" "REMOVE_ON_CARRIER_LOSS=yes"
+refuses "1v empty value refuses to run"   "REMOVE_ON_CARRIER_LOSS="
+refuses "1v numeric value refuses to run" "REMOVE_ON_CARRIER_LOSS=1"
+
+rm -rf "$_conf_dir"
+CONF_FILE="$_conf_saved"
+unset _conf_dir _conf_saved
 
 # ---------------------------------------------------------------------------
 

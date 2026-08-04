@@ -96,7 +96,7 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 | `default_routes_tokens` | Current default routes as "iface:metric" tokens |
 | `snapshot_default_route` / `snapshot_default_metric` | Iface / metric of the lowest-metric pre-apply default ("" if none) |
 | `post_apply_health` | Sample routes now and delegate PASS/FAIL to `health_check_eval` |
-| `have_routing` | FR-41 pre-condition: true iff a lowest-metric default route exists AND its egress iface has carrier (composes `snapshot_default_route` + `has_carrier`; tests 1s) |
+| `have_routing` | FR-41 pre-condition: true iff a lowest-metric default route exists, its egress iface has carrier, AND at least one physical NIC has carrier (composes `snapshot_default_route` + `has_carrier` + `discover_phys_ifaces`; tests 1s). The physical clause stops a tun/wireguard default - those report carrier whenever merely up - from making an all-dark box look routable |
 
 ## Backups (FR-19)
 
@@ -129,7 +129,7 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 
 | function | one-line purpose |
 |----------|------------------|
-| `do_boot` | All-trunks reconcile: hard `run_detection` failure aborts box-wide (empty-but-successful detection does not); per-trunk candidates over every owned-or-detected iface (union); carrier-UP trunks get sniff-based detection-diff removal (`RESET_ON_BOOT`); carrier-DOWN trunks get full-set FR-41 pruning (`carrier_removals`, gated on `have_routing` + `REMOVE_ON_CARRIER_LOSS`, a flap preserves); second settle+resample (`need_pass2`) fires for either reason; one unified `apply_change` across the whole box. No relocation branch: a tagless-but-carrier-UP trunk is preserved (detection uncertainty); a carrier-DOWN trunk is pruned once routing is healthy, not preserved |
+| `do_boot` | All-trunks reconcile: `run_detection`'s rc is ignored (it means "saw nothing", not "failed" - there is no probe-error signal), branching on `DETECTED_TRUNKS` instead, so a zero detection blocks additions without blocking FR-41 pruning; per-trunk candidates over every owned-or-detected iface (union); carrier-UP trunks get sniff-based detection-diff removal (`RESET_ON_BOOT`); carrier-DOWN trunks get full-set FR-41 pruning (`carrier_removals`, gated on `have_routing` + `REMOVE_ON_CARRIER_LOSS`, a flap preserves); second settle+resample (`need_pass2`) fires for either reason; one unified `apply_change` across the whole box. No relocation branch: a tagless-but-carrier-UP trunk is preserved (detection uncertainty); a carrier-DOWN trunk is pruned once routing is healthy, not preserved |
 | `do_rescan` | Timer reconcile: additions over DETECTED_TRUNKS as before; FR-41 (v0.4.0) adds its first removal path - carrier-down OWNED trunks are pruned on a routing-gated two-sample settle, fast-path-preserved (settle sleep only when an owned trunk is actually down) |
 | `do_dryrun` | Preview: same per-trunk candidate math (single pass) over owned-or-detected ifaces, plus a would-be FR-41 removal per trunk (single advisory sample, `have_routing`-gated); throwaway-tree validate, diff + count gate + FR-37 metric/conflict preview, per-trunk breakdown (now with carrier state) printed; never applies |
 | `do_reapply` | FR-39: regenerate the OWNED set (whatever trunks it spans) with this build, apply only if the body differs; NO detection (pins to `distinct_ifaces` of the owned tokens), full owned set lease-waited, count gate bypassed |

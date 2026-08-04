@@ -1066,17 +1066,35 @@ snapshot_default_metric() { # metric of the lowest-metric default route, "" if n
 }
 
 # have_routing
-#   True iff the box has a usable default route: a lowest-metric default exists
-#   AND the iface it egresses currently has carrier. Pre-condition for carrier-down
-#   removal - if routing is already gone (no default, or the only default egresses
-#   a dead iface), preserve everything and change nothing. This also covers the
-#   "lost link was the sole uplink" case: removal would fail the post-apply health
-#   check and revert anyway; this just avoids attempting the doomed netplan-try
-#   churn (and its agent restart) in the first place.
+#   True iff the box has a usable default route: a lowest-metric default exists,
+#   the iface it egresses currently has carrier, AND at least one physical NIC has
+#   carrier. Pre-condition for carrier-down removal - if routing is already gone,
+#   preserve everything and change nothing.
+#
+#   The physical-carrier clause is not redundant. A tun/wireguard/tailscale netdev
+#   reports carrier=1 whenever it is merely configured up - those drivers do no
+#   peer-reachability tracking - so a box whose lowest-metric default egresses a
+#   tunnel would otherwise report healthy routing while every physical port is
+#   dark. That is exactly the all-dark state AC-4 exists to protect. Testing the
+#   egress dev against a physical whitelist instead would be wrong: it would also
+#   reject a legitimate default routed over a VLAN netdev, and would disable
+#   pruning outright on a box that genuinely routes over a VPN. Requiring one live
+#   physical NIC keeps that box working while still catching all-dark.
+#
+#   Note this is the ONLY gate on the doomed-removal case: the post-apply health
+#   check does NOT back it up. When the uplink is already gone the route snapshot
+#   is empty, and an empty snapshot is a deliberate unconditional PASS (AC-12,
+#   "never revert on an independently-missing uplink"). Do not weaken this on the
+#   assumption that the health check would catch what it lets through.
 have_routing() {
-	local dev
+	local dev p
 	dev=$(snapshot_default_route)
-	[ -n "$dev" ] && has_carrier "$dev"
+	[ -n "$dev" ] || return 1
+	has_carrier "$dev" || return 1
+	for p in $(discover_phys_ifaces); do
+		has_carrier "$p" && return 0
+	done
+	return 1
 }
 
 post_apply_health() { # SNAP_IFACE -> PASS/FAIL (delegates the decision to the pure evaluator)
@@ -1363,10 +1381,13 @@ gate_vlan_count() { # KEPT ADDITIONS - echoes the (possibly reduced) additions; 
 do_boot() {
 	log info "run start: dynavlan $(version_string "$ver" "$build") mode=boot detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}] reset_on_boot=$RESET_ON_BOOT remove_on_carrier_loss=$REMOVE_ON_CARRIER_LOSS"
 
-	if ! run_detection; then
-		log err "boot reconcile aborted: detection failed (no interfaces prepped / probe error). Changing nothing"
-		return 0
-	fi
+	# Do NOT branch on run_detection's rc. It has exactly one non-zero return and it
+	# fires precisely when DETECTED_TRUNKS is empty; there is no probe-error signal
+	# to tell a real failure from a quiet wire. Aborting on it would abort on the
+	# very case FR-41 exists for - every owned trunk unplugged, so nothing is left
+	# to detect - and would print "detection failed" for an ordinary quiet trunk.
+	# Branch on DETECTED_TRUNKS below instead: same fact, stated honestly.
+	run_detection || :
 	# Empty detection (ran OK, saw nothing) is NOT a hard failure. Additions become
 	# impossible, but an owned trunk that is carrier-down must still be prunable:
 	# FR-22's "detected nothing != remove everything" guards the SNIFF signal on the
@@ -1494,10 +1515,7 @@ do_boot() {
 
 do_rescan() {
 	log info "run start: dynavlan $(version_string "$ver" "$build") mode=rescan detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}] remove_on_carrier_loss=$REMOVE_ON_CARRIER_LOSS"
-	if ! run_detection; then
-		log info "rescan: detection failed; nothing to do"
-		return 0
-	fi
+	run_detection || : # rc is "saw nothing", not "failed" - see do_boot
 	if [ -z "$DETECTED_TRUNKS" ] && [ "$REMOVE_ON_CARRIER_LOSS" != true ]; then
 		log info "rescan: no trunks detected; nothing to add"
 		return 0
@@ -1573,10 +1591,7 @@ do_rescan() {
 
 do_dryrun() {
 	log info "dry-run: detecting (no changes will be made)..."
-	if ! run_detection; then
-		printf 'dry-run: detection failed; would change nothing\n'
-		return 0
-	fi
+	run_detection || : # rc is "saw nothing", not "failed" - see do_boot
 	if [ -z "$DETECTED_TRUNKS" ] && [ "$REMOVE_ON_CARRIER_LOSS" != true ]; then
 		printf 'dry-run: no trunks detected; would change nothing\n'
 		return 0
