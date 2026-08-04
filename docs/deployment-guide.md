@@ -52,7 +52,7 @@ An upgrade preserves the timer/service state you left them in: if you had
 re-enable or re-start it. (The one exception is the first upgrade onto a build
 carrying this behavior from an older package: the outgoing package cannot record
 the timer's running state, so that first upgrade restarts a timer that was
-stopped-but-still-enabled; a disabled timer is never re-enabled.)
+stopped-but-still-*enabled*; a *disabled* timer is never re-enabled or started.)
 
 **Alternatives**, for cases apt doesn't cover:
 

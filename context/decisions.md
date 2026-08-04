@@ -503,3 +503,32 @@ and (b) trying to make the old package cooperate (impossible - it is already ins
 the deployment guide and CHANGELOG; the four-state upgrade matrix + the pre-fix transitional case are
 L3-37, pending console-backed hardware validation before the release. State file lives in `/run`
 (tmpfs, root-only), which is safe to source as root under the footgun-not-adversary threat model.
+
+## 2026-08-04 (later) - H3/M3 hardware-validated on the Protectli box; transitional-disabled bug found + fixed
+
+Validated M3 and H3 on the box over SSH with the operator's serial console up as fallback (H3's
+maintainer scripts never invoke an apply; no reconcile fired at any point across ~20 min; the 14 live
+VLANs + uplink were untouched throughout).
+
+M3 PASS: `--dry-run` exits 0 on a valid tree and non-zero on a malformed BASE netplan file
+(`validate: FAIL - a BASE netplan file is invalid`, correct base-vs-ours attribution), cleanup clean.
+
+H3: the fixed->fixed matrix passed (enabled+active / enabled+stopped / disabled+stopped all restored
+exactly via the prerm->postinst state file). The TRANSITIONAL case (pre-fix 0.4.0 -> fixed 0.4.1, no
+recorded state) caught a real BUG the branch review and I both under-called: `tmr_active` defaulted to
+`1` unconditionally, so a deliberately DISABLED+stopped timer was STARTED (active) on that one upgrade.
+Not re-enabled (won't survive reboot), but re-armed for the uptime - a "never surprise the operator"
+violation. FIX (this session, branch `fix/h3-transitional-disabled-timer`): `tmr_active="$tmr_enabled"`
+- preserve-running only for a timer that was enabled; a disabled timer is never started. Re-validated
+on hardware: transitional disabled -> disabled+inactive; transitional enabled+stopped -> enabled+active
+(the one accepted transitional imperfection, self-corrects on reboot); fixed->fixed disabled unchanged.
+No `ver=` bump (maintainer script only; rides 0.4.1). Lesson reaffirmed: hardware validation catches
+what unit-green + review miss on the packaging/apply surface - exactly why the project gates on it.
+
+SEPARATE PRE-EXISTING FINDING (logged in `context/open_questions.md`, NOT H3): a *fresh*
+`dpkg -i`/`apt install` STARTS the timer via dpkg/systemd machinery (deb-systemd-helper likely), NOT
+postinst - proven by a step-by-step repro where none of the postinst commands (`daemon-reload`,
+`--reconfigure`, `enable`) start it, yet the full `dpkg -i` does; and by upgrades NOT starting an
+enabled+stopped timer (so it is specific to first-install). This means the deployment guide's "install
+changes nothing on the network / enables for next boot, never starts" does not currently hold on a
+fresh install. Predates all gate-4 work; needs its own investigation + decision.

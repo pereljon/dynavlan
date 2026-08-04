@@ -37,12 +37,15 @@ JEOF
         # file is missing (upgrade FROM a pre-H3 package whose prerm did not record
         # it), fall back to LIVE state: prerm's `systemctl stop` clears neither
         # unit's enablement, so is-enabled still reflects the operator's choice and
-        # we must not re-enable a disabled unit. Only tmr_active is unrecoverable on
-        # that transitional upgrade (the timer is already stopped), so it alone
-        # defaults to 1 (preserve-running, availability-biased).
+        # we must not re-enable OR start a disabled unit. The prior RUNNING state is
+        # unrecoverable in that transitional case (the timer is already stopped), so
+        # infer it from enablement: an enabled timer is assumed to have been running
+        # (preserve-running), a disabled timer is never started - tmr_active follows
+        # tmr_enabled. Hardware-validated (L3-37): a disabled+stopped timer stays
+        # disabled AND inactive across the transitional upgrade.
         systemctl is-enabled --quiet dynavlan.service 2>/dev/null && svc_enabled=1 || svc_enabled=0
         systemctl is-enabled --quiet dynavlan.timer   2>/dev/null && tmr_enabled=1 || tmr_enabled=0
-        tmr_active=1
+        tmr_active="$tmr_enabled"
         [ -f /run/dynavlan/upgrade-state ] && . /run/dynavlan/upgrade-state
 
         if [ "${svc_enabled:-1}" = 1 ]; then

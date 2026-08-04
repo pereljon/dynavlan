@@ -29,8 +29,10 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
   disabled. First install is unchanged (enable for next boot, never start). On
   the first upgrade FROM a pre-fix package the outgoing `prerm` cannot record
   state, so `postinst` falls back to live `is-enabled` (which `stop` does not
-  clear) for the enable dimensions and only defaults the unrecoverable
-  running-state to preserve-running.
+  clear) for the enable dimensions and infers the running-state from enablement:
+  an enabled timer is assumed to have been running, a disabled timer is never
+  started (`tmr_active` follows `tmr_enabled`). Hardware-validated (L3-37),
+  including the transitional disabled case.
 - `build-deb.sh` refuses to build when the requested version (the release job
   passes the git tag) differs from the script's `ver=`, so a tag that outran a
   `ver=` bump fails the build instead of publishing a package whose `--version`

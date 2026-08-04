@@ -201,10 +201,14 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
       FIX PROGRESS: Unit 1 (doc-contradiction cluster D1-D10 + README) landed on main
       2026-08-04. Unit 2 (M3 dry-run exit code, H7 build-deb version binding, H3 Debian
       upgrade-state preservation) CODE-COMPLETE + branch-reviewed on
-      `fix/gate4-unit2-correctness` (ver 0.4.0 -> 0.4.1), unit suite 183/183; H3/M3 still
-      need console-backed hardware validation (L3-37 upgrade matrix, dry-run exit check)
-      before the release. Remaining: C2/H2/C1 (pre-freeze blockers), then contract
-      decisions (M7/D5-done/H6+M1), robustness (H1/H5/H4/M2/M4/M5/M6) + state-machine harness.
+      `fix/gate4-unit2-correctness` (ver 0.4.0 -> 0.4.1), unit suite 183/183, merged to main.
+      HARDWARE-VALIDATED 2026-08-04 on the Protectli box (M3 dry-run exit code; H3 fixed->fixed
+      + transitional upgrade matrix, L3-37). H3 hardware validation CAUGHT A BUG: the transitional
+      (pre-fix->fixed) upgrade started a deliberately-disabled timer (`tmr_active` defaulted to 1);
+      FIXED on branch `fix/h3-transitional-disabled-timer` (`tmr_active="$tmr_enabled"`, re-validated,
+      no ver bump). Separate pre-existing finding logged (open_questions): a FRESH install starts the
+      timer via dpkg/systemd machinery, not postinst. Remaining: C2/H2/C1 (pre-freeze blockers), then
+      contract decisions (M7/D5-done/H6+M1), robustness (H1/H5/H4/M2/M4/M5/M6) + state-machine harness.
       Path: v0.4.0 -> APT + validation (parallel) -> freeze + tag 1.0.0 (last by construction).
       OUT OF SCOPE for 1.0 (documented limitations): IPv6, exhaustive vendor coverage,
       PER_VLAN_MAC (stays default off), automatic config-drift detection.
