@@ -51,7 +51,7 @@ Each is a bash function `backend_<op>`; the netplan implementation is the initia
 
 **Revert capability varies by backend** (the one genuinely hard portability item): netplan has `try`; NetworkManager has native checkpoints (cleaner); networkd-direct and ifupdown have none and must hand-roll. The core's `apply_with_revert` contract is "apply with a health-gated auto-revert," so the core is agnostic to which.
 
-A startup stub `backend_detect` (reads `/etc/os-release`, probes for `netplan`) exists but today only ever resolves to `netplan`. No backend-selection config until a second backend exists.
+A startup `backend_detect` (reads `/etc/os-release`, probes for `netplan`) is described here as the seam's entry point but is NOT in the script today: the backend is hardcoded to netplan, since it is the only implementation. The stub lands only when a second backend does. No backend-selection config until then.
 
 ## 5. Module / function decomposition (feeds dev/CODEMAP.md when code lands)
 
@@ -207,7 +207,7 @@ Through v0.3.0, a trunk going carrier-down was treated identically to a tagless-
 
 ## 12. Portability plan (what to build now vs later)
 
-**Now (cheap, structural):** the §4 backend seam as six functions; the abstract ownership model (§3); the `backend_detect` stub resolving only to netplan; the `apply_with_revert` capability contract. The core never calls `netplan` directly.
+**Now (cheap, structural):** the §4 backend seam as six functions; the abstract ownership model (§3); the `apply_with_revert` capability contract. The core never calls `netplan` directly. (`backend_detect` is deferred with the second backend - not built while netplan is the only one.)
 
 **Later (only when a second backend is real):** NM/networkd/ifupdown implementations; a real `backend_detect`; any backend-selection config. Each future backend's hardest piece is the revert (NM native / networkd-direct hand-rolled).
 

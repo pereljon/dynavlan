@@ -111,7 +111,7 @@ dynavlan --reapply      # regenerate + apply the current VLAN set with this buil
                         #   only if it differs from what's on disk (use after an upgrade or a
                         #   config change like VLAN_ROUTES; no-ops if nothing changed)
 dynavlan --dry-run      # show the diff without applying anything
-dynavlan --status       # current managed VLANs and their leases
+dynavlan --status       # owned and detected VLANs per trunk (read-only, no apply)
 dynavlan --reconfigure  # rewrite the timer drop-in after changing RESCAN_MINUTES
 dynavlan --version      # print version + build id (works unprivileged; safe with a broken config)
 ```
@@ -122,7 +122,7 @@ dynavlan is built for boxes that may be remote, headless, or unattended, where a
 
 - Every apply is validated and health-checked against a pre-apply default-route snapshot; a routing failure auto-reverts via `netplan try`. Rollback is gated on the health check, never on an exit code.
 - dynavlan owns one generated netplan file and never reads or writes any other config.
-- Boot reconcile changes nothing if detection itself fails; "detected nothing" is never read as "remove everything" - a carrier-up trunk with no tags is preserved (detection is uncertain), while a carrier-down trunk is pruned only after a two-sample debounce and only if the box still has a healthy uplink route.
+- Boot reconcile never reads "detected nothing" as "remove everything": a carrier-up trunk with no tags is preserved (detection is uncertain), while a carrier-down trunk is pruned only after a two-sample debounce and only if the box still has a healthy uplink route. Detection has no distinct failure signal, so zero detection blocks additions, but the carrier signal (independent of detection) still governs pruning.
 
 A bad apply can drop an SSH session, so if possible, run the first `--boot` with an out-of-band fallback (serial console, IPMI, or physical access). If that is not available, `--dry-run` previews the change without applying it.
 

@@ -74,6 +74,7 @@ Each file gets one clear role; keep this table current.
 | `dev/features/dynavlan.md` | Technical design: architecture, backend seam, apply/rollback state machine, module decomposition, systemd/install layout |
 | `dev/features/dynavlan-tests.md` | Test plan: unit assert cases, `--dry-run` verification, hardware integration checklist |
 | `docs/dynavlan-PRD.md` | Product requirements: authoritative FR/NFR/AC with severity+impact tags |
+| `docs/v1.0-definition.md` | Authoritative 1.0 definition: maturity bar, release gates, compatibility policy, out-of-scope |
 | `docs/deployment-guide.md` | Deployment guide: install, configure, first attended run, operation, removal |
 | `README.md` | Landing page: what the project is and where the docs are |
 | `CHANGELOG.md` | What changed per release |

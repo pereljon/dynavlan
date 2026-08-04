@@ -203,6 +203,6 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
       PER_VLAN_MAC (stays default off), automatic config-drift detection.
 - [ ] Git hooks for version gate enforcement (see open_questions.md, designed but not built)
 - [ ] IPv6 health-check arm (deferred from FR-14a; required before any future IPv6 route acceptance)
-- [ ] Non-Meraki switch validation (sniff-primary proven only on Meraki; LLDP coverage varies by vendor)
+- [ ] Non-Meraki switch validation: MET for sniff-primary (proven on a UniFi trunk, v0.3.0 validation 2026-07-30); residual is broader vendor LLDP VLAN-table coverage and silent-VLAN gaps, which vary by vendor
 - [ ] G-4: per-VLAN MAC derivation (low priority, PER_VLAN_MAC default off)
 - [ ] Automatic config-drift detection on boot/rescan (deferred until a second box exists)
