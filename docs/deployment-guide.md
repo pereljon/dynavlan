@@ -23,7 +23,7 @@ curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sud
 A specific version:
 
 ```
-curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v0.3.0
+curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v0.4.0
 ```
 
 **From a local copy** (clone, SCP, or ZIP):

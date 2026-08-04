@@ -2,7 +2,7 @@
 
 A self-configuring VLAN provisioner for headless Linux appliances: designed for monitoring/discovery platforms (which is why isolation is its default), but a general dynamic-VLAN tool at its core. dynavlan detects the active tagged VLANs on every trunk a box is plugged into, brings each one up with DHCP (address only, fully route/DNS-isolated by default), and restarts the services you nominate so any agent that enumerates interfaces at startup picks up the new subnets. No SSH, no hand-edited YAML.
 
-> **v0.3.0**, hardware-validated (Protectli/igb, dual trunks, Meraki + UniFi switches, 2026-07-30).
+> **v0.4.0**, hardware-validated (Protectli/igb, dual trunks, Meraki + UniFi switches, 2026-08-04).
 
 ## The problem
 
@@ -60,13 +60,13 @@ curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sud
 Or a specific version:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v0.3.0
+curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v0.4.0
 ```
 
 From a `.deb` (attached to each [GitHub release](https://github.com/pereljon/dynavlan/releases)):
 
 ```sh
-sudo dpkg -i dynavlan_0.3.0_all.deb
+sudo dpkg -i dynavlan_0.4.0_all.deb
 sudo apt-get install -f   # if dependencies are missing
 ```
 
