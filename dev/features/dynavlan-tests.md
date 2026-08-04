@@ -309,6 +309,7 @@ FR-41 carrier-down preview cases (single advisory sample, no debounce - dry-run 
 - An owned trunk that is currently carrier-down, with the box otherwise routing normally: the per-trunk breakdown shows `carrier=down` and the removals column lists that trunk's full owned set; the summary parenthetical notes removals are indicative, confirmed on a real run by a 2-pass sniff or a 2-sample carrier check.
 - Same setup but the box has no healthy default route (or the only default's iface is also carrier-down): the carrier-down trunk's owned VLANs do NOT appear in removals, and a `carrier-down: preserving (no healthy default route; --boot would preserve)` line is printed.
 - `REMOVE_ON_CARRIER_LOSS=false`: a carrier-down owned trunk shows `carrier=down` but contributes nothing to removals, regardless of routing health.
+- An owned trunk that is carrier-UP but sniffs no tags contributes nothing to removals either (`RESET_ON_BOOT=true` included). The preview mirrors `--boot`'s detection-diff conditions - carrier up AND a non-empty detection - so it can never show a teardown `--boot` would not perform. Before this was aligned, such a trunk had its entire owned set listed as removals, and a carrier-down one was listed *and* reported as preserved in the same preview.
 
 ## Layer 3 - Manual hardware checklist (apply/rollback safety)
 

@@ -1671,7 +1671,13 @@ do_dryrun() {
 		additions_ids=$(compute_candidates "$detected_ids" "$VLAN_MIN" "$VLAN_MAX" "$IGNORE_SET" "$managed" "$owned_ids")
 		all_additions="$all_additions $(tag_tokens "$trunk" "$additions_ids")"
 
-		if [ "$RESET_ON_BOOT" = true ]; then
+		# Mirror do_boot's detection-diff conditions exactly, or the preview reports
+		# a teardown --boot would never perform. Boot runs this branch only on a
+		# carrier-UP trunk (carrier-down is FR-41's business, below) and only with a
+		# non-empty detection in both passes; a down or tagless trunk sniffs nothing,
+		# so an unguarded set_minus against an empty set dumps its whole owned set
+		# into removals.
+		if [ "$RESET_ON_BOOT" = true ] && has_carrier "$trunk" && [ -n "$detected_ids" ]; then
 			removals_ids=$(set_minus "$owned_ids" "$detected_ids")
 			all_removals="$all_removals $(tag_tokens "$trunk" "$removals_ids")"
 		fi
