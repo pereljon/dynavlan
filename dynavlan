@@ -375,6 +375,21 @@ tokens_for_iface() {
 	emit_tokens $out
 }
 
+drop_iface_tokens() { # TOKENS "IFACE..." -> TOKENS minus every token on a listed iface
+	local toks="$1" ifaces="$2" tok out=""
+	[ -z "$ifaces" ] && {
+		emit_tokens $toks
+		return 0
+	}
+	for tok in $toks; do
+		case " $ifaces " in
+		*" ${tok%.*} "*) continue ;;
+		esac
+		out="$out $tok"
+	done
+	emit_tokens $out
+}
+
 distinct_ifaces() {
 	local toks="$1" tok out=""
 	for tok in $toks; do out="$out ${tok%.*}"; done
@@ -1448,6 +1463,7 @@ do_boot() {
 		[ "$RESET_ON_BOOT" = true ] && run_detection 2>/dev/null
 
 		local routing_ok=unknown   # have_routing evaluated at most once, lazily
+		local pruned_ifaces=""     # trunks confirmed dead: their additions are stale
 		for trunk in $all_trunks; do
 			local p1 p2 c1 c2=down owned_on_trunk owned_ids removals_ids
 			eval "p1=\"\${_p1_${trunk//[^a-zA-Z0-9]/_}}\""
@@ -1490,12 +1506,24 @@ do_boot() {
 			fi
 			removals_ids=$(carrier_removals "$owned_ids" "$c1" "$c2")
 			all_removals="$all_removals $(tag_tokens "$trunk" "$removals_ids")"
+			pruned_ifaces="$pruned_ifaces $trunk"
 			log notice "trunk $trunk: carrier down across both samples; removing all owned VLANs on it [$removals_ids]"
 		done
 	fi
 
 	all_additions=$(emit_tokens $all_additions)
 	all_removals=$(emit_tokens $all_removals)
+	# Additions were computed from pass-1 tags, before the carrier verdict. A trunk
+	# that was detected and then went dead would otherwise have new VLANs CREATED on
+	# it in the same apply that tears its old ones down - they can never lease, they
+	# stall wait_leases, and they trigger a pointless agent restart. Drop them.
+	if [ -n "$pruned_ifaces" ]; then
+		local kept_additions dropped
+		kept_additions=$(drop_iface_tokens "$all_additions" "$pruned_ifaces")
+		dropped=$(set_minus "$all_additions" "$kept_additions")
+		[ -n "$dropped" ] && log info "dropping additions on carrier-down trunk(s) [${pruned_ifaces# }]: [$dropped]"
+		all_additions="$kept_additions"
+	fi
 	warn_overlap "$owned"
 
 	if [ -z "$all_additions" ] && [ -z "$all_removals" ]; then
@@ -1521,7 +1549,7 @@ do_rescan() {
 		return 0
 	fi
 
-	local owned owned_ifaces trunk all_additions="" all_removals=""
+	local owned owned_ifaces trunk all_additions="" all_removals="" pruned_ifaces=""
 	owned=$(backend_owned_vlans)
 	owned_ifaces=$(distinct_ifaces "$owned")
 
@@ -1569,6 +1597,7 @@ do_rescan() {
 					removals_ids=$(carrier_removals "$owned_ids" down "$c2")
 					if [ -n "$removals_ids" ]; then
 						all_removals="$all_removals $(tag_tokens "$trunk" "$removals_ids")"
+						pruned_ifaces="$pruned_ifaces $trunk"
 						log notice "rescan: trunk $trunk carrier down across both samples; removing [$removals_ids]"
 					else
 						log info "rescan: trunk $trunk carrier recovered during the settle; preserving owned VLANs"
@@ -1582,6 +1611,17 @@ do_rescan() {
 
 	all_additions=$(emit_tokens $all_additions)
 	all_removals=$(emit_tokens $all_removals)
+	# Additions came from the sniff, which filtered carrier once at its start and
+	# then ran for SNIFF_SECONDS; a trunk that died mid-sniff kept its tags and is
+	# still in DETECTED_TRUNKS. Without this it would gain new VLANs in the very
+	# apply that tears its old ones down. See the matching guard in do_boot.
+	if [ -n "$pruned_ifaces" ]; then
+		local kept_additions dropped
+		kept_additions=$(drop_iface_tokens "$all_additions" "$pruned_ifaces")
+		dropped=$(set_minus "$all_additions" "$kept_additions")
+		[ -n "$dropped" ] && log info "rescan: dropping additions on carrier-down trunk(s) [${pruned_ifaces# }]: [$dropped]"
+		all_additions="$kept_additions"
+	fi
 	if [ -z "$all_additions" ] && [ -z "$all_removals" ]; then
 		log info "rescan: no changes (owned=[${owned:-none}]); zero applies/restarts"
 		return 0

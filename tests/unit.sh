@@ -780,6 +780,32 @@ call set_minus "$_owned" "$_rm_all"
 ok "1t full teardown leaves an empty target" ""
 
 # ---------------------------------------------------------------------------
+# 1w. drop_iface_tokens - strip additions on a trunk confirmed carrier-down.
+#     Additions are computed from tags sniffed before the carrier verdict, so a
+#     trunk that dies mid-sniff would otherwise gain new VLANs in the same apply
+#     that tears its old ones down (they can never lease).
+# ---------------------------------------------------------------------------
+
+_adds="enp1s0.100 enp1s0.21 enp2s0.40"
+
+call drop_iface_tokens "$_adds" "enp2s0"
+ok "1w drops the dead trunk's additions" "enp1s0.100 enp1s0.21"
+call drop_iface_tokens "$_adds" "enp1s0"
+ok "1w drops the other trunk's additions" "enp2s0.40"
+call drop_iface_tokens "$_adds" "enp1s0 enp2s0"
+ok "1w every trunk dead -> no additions" ""
+call drop_iface_tokens "$_adds" ""
+ok "1w no dead trunks -> unchanged" "enp1s0.100 enp1s0.21 enp2s0.40"
+call drop_iface_tokens "$_adds" "enp9s0"
+ok "1w unrelated trunk -> unchanged" "enp1s0.100 enp1s0.21 enp2s0.40"
+call drop_iface_tokens "" "enp1s0"
+ok "1w empty additions -> empty" ""
+
+# Prefix collision: enp1s0 must not match enp1s0b's tokens.
+call drop_iface_tokens "enp1s0.18 enp1s0b.18" "enp1s0"
+ok "1w iface match is exact, not a prefix" "enp1s0b.18"
+
+# ---------------------------------------------------------------------------
 # 1u. Mixed-trunk removal composition (FR-41 + FR-23).
 #
 # One trunk contributes a detection-diff removal (carrier UP, VLAN gone from
