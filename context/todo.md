@@ -142,6 +142,17 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
       Domotz box (add keyring + `.sources` -> `apt update` fetches signed index -> `apt-cache
       policy` resolves the repo candidate -> `apt install --only-upgrade dynavlan` correctly
       reports already-current, since this republish carried no new dynavlan version).
+      FOLLOW-UP genuine fresh-install test (same session): `sudo apt remove --purge dynavlan`
+      then `sudo apt install dynavlan` on the Domotz box - confirmed the `.deb` was actually
+      fetched live from `pereljon.github.io/dynavlan` (not a cache hit), unpacked, and
+      installed; `dynavlan --version` reported a clean `(build 2faa749)` with no `-dirty`
+      suffix (the exact commit `v0.4.0` was retagged at), confirming FR-38 build identity
+      survives the apt path end-to-end. Config/units all landed fresh with correct
+      timestamps; `dynavlan.service`/`.timer` enabled but `inactive` (never `--now`); all 14
+      VLAN interfaces across both trunks (`enp1s0`/`enp2s0`) and the generated
+      `/etc/netplan/90-dynavlan.yaml` were untouched by the purge+reinstall cycle, confirming
+      dpkg remove/purge never touches the owned netplan file or running network state
+      (`debian/prerm`/`postrm` only stop the timer and clean up config/journald - by design).
       `test-box-access` memory updated: upgrades on that box now go via `apt upgrade`.
 
 ## Completed: restart-on-new-subnet (v0.3.0) - RELEASED
