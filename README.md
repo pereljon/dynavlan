@@ -126,6 +126,19 @@ dynavlan is built for boxes that may be remote, headless, or unattended, where a
 
 A bad apply can drop an SSH session, so if possible, run the first `--boot` with an out-of-band fallback (serial console, IPMI, or physical access). If that is not available, `--dry-run` previews the change without applying it, and exits non-zero if the candidate config fails validation, so it doubles as a scripted pre-flight check.
 
+## Report your setup
+
+dynavlan makes no vendor assumptions: it reads live 802.1Q tags off the wire (primary) and LLDP where a switch advertises the VLAN table (supplement). Detection is validated on Meraki and UniFi edge switches; the core switch and upstream firewall/router do not affect detection (LLDP is single-hop, so only the directly-attached edge switch matters, and 802.1Q tagging is a standard).
+
+If dynavlan works on your gear, a short report helps confirm the range of switches it covers. Please [open an issue](https://github.com/pereljon/dynavlan/issues) with:
+
+- **Edge switch** (the one the box plugs into): vendor and model.
+- **Detection**: did LLDP advertise the tagged VLANs, or did sniff carry it? (`dynavlan --status` shows what was detected; set `LOG_LEVEL=debug` to see per-method results.)
+- **Scale**: number of VLANs detected, and `SNIFF_SECONDS` if you changed it.
+- **Environment**: `dynavlan --version`, `netplan --version`, and the NIC driver (`ethtool -i <iface>`).
+
+No MACs, hostnames, or subnets are needed. A "didn't work" report is just as useful as a success.
+
 ## Documentation
 
 | File | Purpose |
