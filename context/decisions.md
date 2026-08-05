@@ -7,6 +7,11 @@ Entry format:
 Why: <reasoning>
 Rejected: <option turned down, if any>
 
+## 2026-08-05 - Remove the reserved PER_VLAN_MAC config key (reverses D5 reserve+document)
+Why: reviewing the open questions before the 1.0 config-surface freeze, the operator asked why a config key exists with no feature behind it. `PER_VLAN_MAC` was a PRD-reserved key (FR-15) introduced in the v0.1.0 implementation and never implemented: `load_config` only ever refused `true`. A key whose sole behavior is to refuse itself is dead surface, and freezing it into the 1.0 contract (with the deprecate-with-warning removal cost that attaches after 1.0) is worse than removing it now while still pre-1.0. Design principle "no speculative surface until a real second case exists" applies: reserving a name for an unbuilt feature is speculative. Per-VLAN MAC derivation stays a post-1.0 item (G-4); any implementation reintroduces its own key. Removed 0.4.2 -> 0.4.3: dropped from CONFIG_KEYS, defaults, validation; template + PRD FR-15/R-3 + v1.0-def + design-doc updated; `debian/postinst` gained an idempotent migration that comments out an uncommented `PER_VLAN_MAC=` line in an existing conffile, so the removal (with H2 parse-only allowlist refusing unknown keys) cannot make an upgraded box refuse its own config load.
+Reverses: D5 (2026-08-04, "reserve+document") in the gate-4 register - that pass cleaned up a four-way documentation contradiction and chose to keep the key reserved; this decision, with the freeze imminent and the operator's steer, removes it instead. G-4 open question closed as removed-not-deferred.
+Rejected: keeping it reserved (my initial recommendation once I found D5) - operator's call was that a flag with no feature should not survive into the frozen surface.
+
 ## 2026-07-14 - Deployment procedure captured from the internal deployment runbook
 Why: the internal deployment runbook is the source of truth for the Protectli/Ubuntu Domotz provisioning runbook; captured here as docs/deployment-guide.md so it's versioned and can drift-check against the live internal runbook.
 Rejected: n/a

@@ -22,6 +22,15 @@ JEOF
         fi
     done
 
+    # Migration: PER_VLAN_MAC was a reserved, never-implemented key, removed in
+    # 0.4.3. It is no longer allowlisted, so an uncommented PER_VLAN_MAC= line in
+    # an existing conffile would now refuse the whole config load (fail-to-no-op).
+    # Neutralize any such line in place. Idempotent; a stock (commented) template
+    # and a fresh install are unaffected.
+    if [ -f /etc/dynavlan.conf ]; then
+        sed -i -E 's/^([[:space:]]*)(PER_VLAN_MAC[[:space:]]*=)/\1# (removed in 0.4.3) \2/' /etc/dynavlan.conf
+    fi
+
     # Reload units and render timer interval
     systemctl daemon-reload
     /usr/local/sbin/dynavlan --reconfigure 2>/dev/null || true

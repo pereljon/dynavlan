@@ -216,4 +216,4 @@ Through v0.3.0, a trunk going carrier-down was treated identically to a tagless-
 ## 13. Deferred open items (see context/open_questions.md)
 
 - IR-1: exact minimum netplan version (pinned conservatively at 0.106; possible later relaxation).
-- G-4: per-VLAN MAC derivation function (only needed if `PER_VLAN_MAC` is enabled; default off).
+- G-4: per-VLAN MAC derivation function (post-1.0; the reserved `PER_VLAN_MAC` key was removed in 0.4.3, would be reintroduced by any implementation).

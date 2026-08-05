@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.2"
+ver="0.4.3"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -468,7 +468,7 @@ CONFIG_KEYS="DETECT_METHOD VLAN_MIN VLAN_MAX VLAN_IGNORE VLAN_WARN VLAN_LIMIT \
 VLAN_LIMIT_MODE SNIFF_SECONDS BOOT_SETTLE_SECONDS CARRIER_WAIT_SECONDS \
 LEASE_SETTLE_SECONDS RESCAN_MINUTES RESET_ON_BOOT REMOVE_ON_CARRIER_LOSS \
 VLAN_ROUTES VLAN_ROUTE_METRIC_START RESTART_SNAPS RESTART_SERVICES LOG_LEVEL \
-BACKUP_KEEP PER_VLAN_MAC RESTART_ON_NEW_SUBNET"
+BACKUP_KEEP RESTART_ON_NEW_SUBNET"
 
 config_allowed_key() { # KEY -> 0 if it is a documented config key
 	in_list "$1" "$CONFIG_KEYS"
@@ -540,7 +540,6 @@ load_config() {
 	RESTART_SERVICES=""
 	LOG_LEVEL=info
 	BACKUP_KEEP=10
-	PER_VLAN_MAC=false
 	RESTART_ON_NEW_SUBNET=true
 
 	if [ -f "$CONF_FILE" ]; then
@@ -651,14 +650,6 @@ load_config() {
 		log err "invalid BACKUP_KEEP=$BACKUP_KEEP (integer >= 1)"
 		return 1
 	}
-	in_list "$PER_VLAN_MAC" "true false" || {
-		log err "invalid PER_VLAN_MAC=$PER_VLAN_MAC"
-		return 1
-	}
-	if [ "$PER_VLAN_MAC" = true ]; then
-		log err "PER_VLAN_MAC=true is not implemented in this version (G-4 open); set false"
-		return 1
-	fi
 	in_list "$RESTART_ON_NEW_SUBNET" "true false" || {
 		log err "invalid RESTART_ON_NEW_SUBNET=$RESTART_ON_NEW_SUBNET"
 		return 1

@@ -520,6 +520,7 @@ call config_allowed_key TRY_TIMEOUT;    err "1z safety constant refused"
 call config_allowed_key ver;            err "1z build-identity var refused"
 call config_allowed_key PATH;           err "1z PATH refused"
 call config_allowed_key VLAN_MINN;      err "1z typo'd key refused"
+call config_allowed_key PER_VLAN_MAC;   err "1z removed PER_VLAN_MAC key refused (0.4.3)"
 
 call config_normalize_value '5   # id floor';          ok "1z unquoted + inline comment"     "5"
 call config_normalize_value '"domotz agent"   # snap'; ok "1z quoted value keeps inner space" "domotz agent"

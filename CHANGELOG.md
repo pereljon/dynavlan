@@ -2,6 +2,17 @@
 
 Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle that section to `## [x.y.z] - YYYY-MM-DD`.
 
+## Unreleased
+
+### Removed
+
+- `PER_VLAN_MAC` config key. It was reserved but never implemented: the only
+  thing it ever did was refuse `true`. Rather than freeze that dead surface
+  into the 1.0 config contract, it is removed. Per-VLAN MAC derivation stays a
+  post-1.0 item (G-4); any future implementation adds its own key. `debian/postinst`
+  neutralizes an uncommented `PER_VLAN_MAC=` line in an existing conffile on
+  upgrade, so the removal cannot make a box refuse its own config. (`ver=` 0.4.2 -> 0.4.3.)
+
 ## [0.4.2] - 2026-08-05
 
 ### Added
