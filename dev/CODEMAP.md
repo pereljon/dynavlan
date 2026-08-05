@@ -15,7 +15,7 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 | `carrier_removals` | FR-41: full owned-on-trunk set if BOTH carrier samples are "down", else empty (dead-trunk full teardown, not a diff) | 1r |
 | `health_check_eval` | PASS iff the lowest-metric post-apply default egresses the snapshot iface (iface only; "" snap = PASS) | 1c |
 | `vlan_guard` | Count gate verdict: OVER (> limit, 0 = unlimited) / WARN (> warn) / OK | 1f |
-| `limit_fill` | Lowest-N subset of additions for fill mode (deterministic across a fleet) | 1f |
+| `limit_fill` | Lowest-N subset of additions for fill mode by NUMERIC vlan id, iface tie-break (deterministic across a fleet; M7) | 1f |
 | `assign_route_metrics` | FR-37 iface.id:metric map: kept tokens verbatim + next-free ascending metric for new tokens (discovery order, the only mode) | 1g |
 | `map_filter` | Keep only listed tokens' entries of a token:metric map (drops removed VLANs' metrics) | 1g |
 | `map_ids` | Tokens (keys) of a token:metric map, as a sorted set | 1g |
@@ -30,10 +30,11 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 
 | function | one-line purpose |
 |----------|------------------|
-| `emit_tokens` | Sorted de-duplicated space-separated token set (the token-domain counterpart of `emit_set`) |
+| `emit_tokens` | Sorted (lexical) de-duplicated space-separated token set (the token-domain counterpart of `emit_set`) |
+| `sort_tokens_by_id` | Deduped token set ordered by NUMERIC vlan id then iface (`sort -t. -k2,2n -k1,1`); the fill-selection order (M7) |
 | `tok_iface` | Token -> its iface part (strip trailing `.id`) |
 | `tok_id` | Token -> its id part (strip leading `iface.`) |
-| `tag_tokens` | IFACE + bare-id set -> `iface.id` tokens |
+| `tag_tokens` | IFACE + bare-id set -> `iface.id` tokens; DROPS any name > 15 chars (IFNAMSIZ, H6) with a warning - the sole choke point, so all modes see a legal set |
 | `untag_tokens` | Token set -> bare-id set (strips the iface part; used when a caller needs ids on one trunk) |
 | `tokens_for_iface` | Token set filtered to one iface's tokens |
 | `drop_iface_tokens` | Token set minus every token on any listed iface (tests 1w). Used to discard additions on a trunk confirmed carrier-down, since additions are computed from tags sniffed before the carrier verdict |
@@ -71,8 +72,9 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 
 | function | one-line purpose |
 |----------|------------------|
-| `discover_phys_ifaces` | Live physical Ethernet NICs from /sys/class/net (device symlink, ARPHRD_ETHER, not wireless, safe charset) |
-| `tags_var` / `iface_tags` | Sanitized per-iface tag-stash variable name and its reader (no eval injection surface) |
+| `discover_phys_ifaces` | Live physical Ethernet NICs from /sys/class/net (device symlink, ARPHRD_ETHER, not wireless, charset `[A-Za-z0-9_-]` - `.` refused as it aliases the VLAN separator, M1) |
+| `iface_key` | IFACE -> injective, shell-identifier-safe key (hex-escapes each non-alnum byte). Backs `tags_var` + the boot carrier stashes so `enp-1`/`enp_1` never collide (M1) |
+| `tags_var` / `iface_tags` | Per-iface tag-stash variable name (via `iface_key`, injective) and its reader (no eval injection surface) |
 | `prep_iface` / `has_carrier` | Admin-up + promisc on; carrier probe |
 | `detect_sniff` | Passive 802.1Q capture, INBOUND ONLY (`-Q in`, FR-5a: our own egress is not evidence); minimal snaplen, no disk → VLAN ids |
 | `lldp_tagged_vlans` | Pure: tagged VLAN ids from `lldpctl -f keyvalue` text; drops the native VLAN (`pvid=yes`), stateful adjacency parse (FR-7a) |

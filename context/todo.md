@@ -27,8 +27,9 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 
 ## Outstanding (see `context/index.md` SESSION HANDOFF for detail)
 
-- [ ] Gate-4 Codex review backlog (register groups 4-5): H6/M7/M1 (pre-freeze contract decisions), then H1/H4/H5 + M2/M4/M5/M6/M8 robustness + the state-machine test harness, then P1-P3, HV-1. Faithful C1 positive-refusal HW test deferred (needs switch access). Full register: `docs/superpowers/plans/2026-08-04-v1.0-gate4-review-fixes.md`.
+- [ ] Gate-4 Codex review backlog (register groups 4-5). GROUP 4 (pre-freeze contract decisions) DECIDED + CODE-COMPLETE 2026-08-05 as ver 0.4.4 (H6 refuse over-IFNAMSIZ names + document/defer generated short-names; M1 refuse `.` + injective `iface_key`; M7 `fill` selects lowest NUMERIC id; 224 unit tests, 0 failures) - H6 not yet HW-validated (Protectli uses short `enp` names). GROUP 5 remaining: H1/H4/H5 + M2/M4/M5/M6/M8 robustness + the state-machine test harness, then P1-P3, HV-1. Faithful C1 positive-refusal HW test deferred (needs switch access). Full register: `docs/superpowers/plans/2026-08-04-v1.0-gate4-review-fixes.md`.
 - [ ] Upgrade the Protectli box from its 0.4.2 `build source` test build to the released packaged 0.4.2 (`sudo apt update && sudo apt upgrade`) - operator will do when ready.
+- [ ] Review + implement the `--report` command (redaction-first diagnostic bundle for crowdsourcing edge-switch LLDP coverage). Design DONE + committed locally (git-excluded): `docs/superpowers/specs/2026-08-05-report-command-design.md`. Next: operator reviews the spec, then `writing-plans` -> implement (ver 0.4.3 -> 0.5.0, new `--report` CLI mode, no new config key). Parked 2026-08-05 to continue the gate-4 Codex backlog.
 
 ## Completed milestones
 

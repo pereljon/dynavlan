@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.3"
+ver="0.4.4"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -193,18 +193,19 @@ vlan_guard() {
 }
 
 # limit_fill ADDITIONS SLOTS
-#   FR-36 fill mode subset: the SLOTS lowest tokens from ADDITIONS (deterministic:
-#   lowest-first, so every box on the same trunk picks the same subset).
-#   SLOTS <= 0 yields the empty set.
+#   FR-36 fill mode subset: the SLOTS lowest-NUMERIC-id tokens from ADDITIONS
+#   (deterministic: lowest VLAN id first, interface name as tie-break, so every box
+#   picks the same subset). SLOTS <= 0 yields the empty set. Selecting by numeric id
+#   (not lexical token order) matches the documented "lowest IDs" contract (M7).
 limit_fill() {
 	local adds="$1" slots="$2" tok out="" n=0
 	[ "$slots" -le 0 ] && return 0
-	for tok in $(emit_tokens $adds); do
+	for tok in $(sort_tokens_by_id $adds); do
 		out="$out $tok"
 		n=$((n + 1))
 		[ "$n" -ge "$slots" ] && break
 	done
-	emit_tokens $out
+	sort_tokens_by_id $out
 	return 0
 }
 
@@ -359,9 +360,26 @@ emit_tokens() {
 tok_iface() { printf '%s' "${1%.*}"; }
 tok_id()    { printf '%s' "${1##*.}"; }
 
+sort_tokens_by_id() { # TOKENS -> deduped, ordered by numeric VLAN id then interface (FR-36)
+	# `.` cannot appear in an interface name (refused at discovery), so each token
+	# has exactly one `.`: field 1 = iface, field 2 = id. Key on id numeric, then iface.
+	[ -z "$*" ] && return 0
+	printf '%s\n' "$@" | sort -u -t. -k2,2n -k1,1 | tr '\n' ' ' | sed 's/ $//'
+}
+
 tag_tokens() {
-	local iface="$1" ids="$2" id out=""
-	for id in $ids; do out="$out ${iface}.${id}"; done
+	local iface="$1" ids="$2" id out="" dropped=""
+	for id in $ids; do
+		# H6: an interface name over IFNAMSIZ (15) is illegal; the kernel would
+		# reject the apply. Drop it here (the sole iface.id constructor), so boot,
+		# rescan, dry-run preview and the count gate all agree on a legal set.
+		if [ "$((${#iface} + 1 + ${#id}))" -gt 15 ]; then
+			dropped="$dropped ${iface}.${id}"
+			continue
+		fi
+		out="$out ${iface}.${id}"
+	done
+	[ -n "$dropped" ] && log warning "interface name exceeds the 15-char kernel limit (IFNAMSIZ); not provisioning:${dropped} - rename the parent NIC shorter, or see the documented limitation"
 	emit_tokens $out
 }
 
@@ -745,8 +763,12 @@ discover_phys_ifaces() { # live physical Ethernet NICs, never hardcoded, never f
 		# Discovered names feed shell variable construction, YAML, and ip commands:
 		# constrain to a safe charset rather than trusting the kernel/udev namespace.
 		case "$name" in
-		*[!A-Za-z0-9_.-]*)
-			log warning "skipping interface with unexpected name characters: $name"
+		*[!A-Za-z0-9_-]*)
+			# `.` is refused: it is dynavlan's own <parent>.<id> VLAN separator, so a
+			# dotted parent name cannot round-trip in owned-state (M1). `-`/`_` are kept
+			# (a dash-renamed trunk is a plausible admin choice) and handled injectively
+			# by iface_key. Standard predictable/legacy NIC names contain none of these.
+			log warning "skipping interface with unsupported name characters (only letters, digits, '-', '_'): $name"
 			continue
 			;;
 		esac
@@ -754,8 +776,27 @@ discover_phys_ifaces() { # live physical Ethernet NICs, never hardcoded, never f
 	done
 }
 
-tags_var() { # IFACE -> per-iface tag-stash variable name (sanitized: no eval injection surface)
-	printf 'TAGS_%s' "${1//[^A-Za-z0-9_]/_}"
+iface_key() { # IFACE -> injective, shell-identifier-safe key (M1)
+	# Hex-escape every non-alnum byte (`-`->`_2d`, `_`->`_5f`, ...) so distinct
+	# names never alias to one key. This feeds eval (tags_var + the boot carrier
+	# stashes), so it must neutralize independently of the discovery charset, not
+	# lossily collapse punctuation to `_` (which made enp-1/enp_1/enp.1 collide).
+	local s="$1" out="" i c hx
+	for ((i = 0; i < ${#s}; i++)); do
+		c="${s:i:1}"
+		case "$c" in
+		[A-Za-z0-9]) out="$out$c" ;;
+		*)
+			printf -v hx '_%02x' "'$c"
+			out="$out$hx"
+			;;
+		esac
+	done
+	printf '%s' "$out"
+}
+
+tags_var() { # IFACE -> per-iface tag-stash variable name (injective; no eval injection surface)
+	printf 'TAGS_%s' "$(iface_key "$1")"
 }
 
 prep_iface() { # IFACE - set admin-up + promisc (no wait; carrier waited separately)
@@ -1544,11 +1585,11 @@ do_boot() {
 		additions_ids=$(compute_candidates "$detected_ids" "$VLAN_MIN" "$VLAN_MAX" "$IGNORE_SET" "$managed" "$owned_ids")
 		all_additions="$all_additions $(tag_tokens "$trunk" "$additions_ids")"
 
-		eval "_p1_${trunk//[^a-zA-Z0-9]/_}=\"\$detected_ids\""
+		eval "_p1_$(iface_key "$trunk")=\"\$detected_ids\""
 
 		local c1=down
 		has_carrier "$trunk" && c1=up
-		eval "_c1_${trunk//[^a-zA-Z0-9]/_}=\"\$c1\""
+		eval "_c1_$(iface_key "$trunk")=\"\$c1\""
 		if [ "$c1" = down ] && [ -n "$owned_on_trunk" ]; then
 			any_owned_down=true
 		fi
@@ -1583,8 +1624,8 @@ do_boot() {
 		local pruned_ifaces=""     # trunks confirmed dead: their additions are stale
 		for trunk in $all_trunks; do
 			local p1 p2 c1 c2=down owned_on_trunk owned_ids removals_ids
-			eval "p1=\"\${_p1_${trunk//[^a-zA-Z0-9]/_}}\""
-			eval "c1=\"\${_c1_${trunk//[^a-zA-Z0-9]/_}}\""
+			eval "p1=\"\${_p1_$(iface_key "$trunk")}\""
+			eval "c1=\"\${_c1_$(iface_key "$trunk")}\""
 			owned_on_trunk=$(tokens_for_iface "$owned" "$trunk")
 			owned_ids=$(untag_tokens "$owned_on_trunk")
 			has_carrier "$trunk" && c2=up

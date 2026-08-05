@@ -79,10 +79,13 @@ Removed in the all-trunks redesign: there is no longer a single selected trunk, 
 
 | limit_fill: additions / slots | Expected |
 |---|---|
-| "1 5 9 20" / 2 | {1,5} (lowest-N, deterministic) |
-| "9 1 5" / 2 | {1,5} (sorts before cutting) |
-| "1 5 9" / 0 | {} |
-| "1 5" / 10 | {1,5} |
+| "eth0.1 eth0.5 eth0.9 eth0.20" / 2 | {eth0.1,eth0.5} (lowest NUMERIC id, not lexical {1,20}; M7) |
+| "eth0.2 eth0.10 eth0.100" / 2 | {eth0.2,eth0.10} (numeric-vs-lexical discriminator) |
+| "enp2s0.18 enp1s0.100 enp1s0.21" / 2 | {enp2s0.18,enp1s0.21} (lowest numeric id across trunks, iface tie-break) |
+| "eth0.9 eth0.1 eth0.5" / 2 | {eth0.1,eth0.5} (sorts before cutting) |
+| "eth0.1 eth0.5 eth0.9" / 0 | {} |
+| "eth0.1 eth0.5" / 10 | {eth0.1,eth0.5} |
+| sort_tokens_by_id "enp2s0.10 enp1s0.2 enp1s0.100" | enp1s0.2 enp2s0.10 enp1s0.100 (numeric id, then iface) |
 
 ### 1g. `assign_route_metrics` + `map_filter` + `metric_conflict` (FR-37 routed mode, `iface.id` token keys)
 
@@ -226,6 +229,10 @@ These convert between the token domain (`iface.id`, every set downstream of dete
 | `tok_iface "enp1s0.100"` | `enp1s0` (split on the LAST dot) |
 | `tok_id "enp1s0.100"` | `100` |
 | `tag_tokens enp1s0 "18 21"` | `enp1s0.18 enp1s0.21` |
+| `tag_tokens enx001122334455 "100"` | `` (empty - 19 chars > IFNAMSIZ 15, dropped with a warning; H6) |
+| `tag_tokens aaaaaaaaaaaaa "1 100"` | `aaaaaaaaaaaaa.1` (.1 = 15 ok, .100 = 17 dropped; H6) |
+| `iface_key enp1s0` / `wan-uplink` / `wan_uplink` | `enp1s0` / `wan_2duplink` / `wan_5fuplink` (injective; no aliasing; M1) |
+| `tags_var wan-uplink` vs `tags_var wan_uplink` | `TAGS_wan_2duplink` vs `TAGS_wan_5fuplink` (distinct; M1) |
 | `untag_tokens "enp1s0.18 enp2s0.18"` | `18` (dedup: same bare id from two trunks collapses to one when queried without iface scope - the reason bare ids are never used as a cross-trunk key) |
 | `tokens_for_iface "enp1s0.18 enp2s0.18 enp1s0.21" enp1s0` | `enp1s0.18 enp1s0.21` |
 | `distinct_ifaces "enp1s0.18 enp2s0.18 enp1s0.21"` | `enp1s0 enp2s0` (sorted, deduped) |

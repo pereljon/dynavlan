@@ -45,7 +45,7 @@ dynavlan also restarts those targets when a new IPv4 subnet simply *appears* on 
 - root
 - `tcpdump` when sniff detection is enabled (default), `lldpd`/`lldpctl` for LLDP detection
 
-No dependency on NIC names, native VLAN, switch vendor, or the contents/filenames of any base netplan config.
+No dependency on NIC names, native VLAN, switch vendor, or the contents/filenames of any base netplan config. (One naming caveat: a NIC whose name plus the `.<vlan-id>` suffix would exceed the kernel's 15-char limit - e.g. a MAC-derived `enx001122334455` - has those VLANs skipped with a warning rather than provisioned into a name the kernel rejects; short standard names like `enp1s0`/`eth0` are unaffected.)
 
 ## Install
 

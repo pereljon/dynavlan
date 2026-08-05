@@ -4,6 +4,24 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ## Unreleased
 
+### Fixed
+
+- `VLAN_LIMIT_MODE=fill` now keeps the lowest-**numeric**-id VLANs, matching the
+  documented "lowest IDs" contract. It previously selected by lexicographic token
+  order, so with VLANs 2/10/100 it kept 10 and 100 before 2 (gate-4 M7). (`ver=`
+  0.4.3 -> 0.4.4.)
+- A physical NIC whose name plus the `.<vlan-id>` suffix would exceed the 15-char
+  kernel limit (IFNAMSIZ) - e.g. the MAC-derived `enx001122334455` - is no longer
+  provisioned into an interface the kernel would reject; the over-long VLANs are
+  skipped with a warning naming them (gate-4 H6). Full support for such NICs via
+  generated short names is a post-1.0 item.
+- Interface names containing `.` are refused at discovery (a dotted parent is
+  ambiguous with dynavlan's own `<parent>.<id>` VLAN separator and could not
+  round-trip in owned-state, provisioning once then vanishing). `-`/`_` remain
+  supported and are now handled by an injective interface-key map, so names like
+  `enp-1`/`enp_1` no longer alias to one another (gate-4 M1). Standard predictable
+  and legacy NIC names are unaffected (they contain none of these characters).
+
 ### Removed
 
 - `PER_VLAN_MAC` config key. It was reserved but never implemented: the only

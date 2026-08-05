@@ -188,10 +188,14 @@ call vlan_guard 70 32 0;   ok "1f unlimited -> WARN not OVER"       "WARN"
 call vlan_guard 5  32 0;   ok "1f unlimited under warn -> OK"       "OK"
 call vlan_guard 20 32 10;  ok "1f limit below warn still fires"     "OVER"
 
-call limit_fill "eth0.1 eth0.5 eth0.9 eth0.20" 2;  ok "1f fill lowest-2"     "eth0.1 eth0.20"
+# M7: fill keeps the lowest NUMERIC ids (not lexical); output in numeric order
+call limit_fill "eth0.1 eth0.5 eth0.9 eth0.20" 2;   ok "1f fill lowest-2 numeric (not eth0.20)" "eth0.1 eth0.5"
+call limit_fill "eth0.2 eth0.10 eth0.100" 2;        ok "1f fill numeric vs lexical discriminator" "eth0.2 eth0.10"
 call limit_fill "eth0.9 eth0.1 eth0.5" 2;     ok "1f fill sorts before cut"        "eth0.1 eth0.5"
 call limit_fill "eth0.1 eth0.5 eth0.9" 0;     ok "1f fill zero slots -> empty"     ""
 call limit_fill "eth0.1 eth0.5" 10;            ok "1f fill slots exceed adds"       "eth0.1 eth0.5"
+# lowest numeric id globally, interface name as tie-break
+call sort_tokens_by_id "enp2s0.10" "enp1s0.2" "enp1s0.100"; ok "1f sort_tokens_by_id numeric-then-iface" "enp1s0.2 enp2s0.10 enp1s0.100"
 
 # ---------------------------------------------------------------------------
 # 1g. assign_route_metrics / metric_conflict - VLAN_ROUTES metric assignment
@@ -668,6 +672,18 @@ call tag_tokens "enp1s0" "18 21 100"; ok "1n tag_tokens prefixes iface" "enp1s0.
 call tag_tokens "enp2s0" "18";        ok "1n tag_tokens single id"     "enp2s0.18"
 call tag_tokens "enp1s0" "";          ok "1n tag_tokens empty ids"     ""
 
+# H6: an iface.id name over IFNAMSIZ (15) is dropped (kernel would reject it)
+call tag_tokens "enx001122334455" "100";  ok "1n tag_tokens drops >15-char name (H6)"      ""
+call tag_tokens "aaaaaaaaaaaaa" "1 100";   ok "1n tag_tokens keeps <=15, drops >15 (H6)"    "aaaaaaaaaaaaa.1"
+call tag_tokens "enp0s31f6" "4094";        ok "1n tag_tokens keeps a 14-char name (H6)"     "enp0s31f6.4094"
+
+# M1: iface_key is injective across . - _ (no aliasing of distinct trunks)
+call iface_key "enp1s0";     ok "1n iface_key leaves alnum name unchanged"  "enp1s0"
+call iface_key "wan-uplink"; ok "1n iface_key escapes dash"                 "wan_2duplink"
+call iface_key "wan_uplink"; ok "1n iface_key escapes underscore"           "wan_5fuplink"
+call tags_var "wan-uplink";  ok "1n tags_var dash key"                      "TAGS_wan_2duplink"
+call tags_var "wan_uplink";  ok "1n tags_var underscore key (no alias)"     "TAGS_wan_5fuplink"
+
 call untag_tokens "enp1s0.18 enp2s0.18 enp1s0.100"; ok "1n untag_tokens extracts bare ids (deduped)" "18 100"
 call untag_tokens "";                                ok "1n untag_tokens empty -> empty"              ""
 
@@ -889,9 +905,9 @@ ok "1p multi-trunk metric assignment" "enp1s0.100:100 enp1s0.18:101 enp2s0.21:10
 call plan_route_metrics "enp1s0.18:100 enp2s0.21:101" "enp1s0.18 enp1s0.100 enp2s0.21" "enp1s0.100" 100
 ok "1p kept metrics preserved, new addition appended" "enp1s0.100:102 enp1s0.18:100 enp2s0.21:101"
 
-# limit_fill with tokens: lexicographic order
+# limit_fill with tokens: lowest NUMERIC id across trunks (M7), not lexical
 call limit_fill "enp2s0.18 enp1s0.100 enp1s0.21" 2
-ok "1p fill lowest-2 tokens (lexicographic)" "enp1s0.100 enp1s0.21"
+ok "1p fill lowest-2 by numeric id (18,21 not lexical 100,21)" "enp2s0.18 enp1s0.21"
 
 # count_ids counts tokens
 call count_ids "enp1s0.18 enp1s0.100 enp2s0.21"; ok "1p count_ids on tokens" "3"
