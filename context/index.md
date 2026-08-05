@@ -68,10 +68,30 @@ removal-only" need), and **C1** got a live **true-negative** (snap_iface=enp2s0,
 that IS the default being removed) still needs switch access and stays deferred. The box now runs 0.4.2
 (installed as the service binary, build source; apt metadata still 0.4.1 - restored on the next apt
 install; operator will reinstall from apt when ready); enp1s0 currently off (7 VLANs on enp2s0), timer
-active. NOT pushed yet (main ahead of origin: 4 fix/doc commits + more uncommitted docs).
-NEXT UP: commit the HW-validation docs, push main (user approval), then the 1.0.0 freeze+review; v1.0
-gates (1)+(2) done, remaining gates are multi-site validation and the freeze itself. A faithful C1
-positive-refusal HW test stays open for a switch-access opportunity (`context/open_questions.md`).
+active. **v0.4.2 RELEASED 2026-08-05** (tag `v0.4.2`, main pushed at `2a1880e`, GitHub release published
+on `pereljon/dynavlan`; the release workflow builds the `.deb` + updates the APT repo). CHANGELOG
+retitled `[0.4.2]`. The box still runs the 0.4.2 `build source` test build; now that v0.4.2 is released,
+`sudo apt update && sudo apt upgrade` on the box replaces it with the packaged 0.4.2 (operator will do
+this when ready). enp1s0 currently off by the operator (7 VLANs on enp2s0); re-enabling re-adds them.
+
+SESSION HANDOFF - NEXT UP (gate-4 review is NOT fully done; register groups 1-3 done, 4-5 remain):
+Read `docs/superpowers/plans/2026-08-04-v1.0-gate4-review-fixes.md` (the fix register) for full detail.
+Remaining Codex findings, in the register's suggested order:
+- **Group 4 - contract decisions the register wants BEFORE the 1.0 freeze:** H6 (15-char `enx<mac>`
+  iface names can't form a legal VLAN name - IFNAMSIZ; touches the generated-interface-name contract),
+  M7 (`VLAN_LIMIT_MODE=fill` selects lexicographic not lowest-numeric ids), M1 (punctuation in iface
+  names aliases state). These need a design call.
+- **Group 5 - robustness:** H1 (detector failures become partial evidence, can authorize removals,
+  off-Meraki), H4 (Debian upgrade proceeds after lock fail), H5 (sequential lease waits exceed systemd
+  timeouts, skip restart), M2/M4/M5/M6/M8, plus building the injected-command state-machine test harness
+  the register scopes.
+- **P1-P3** (netplan-try nonzero-exit-after-FIFO-write - my C2 backstop LOGS it but doesn't un-accept;
+  FIFO-EOF over-assertion; equal-metric health order-dependence) and **HV-1** (fresh apt install starts
+  the timer; pre-existing, `context/open_questions.md`).
+- **Deferred HW test:** faithful C1 POSITIVE refusal (routed VLAN that IS the default being removed)
+  needs switch access to set up (`context/open_questions.md`).
+Then the 1.0.0 freeze+review itself. v1.0 gates (1)+(2) done; remaining gates are multi-site validation
+and the freeze. START a fresh session for group 4 (session hygiene - this session is long).
 
 Before coding a change, read in order:
 4. dev/SKELETON.md - logic flow and key invariants

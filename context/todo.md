@@ -25,7 +25,14 @@ Commits on main since the all-trunks redesign (historical, through v0.2.1):
 
 Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 
+## Outstanding (see `context/index.md` SESSION HANDOFF for detail)
+
+- [ ] Gate-4 Codex review backlog (register groups 4-5): H6/M7/M1 (pre-freeze contract decisions), then H1/H4/H5 + M2/M4/M5/M6/M8 robustness + the state-machine test harness, then P1-P3, HV-1. Faithful C1 positive-refusal HW test deferred (needs switch access). Full register: `docs/superpowers/plans/2026-08-04-v1.0-gate4-review-fixes.md`.
+- [ ] Upgrade the Protectli box from its 0.4.2 `build source` test build to the released packaged 0.4.2 (`sudo apt update && sudo apt upgrade`) - operator will do when ready.
+
 ## Completed milestones
+
+- [x] v0.4.2 RELEASED (done 2026-08-05): Unit 3 pre-freeze blockers C2 (apply-evidence floor), H2 (config isolation), C1 (routed-mode default-route delete guard) + earlier M3/H3/H7; 213 unit tests; HW-validated on the Protectli box (C2 removal-only accept at 18.19s = floor-16; C1 live true-negative). Tagged `v0.4.2`, pushed, GitHub release published, `.deb`/APT built by Actions.
 
 - [x] All-trunks provisioner redesign (v0.2.0, done 2026-07-30)
 - [x] Hardware validation: L3-29 dual leasing, L3-30 carrier-pull preserve, L3-31 routed multi-trunk, L3-32 unified revert (done 2026-07-30)
