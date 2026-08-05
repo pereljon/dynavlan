@@ -144,7 +144,7 @@ After any code change, check whether these need updating:
 - `CHANGELOG.md` (new features, fixes, removals per release)
 - version in the `dynavlan` script (`ver=` variable) - see **Version and build identity** below
 - systemd units (`dynavlan.service`/`dynavlan-rescan.service`/`dynavlan.timer`) and `install.sh` if artifacts change
-- **When adding a config key**: default + `in_list`/range validation in `load_config`, a commented template entry in `dynavlan.conf` at its default, and the FR/config-surface section in `docs/dynavlan-PRD.md`.
+- **When adding a config key**: default + `in_list`/range validation in `load_config`, **the key added to the `CONFIG_KEYS` allowlist** (H2: config is parsed against that allowlist, so a key defaulted but not allowlisted would make its own config line refuse to run), a commented template entry in `dynavlan.conf` at its default, and the FR/config-surface section in `docs/dynavlan-PRD.md`. Removing a documented key later needs a `postinst` conffile migration (an old conffile still carrying it would otherwise refuse after upgrade).
 - **When adding a CLI mode/flag**: the dispatch in `main`, the Usage section in `README.md`, and the corresponding FR/AC in `docs/dynavlan-PRD.md`.
 
 When making multiple changes, consider logical ordering: some changes should come before others (e.g. move code before updating references to it; validate inputs before using them).

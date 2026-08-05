@@ -10,7 +10,7 @@ Bridges `docs/dynavlan-PRD.md` (v3.1, what/why) to implementation (how). The PRD
 | Timer interval | **static systemd timer + config-synced drop-in** | systemd timers are static files. `RESCAN_MINUTES` is materialized into `/etc/systemd/system/dynavlan.timer.d/interval.conf` by `dynavlan --reconfigure` (also run at install), followed by `systemctl daemon-reload`. Runtime edits to `RESCAN_MINUTES` require re-running `--reconfigure`. Avoids a self-rescheduling loop or a long-running daemon (PRD chose oneshot+timer). |
 | Two-pass boot removal state | **in-process, within the single `--boot` run** | FR-23: detect, sleep `BOOT_SETTLE_SECONDS`, detect again, remove only VLANs absent from both. Held in shell variables; no persistence, no cross-invocation state (rescan stays strictly add-only per FR-21). |
 | Network backend | **abstracted seam, netplan the only implementation** | See §4. Structure for portability without building multiple backends (that would be speculative). |
-| Config format | **shell-sourced `/etc/dynavlan.conf`** | Commented KEY=value; `source` after a strict validation pass. Matches the PRD schema (§8 there). |
+| Config format | **declaratively-parsed `/etc/dynavlan.conf`** | Commented KEY=value, parsed line-by-line against an allowlist of the documented keys - NEVER `source`d (H2, 2026-08-04). A config line can only set a documented key; an unknown/protected key or non-assignment line refuses to run, and values are inert literals (`printf -v`), so config can neither execute code nor override an internal/safety variable. Matches the PRD schema (§8 there). |
 
 ## 2. Architecture: two layers
 
@@ -58,7 +58,7 @@ A startup `backend_detect` (reads `/etc/os-release`, probes for `netplan`) is de
 | Function | Purpose (one line) |
 |----------|--------------------|
 | `main` | Parse mode flag (`--boot`/`--rescan`/`--dry-run`/`--status`/`--reconfigure`), acquire flock, dispatch |
-| `load_config` | Source `/etc/dynavlan.conf`, apply defaults, validate all values (refuse-to-run on bad) |
+| `load_config` | Apply defaults, then parse `/etc/dynavlan.conf` via `config_load_file` (allowlist-only, never sourced - H2), validate all values (refuse-to-run on bad) |
 | `parse_vlan_ignore` | Expand `VLAN_IGNORE` comma/space list with `low-high` ranges into a set |
 | `check_preconditions` | FR-0: root, netplan>=min + `netplan try` capability probe (non-mutating), deps for method |
 | `discover_phys_ifaces` | Live physical NICs from `/sys/class/net` (device symlink, type==1, exclude lo/wifi/vlan) |

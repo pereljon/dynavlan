@@ -502,6 +502,88 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 1z. Config isolation - parse-only allowlist (H2)
+#
+# load_config no longer SOURCES /etc/dynavlan.conf; config_load_file parses it
+# declaratively so a config line can NEVER execute code or assign an internal /
+# safety variable (NETPLAN_FILE, TRY_TIMEOUT, ver, PATH, ...). Only allowlisted
+# KEY=value lines are honored; any unknown/protected key or non-assignment line
+# refuses (non-zero, and a protected global is never written). Values are inert
+# literals (printf -v), so a $(...) in a value is a harmless string the value
+# validators reject later - proven here by asserting no side effect.
+# ---------------------------------------------------------------------------
+
+call config_allowed_key VLAN_MIN;       ok  "1z documented key allowed"           ""
+call config_allowed_key RESTART_SNAPS;  ok  "1z documented list key allowed"      ""
+call config_allowed_key NETPLAN_FILE;   err "1z internal name refused"
+call config_allowed_key TRY_TIMEOUT;    err "1z safety constant refused"
+call config_allowed_key ver;            err "1z build-identity var refused"
+call config_allowed_key PATH;           err "1z PATH refused"
+call config_allowed_key VLAN_MINN;      err "1z typo'd key refused"
+
+call config_normalize_value '5   # id floor';          ok "1z unquoted + inline comment"     "5"
+call config_normalize_value '"domotz agent"   # snap'; ok "1z quoted value keeps inner space" "domotz agent"
+call config_normalize_value '""';                      ok "1z empty quoted -> empty"          ""
+call config_normalize_value 'both';                    ok "1z bare token"                     "both"
+call config_normalize_value '1,5,20-25';               ok "1z comma/range list"               "1,5,20-25"
+call config_normalize_value 'a b c';                   ok "1z unquoted list preserved, not truncated" "a b c"
+call config_normalize_value 'a b   # trailing';        ok "1z unquoted list + inline comment"  "a b"
+
+# config_load_file exercised on real files (direct call, not `call`: the
+# assignments must land in THIS shell to be asserted; `call` subshells them away).
+z_tmp=$(mktemp)
+
+printf 'VLAN_MIN=5   # floor\nRESTART_SERVICES="a b c"\n# a comment\n\n' > "$z_tmp"
+VLAN_MIN=1; RESTART_SERVICES=""
+config_load_file "$z_tmp" >/dev/null 2>&1; z_rc=$?
+tests=$((tests + 1))
+if [ "$z_rc" -eq 0 ] && [ "$VLAN_MIN" = 5 ] && [ "$RESTART_SERVICES" = "a b c" ]; then
+	printf 'ok   - %s\n' "1z valid file: allowlisted keys assigned (quotes + comment stripped)"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       rc=%s VLAN_MIN=[%s] RESTART_SERVICES=[%s]\n' \
+		"1z valid file: allowlisted keys assigned (quotes + comment stripped)" "$z_rc" "$VLAN_MIN" "$RESTART_SERVICES"
+fi
+
+printf 'NETPLAN_FILE=/tmp/evil.yaml\n' > "$z_tmp"
+z_np_before="$NETPLAN_FILE"
+config_load_file "$z_tmp" >/dev/null 2>&1; z_rc=$?
+tests=$((tests + 1))
+if [ "$z_rc" -ne 0 ] && [ "$NETPLAN_FILE" = "$z_np_before" ]; then
+	printf 'ok   - %s\n' "1z protected internal assignment refused, global untouched"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       rc=%s NETPLAN_FILE=[%s] (was [%s])\n' \
+		"1z protected internal assignment refused, global untouched" "$z_rc" "$NETPLAN_FILE" "$z_np_before"
+fi
+
+printf 'rm -rf /\n' > "$z_tmp"
+config_load_file "$z_tmp" >/dev/null 2>&1; z_rc=$?
+tests=$((tests + 1))
+if [ "$z_rc" -ne 0 ]; then
+	printf 'ok   - %s\n' "1z non-assignment line refused"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       expected non-zero for a non-assignment line\n' "1z non-assignment line refused"
+fi
+
+z_sentinel=$(mktemp -u)
+printf 'VLAN_IGNORE="$(touch %s)"\n' "$z_sentinel" > "$z_tmp"
+VLAN_IGNORE=""
+config_load_file "$z_tmp" >/dev/null 2>&1; z_rc=$?
+tests=$((tests + 1))
+if [ "$z_rc" -eq 0 ] && [ ! -e "$z_sentinel" ] && [ "$VLAN_IGNORE" = "\$(touch $z_sentinel)" ]; then
+	printf 'ok   - %s\n' "1z command substitution in a value is an inert literal (no exec)"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       rc=%s sentinel-exists=%s VLAN_IGNORE=[%s]\n' \
+		"1z command substitution in a value is an inert literal (no exec)" \
+		"$z_rc" "$([ -e "$z_sentinel" ] && echo yes || echo no)" "$VLAN_IGNORE"
+fi
+
+rm -f "$z_tmp" "$z_sentinel"
+
+# ---------------------------------------------------------------------------
 # 1m. config_body_differs - FR-39 reapply comparison
 #
 # Line 1 is the `# Managed by dynavlan <ver> (build <id>)` header. FR-38 put the

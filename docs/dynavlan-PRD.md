@@ -191,7 +191,7 @@ Candidate formula: `candidates = detected ∩ [VLAN_MIN,VLAN_MAX] − VLAN_IGNOR
 
 ## 8. Configuration
 
-`/etc/dynavlan.conf`, shipped with all keys commented (built-in defaults apply). Invalid values refuse to run (`err`).
+`/etc/dynavlan.conf`, shipped with all keys commented (built-in defaults apply). Invalid values refuse to run (`err`). The file is **parsed declaratively, never `source`d** (H2, 2026-08-04): only allowlisted `KEY=value` lines for the keys below are honored; a line assigning any other name (an internal/safety variable, or a typo) or any non-assignment content refuses the whole run, and values are inert literals (a config file can neither execute code nor override an internal variable). The config surface is exactly the keys documented here.
 
 ```
 # DETECT_METHOD="both"                          # both | lldp | sniff

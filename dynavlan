@@ -456,8 +456,68 @@ version_string() { # VER BUILD -> identity string
 }
 
 # ---------------------------------------------------------------------------
-# Config (FR-0/6/9) - source /etc/dynavlan.conf, apply defaults, validate strictly
+# Config (FR-0/6/9) - parse /etc/dynavlan.conf, apply defaults, validate strictly
 # ---------------------------------------------------------------------------
+
+# H2: the config is parsed declaratively, never sourced. CONFIG_KEYS is the exact
+# documented surface (every key defaulted in load_config below); a config line
+# assigning anything else - an internal/safety var (NETPLAN_FILE, TRY_TIMEOUT, ver,
+# PATH, ...) or a typo - is refused, and values can never execute code. Keep this
+# list in lockstep with the defaults block (Change Checklist: adding a config key).
+CONFIG_KEYS="DETECT_METHOD VLAN_MIN VLAN_MAX VLAN_IGNORE VLAN_WARN VLAN_LIMIT \
+VLAN_LIMIT_MODE SNIFF_SECONDS BOOT_SETTLE_SECONDS CARRIER_WAIT_SECONDS \
+LEASE_SETTLE_SECONDS RESCAN_MINUTES RESET_ON_BOOT REMOVE_ON_CARRIER_LOSS \
+VLAN_ROUTES VLAN_ROUTE_METRIC_START RESTART_SNAPS RESTART_SERVICES LOG_LEVEL \
+BACKUP_KEEP PER_VLAN_MAC RESTART_ON_NEW_SUBNET"
+
+config_allowed_key() { # KEY -> 0 if it is a documented config key
+	in_list "$1" "$CONFIG_KEYS"
+}
+
+config_normalize_value() { # RAWVALUE -> value with inline comment, surrounding quotes, outer whitespace removed
+	local v="$1"
+	v="${v#"${v%%[![:space:]]*}"}" # trim leading whitespace
+	case "$v" in
+	'"'*) v="${v#\"}" && v="${v%%\"*}" ;; # double-quoted: inner text (comment after close-quote dropped)
+	"'"*) v="${v#\'}" && v="${v%%\'*}" ;; # single-quoted
+	*)
+		# bare: drop a whitespace-preceded inline comment, then trailing whitespace,
+		# KEEPING internal spaces (an unquoted `a b c` list is preserved whole, not
+		# silently truncated to `a`; the value validators still reject a bad token).
+		v="${v%%[[:space:]]#*}"
+		v="${v%"${v##*[![:space:]]}"}"
+		;;
+	esac
+	printf '%s\n' "$v"
+}
+
+# Replaces `source`: honor only allowlisted KEY=value lines, refuse anything else.
+# Values are assigned as inert literals (printf -v after the key is allowlisted),
+# so a config file can neither run code nor set an internal/safety variable.
+config_load_file() { # FILE -> 0 on a clean parse, 1 (refuse) on a bad key or non-assignment content
+	local file="$1" line key stripped
+	while IFS= read -r line || [ -n "$line" ]; do
+		stripped="${line#"${line%%[![:space:]]*}"}" # leading-ws-stripped copy
+		case "$stripped" in
+		'' | '#'*) continue ;; # blank or full-line comment
+		esac
+		case "$stripped" in
+		*=*) ;; # looks like an assignment
+		*)
+			log err "refusing $file: non-assignment line: $stripped"
+			return 1
+			;;
+		esac
+		key="${stripped%%=*}"
+		key="${key%"${key##*[![:space:]]}"}" # trim trailing ws on the key
+		if ! config_allowed_key "$key"; then
+			log err "refusing $file: unknown or protected setting '$key' (not a documented config key)"
+			return 1
+		fi
+		printf -v "$key" '%s' "$(config_normalize_value "${stripped#*=}")"
+	done <"$file"
+	return 0
+}
 
 load_config() {
 	DETECT_METHOD="both"
@@ -484,23 +544,22 @@ load_config() {
 	RESTART_ON_NEW_SUBNET=true
 
 	if [ -f "$CONF_FILE" ]; then
-		# Sourced as root on every run: refuse if the file is not root-owned or is
-		# group/other-writable, else a permission drift becomes local root escalation.
-		# (Enforced only when running as root: that is the escalation scenario.)
+		# Read as root on every run: refuse if the file is not root-owned or is
+		# group/other-writable, else a permission drift lets a non-root user feed
+		# dynavlan config values it acts on as root. (Enforced only when root.)
 		if [ "$(id -u)" -eq 0 ]; then
 			local owner mode
 			owner=$(stat -c '%u' "$CONF_FILE" 2>/dev/null || stat -f '%u' "$CONF_FILE" 2>/dev/null)
 			mode=$(stat -c '%a' "$CONF_FILE" 2>/dev/null || stat -f '%Lp' "$CONF_FILE" 2>/dev/null)
 			if [ -z "$owner" ] || [ "$owner" != "0" ] || [ $((0$mode & 022)) -ne 0 ]; then
-				log err "refusing to source $CONF_FILE: must be root-owned and not group/other-writable (owner uid=${owner:-unknown} mode=${mode:-unknown})"
+				log err "refusing to read $CONF_FILE: must be root-owned and not group/other-writable (owner uid=${owner:-unknown} mode=${mode:-unknown})"
 				return 1
 			fi
 		fi
-		# shellcheck disable=SC1090
-		. "$CONF_FILE" || {
-			log err "failed to source $CONF_FILE"
-			return 1
-		}
+		# H2: parse declaratively (never source) so a config line cannot execute code
+		# or assign an internal/safety variable; only allowlisted KEY=value lines are
+		# honored, anything else refuses (fail toward no-change, reachable, logged).
+		config_load_file "$CONF_FILE" || return 1
 	fi
 
 	local k val

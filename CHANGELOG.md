@@ -25,6 +25,14 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
   (`APPLY_NOEVIDENCE_SETTLE`) sized so the first health sample lands post-apply,
   and netplan try's exit is logged on both accept and revert paths instead of
   discarded. Additions are unchanged. (`ver=` 0.4.1 -> 0.4.2.)
+- Config is now parsed declaratively instead of `source`d (H2). A line in
+  `/etc/dynavlan.conf` could previously assign any internal/safety variable
+  (`NETPLAN_FILE`, `TRY_TIMEOUT`, `ver`, `PATH`, ...) or execute arbitrary shell,
+  because the file was sourced and only the documented keys' *values* were
+  validated. `load_config` now honors only allowlisted `KEY=value` lines for the
+  documented keys; an unknown/protected key or non-assignment line refuses the
+  run, and values are assigned as inert literals (no code execution). The config
+  surface is now exactly the documented keys. (`ver=` 0.4.1 -> 0.4.2.)
 - `--dry-run` now exits non-zero when `netplan generate` rejects the candidate
   config; it previously printed `validate: FAIL` but exited 0, so a scripted or
   attended pre-flight keying on `$?` could not tell a bad config from a good one.

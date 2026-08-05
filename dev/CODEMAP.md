@@ -54,7 +54,10 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 | `usage` | One-line usage to stderr |
 | `version_string` | Pure: `<ver> (build <id>)`; empty build renders `unknown`, never `(build )` (FR-38) | 1k |
 | `config_body_differs` | Pure: SAME/DIFFERENT for two configs ignoring exactly line 1 (the version/build header) (FR-39) | 1m |
-| `load_config` | Defaults, then source /etc/dynavlan.conf (root-owned, not group/other-writable, else refuse), then strict-validate every key |
+| `load_config` | Defaults, then parse /etc/dynavlan.conf via `config_load_file` (root-owned, not group/other-writable, else refuse), then strict-validate every key |
+| `config_load_file` | H2: parse the config declaratively (never source); honor only allowlisted KEY=value lines, refuse any unknown/protected key or non-assignment line, assign inert literals via `printf -v` (no code execution, no internal-var override) |
+| `config_allowed_key` | H2: membership test of a key against `CONFIG_KEYS`, the exact documented config surface |
+| `config_normalize_value` | H2: strip a config value's inline comment, surrounding quotes, and outer whitespace, keeping internal spaces (unquoted lists preserved, not truncated) |
 
 ## Preconditions (FR-0)
 

@@ -583,3 +583,44 @@ PROVISIONAL pending a measured apply duration on the Protectli box; finalize bef
 `fix/gate4-c2-apply-evidence`. Unit coverage: `tests/unit.sh §1y` (selection + both cutoff-headroom
 invariants). Branch review (fork): correct and safe, no CRITICAL/HIGH/MEDIUM; one LOW stale header
 comment fixed. Hardware validation (slow removal-only + slow reapply) still pending.
+
+## 2026-08-04 (Unit 3, H2) - config parsed declaratively (allowlist), not sourced
+
+Review finding H2: `load_config` sourced `/etc/dynavlan.conf`, so a config line could
+assign ANY variable (internal/safety: NETPLAN_FILE, TRY_TIMEOUT, POLL_INTERVAL, ver, build,
+SEEN_FILE, PATH) or run arbitrary shell / redefine functions. The value validators only
+checked the 22 documented keys' values, never rejected unknown assignments. Root-gated +
+root-owned-file gate, so this is a footgun (per the threat model), not privilege escalation -
+but it blocked a clean 1.0 config-surface freeze: any typo or internal-name assignment passed.
+
+DECISION: Approach 1 (parse-only allowlist), NOT the register's "at minimum" readonly guard.
+`config_load_file` replaces `source`: parse line by line, honor only allowlisted KEY=value
+(CONFIG_KEYS = the exact 22 documented keys), refuse any unknown/protected key or
+non-assignment line (return 1 -> load_config returns 1 -> refuse to run = "no change,
+reachable, logged"), and assign values as inert literals via `printf -v` (the key is
+allowlist-validated before printf -v runs, so a crafted key never reaches assignment, and a
+$(...) in a value is a harmless string the value validators then reject). Helpers
+`config_allowed_key` and `config_normalize_value` (strips inline comment + surrounding quotes
++ outer whitespace, KEEPS internal spaces so an unquoted `a b c` list is preserved, not
+truncated). Owner/mode gate retained.
+
+Why not the readonly-guard minimum: it still executes arbitrary code, still lets unknown-key
+TYPOS pass silently (the user's intended setting is ignored, a surprise), and requires
+enumerating every protected var (miss one and it stays overridable); `readonly PATH` is
+impractical. Parse-only protects every internal name without enumerating them and makes the
+config surface EXACTLY the documented keys - which is the config-surface freeze H2 exists to
+enable. Why not #3-style refusal of odd content only: same enumeration fragility.
+
+BEHAVIOR CHANGE ACCEPTED: the config is now a DECLARATIVE format, not shell. A deployed
+conffile relying on undocumented shell features (command substitution, line continuations,
+referencing another var) would now refuse. The shipped template is plain KEY=value and parses
+cleanly; unquoted multi-token values are preserved (more forgiving than `source`, which ran
+the extra tokens as a command). CONFFILE/UPGRADE CAVEAT: if a documented key is ever REMOVED
+in a future version, an existing conffile still carrying it would refuse after upgrade - that
+removal must ship a postinst conffile migration. Added to the Change Checklist.
+
+`ver=` 0.4.1 -> 0.4.2 (same unreleased Unit 3 batch as C2; both branches set 0.4.2 off main so
+the merges auto-reconcile). Branch `fix/gate4-h2-config-isolation`. Unit: `tests/unit.sh §1z`
+(16 asserts incl. protected-global-untouched and no-code-execution). Fork review: correct+safe,
+no CRITICAL/HIGH/MEDIUM; two LOW notes fixed (unquoted-list truncation -> preserve; log arg
+naming). No hardware validation needed - config parsing is pure, fully covered at Layer-1.
