@@ -661,3 +661,69 @@ different-trunk and substring/prefix no-false-match). Fork review: correct+safe,
 CRITICAL/HIGH/MEDIUM; one LOW (add substring-safety asserts) fixed. Hardware validation pending
 (routed VLAN as sole default, removed with carrier up -> prove refusal before write), batched
 with C2's console session.
+
+## 2026-08-05 (Unit 3 hardware validation on the Protectli box)
+
+Deployed 0.4.2 (main `2cbba5b`) to the box from /tmp (installed service left at the prior 0.4.1 test
+build; 0.4.2 is unreleased). Console up as fallback; all applies auto-revert. Box restored to baseline
+after: isolation, 14 VLANs across enp1s0/enp2s0, both uplinks primary (enp1s0 metric 10), timer active.
+
+**C2 - FULLY VALIDATED, floor finalized.** Two no-addition applies exercised the new
+`APPLY_NOEVIDENCE_SETTLE=16` path: enabling routed mode via `--reapply` (regenerate 14 stanzas, no
+add/remove) and reverting to isolation via `--reapply`. Both ACCEPTED; the isolation revert was timed
+at applying 08:45:34.276 -> ACCEPTED 08:45:52.499 = **18.2s**, exactly the floor-16 prediction
+(seen_at=0, health samples at 16s + 18s, accept ~18s, well under the 26s cutoff). Historical floor-10
+applies accepted at 12s; the +6s is the deliberate larger no-addition floor. The uplink default stayed
+primary throughout (routed VLANs took metrics 100-113, all above the uplink's 10, so no metric conflict
+and no routing disruption); SSH never dropped. `APPLY_NOEVIDENCE_SETTLE=16` is now finalized by
+measurement, not provisional. Real netplan apply completes well under 10s on this box (the 12s/18.2s
+accept times are floor-dominated), so 16 is conservative with margin.
+
+**H2 - smoke-validated.** The box's real `/etc/dynavlan.conf` parsed correctly under the new
+`config_load_file` (status/dry-run/reapply all loaded config), including live edits (appending then
+removing `VLAN_ROUTES=true`). Full parse logic is covered at Layer-1 (§1z); no apply interaction to
+validate further.
+
+**M3 - re-confirmed:** `--dry-run` exits 0 on the valid live config.
+
+**C1 - unit+review validated; faithful failover test DEFERRED.** The live dry-run preview was confirmed
+correctly ABSENT in the normal case (no removals, default on the base uplink - no false positive). A
+faithful refusal test (routed VLAN as the box's default AND in the removal set) is NOT safely
+reproducible on this box remotely: all 14 owned VLANs are live on the wire, and `boot_removals`
+compares owned against RAW detection (`dynavlan:1547,1607`; `VLAN_MAX` filters only additions), so no
+wire-present VLAN is ever computed as a removal without switch/cable access; and forcing a VLAN to be
+the lowest-metric default requires either a sub-uplink metric (which `metric_conflict` refuses) or real
+uplink failover / fake-interface route manipulation on the production box. The guard is a 2-line pure
+helper at a reviewed placement (before any disk change), comprehensively unit-tested (§1aa: fire/no-fire
++ different-trunk + substring/prefix safety). Faithful hardware test needs a box where a VLAN can be
+made genuinely absent from the wire while being the default - deferred to a switch-access opportunity.
+
+## 2026-08-05 (later) - C2/C1 hardware validation on a GENUINE carrier-down removal (0.4.2 installed)
+
+Installed 0.4.2 as the box's service binary (`/usr/local/sbin/dynavlan`, build source; the apt package
+metadata still reads 0.4.1 - a deliberate test override, restored on the next `apt install`). The
+operator toggled the physical switch port for enp1s0, giving a real carrier-down removal trigger that
+could not be manufactured earlier (all VLANs otherwise live on the wire).
+
+Sequence: enp1s0 off -> the INSTALLED-0.4.1 timer pruned enp1s0's 7 VLANs first (FR-41), before the
+timer could be frozen; re-enabled enp1s0 -> `0.4.2 --boot` re-added them cleanly (addition apply,
+ACCEPTED, all 7 leased, back to 14); timer stopped; operator disabled enp1s0 again -> `0.4.2 --rescan`
+drove the controlled test.
+
+**C2 - fully validated on a genuine removal-only apply.** The carrier-down `--rescan` removed enp1s0's
+7 VLANs: applying 16:36:55.605 -> netplan try ACCEPTED 16:37:13.795 = **18.19s**, exactly the floor-16
+prediction (seen_at=0, samples at 16s+18s), matching the 18.2s reapply measurement. Health passed on
+the post-prune default (enp2s0 intact), then the `ip link delete`s ran POST-ACCEPT (FR-24 ordering).
+This is the "console slow removal-only" case the register asked for, now closed on real hardware.
+
+**C1 - true-negative confirmed on live hardware.** At apply time snap_iface=enp2s0 (the default after
+enp1s0's metric-10 default withdrew on carrier loss) and removals=enp1s0's VLANs; enp2s0 was NOT in the
+removal set, so `default_iface_in_removals` correctly returned false and the guard stayed silent (no
+"refusing reconcile" in the journal) - the legitimate removal of a non-default trunk proceeded. This
+exercises the guard's real integration in apply_change and complements the earlier dry-run
+no-false-positive. The faithful POSITIVE refusal (a routed VLAN that IS the box's default being removed)
+still needs switch access to set up and remains deferred, but the guard is now confirmed to evaluate the
+real (snap_iface, removals) condition correctly and not misfire on a normal removal.
+
+Box left healthy: 0.4.2 installed + timer active, 7 VLANs on enp2s0 (correct for enp1s0 being off),
+default via enp2s0, SSH stable on enp2s0 (.247; the .39 path is on enp1s0.101 and follows that port).

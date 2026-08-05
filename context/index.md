@@ -55,13 +55,23 @@ C2/H2/C1) ALL THREE code-complete + fork-reviewed (no CRITICAL/HIGH/MEDIUM) and 
 `ver=0.4.2` (C2 `27f545a`, H2 `6cd7efb`, C1 `42c917d`; 213 unit tests, 0 failures): **C2** apply-evidence
 (`APPLY_NOEVIDENCE_SETTLE` floor + exit backstop, §1y), **H2** config isolation (parse-only allowlist
 `config_load_file`, §1z), **C1** routed-mode default-route delete guard (`default_iface_in_removals`,
-§1aa). Rationale in `context/decisions.md` 2026-08-04/05. NOT pushed yet (main is 3 commits ahead of
-origin). PENDING: batched console hardware session on the Protectli box - C2 (slow removal-only + slow
-reapply, finalizes the provisional `APPLY_NOEVIDENCE_SETTLE=16`) and C1 (routed mode, dynavlan VLAN as
-sole default, removed with carrier up -> prove refusal before write); H2 needs no hardware.
-NEXT UP: batched C2+C1 hardware validation (console up), finalize the C2 floor value + any fixes as
-follow-ups on main, then push, then the 1.0.0 freeze+review; v1.0 gates (1)+(2) done, remaining gates
-are multi-site validation and the freeze itself (see `context/todo.md` v1.0 milestone).
+§1aa). Rationale in `context/decisions.md` 2026-08-04/05. HARDWARE-VALIDATED on the Protectli box
+2026-08-05: **C2** fully validated (two no-addition `--reapply` applies accepted; isolation revert timed
+at 18.2s = the floor-16 prediction, uplink primary throughout; `APPLY_NOEVIDENCE_SETTLE=16` FINALIZED by
+measurement), **H2** smoke-validated (real `/etc/dynavlan.conf` parses under `config_load_file`), **M3**
+re-confirmed (dry-run exit 0). **C1** unit+review validated and its live dry-run preview confirmed
+correctly-absent (no false positive). Later that day the operator toggled the enp1s0 switch port, giving
+a genuine carrier-down removal: **C2** got its real removal-only apply (`--rescan` removed 7 VLANs at a
+measured **18.19s** applying->ACCEPTED = the floor-16 prediction, closing the register's "console slow
+removal-only" need), and **C1** got a live **true-negative** (snap_iface=enp2s0, not in the removal set
+-> guard correctly SILENT, legitimate removal proceeded). The faithful C1 POSITIVE refusal (a routed VLAN
+that IS the default being removed) still needs switch access and stays deferred. The box now runs 0.4.2
+(installed as the service binary, build source; apt metadata still 0.4.1 - restored on the next apt
+install; operator will reinstall from apt when ready); enp1s0 currently off (7 VLANs on enp2s0), timer
+active. NOT pushed yet (main ahead of origin: 4 fix/doc commits + more uncommitted docs).
+NEXT UP: commit the HW-validation docs, push main (user approval), then the 1.0.0 freeze+review; v1.0
+gates (1)+(2) done, remaining gates are multi-site validation and the freeze itself. A faithful C1
+positive-refusal HW test stays open for a switch-access opportunity (`context/open_questions.md`).
 
 Before coding a change, read in order:
 4. dev/SKELETON.md - logic flow and key invariants
