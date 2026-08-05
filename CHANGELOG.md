@@ -6,6 +6,16 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ### Fixed
 
+- A capture method that **fails** at runtime (tcpdump cannot open the device or the
+  BPF filter is rejected, `lldpctl`'s daemon is down, or promisc could not be set)
+  no longer reads as a genuinely empty trunk and can no longer authorize a boot
+  detection-diff removal. Detection now carries a per-interface validity verdict;
+  the `RESET_ON_BOOT` removal path preserves all owned VLANs on a trunk (with a
+  warning) when either pass's sample is untrustworthy. Additions still proceed on
+  whatever positive evidence exists. Under the default `DETECT_METHOD=both`, only
+  the primary **sniff** must have succeeded (a failed sniff is the actual removal
+  hazard); LLDP is a supplement, so a down `lldpd` does not block removals
+  (gate-4 H1). (`ver=` 0.4.4 -> 0.4.5.)
 - `VLAN_LIMIT_MODE=fill` now keeps the lowest-**numeric**-id VLANs, matching the
   documented "lowest IDs" contract. It previously selected by lexicographic token
   order, so with VLANs 2/10/100 it kept 10 and 100 before 2 (gate-4 M7). (`ver=`

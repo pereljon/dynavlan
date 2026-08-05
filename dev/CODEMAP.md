@@ -75,13 +75,17 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 | `discover_phys_ifaces` | Live physical Ethernet NICs from /sys/class/net (device symlink, ARPHRD_ETHER, not wireless, charset `[A-Za-z0-9_-]` - `.` refused as it aliases the VLAN separator, M1) |
 | `iface_key` | IFACE -> injective, shell-identifier-safe key (hex-escapes each non-alnum byte). Backs `tags_var` + the boot carrier stashes so `enp-1`/`enp_1` never collide (M1) |
 | `tags_var` / `iface_tags` | Per-iface tag-stash variable name (via `iface_key`, injective) and its reader (no eval injection surface) |
-| `prep_iface` / `has_carrier` | Admin-up + promisc on; carrier probe |
-| `detect_sniff` | Passive 802.1Q capture, INBOUND ONLY (`-Q in`, FR-5a: our own egress is not evidence); minimal snaplen, no disk → VLAN ids |
+| `valid_var` / `iface_valid` | Per-iface detection-validity stash (via `iface_key`) and its reader; `valid`/`invalid` removal-trust verdict parallel to `tags_var` (H1) |
+| `prep_fail_var` | Per-iface prep-failure flag stash; `prep_iface` sets it, `store_detection` folds it into the validity verdict (H1) |
+| `detection_sample_valid` | Pure: METHOD SNIFF LLDP PREP → `valid`/`""`; decides whether a boot sample is trustworthy for REMOVALS. Prep failure invalidates; under `both` only sniff (the primary) must have succeeded, LLDP failure is non-fatal (H1) |
+| `prep_iface` / `has_carrier` | Admin-up + promisc on (records failure via `prep_fail_var`, H1); carrier probe |
+| `detect_sniff` | Passive 802.1Q capture, INBOUND ONLY (`-Q in`, FR-5a: our own egress is not evidence); minimal snaplen, no disk → `"STATUS IDS"` where STATUS is ok\|fail from tcpdump's own exit (`{0,124}`=ok; captured before the grep pipeline so `pipefail`+grep cannot mask a real failure, H1) |
 | `lldp_tagged_vlans` | Pure: tagged VLAN ids from `lldpctl -f keyvalue` text; drops the native VLAN (`pvid=yes`), stateful adjacency parse (FR-7a) |
-| `detect_lldp` | lldpctl-advertised VLAN ids, PVID excluded |
-| `detect_iface` | Union of enabled methods for one iface |
+| `detect_lldp` | lldpctl-advertised VLAN ids (PVID excluded) → `"STATUS IDS"`, STATUS ok\|fail from lldpctl's exit (H1) |
+| `detect_iface` | Union of enabled methods for one iface → `"SNIFFSTATUS LLDPSTATUS IDS..."` (relays per-method run status for the validity verdict, H1) |
+| `store_detection` | Parse a `detect_iface` line, stash `TAGS_` (ids) + `VALID_` (removal-trust verdict via `detection_sample_valid` + the prep flag); empty/short line defaults to `invalid` (safe: preserves owned VLANs) (H1) |
 | `iface_tags` | Reader for one iface's stashed detection result (set by `run_detection`) |
-| `run_detection` | Orchestrate: prep all, ONE shared carrier deadline, concurrent per-iface detection → `DETECTED_TRUNKS` (every carrier-up iface with a non-empty tag set, not a single selected trunk) |
+| `run_detection` | Orchestrate: prep all, ONE shared carrier deadline, concurrent per-iface detection → `store_detection` sets `TAGS_`/`VALID_` per iface → `DETECTED_TRUNKS` (every carrier-up iface with a non-empty tag set, not a single selected trunk) |
 
 ## Backend seam (§4 - netplan implementation, the only backend)
 
@@ -137,7 +141,7 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 
 | function | one-line purpose |
 |----------|------------------|
-| `do_boot` | All-trunks reconcile: `run_detection`'s rc is ignored (it means "saw nothing", not "failed" - there is no probe-error signal), branching on `DETECTED_TRUNKS` instead, so a zero detection blocks additions without blocking FR-41 pruning; per-trunk candidates over every owned-or-detected iface (union); carrier-UP trunks get sniff-based detection-diff removal (`RESET_ON_BOOT`); carrier-DOWN trunks get full-set FR-41 pruning (`carrier_removals`, gated on `have_routing` + `REMOVE_ON_CARRIER_LOSS`, a flap preserves); second settle+resample (`need_pass2`) fires for either reason; one unified `apply_change` across the whole box. No relocation branch: a tagless-but-carrier-UP trunk is preserved (detection uncertainty); a carrier-DOWN trunk is pruned once routing is healthy, not preserved |
+| `do_boot` | All-trunks reconcile: `run_detection`'s rc is ignored (it means "saw nothing", not "failed" - there is no probe-error signal), branching on `DETECTED_TRUNKS` instead, so a zero detection blocks additions without blocking FR-41 pruning; per-trunk candidates over every owned-or-detected iface (union); carrier-UP trunks get sniff-based detection-diff removal (`RESET_ON_BOOT`), suppressed when either pass's sample is `invalid` (a capture-method failure, H1); carrier-DOWN trunks get full-set FR-41 pruning (`carrier_removals`, gated on `have_routing` + `REMOVE_ON_CARRIER_LOSS`, a flap preserves); second settle+resample (`need_pass2`) fires for either reason; one unified `apply_change` across the whole box. No relocation branch: a tagless-but-carrier-UP trunk is preserved (detection uncertainty); a carrier-DOWN trunk is pruned once routing is healthy, not preserved |
 | `do_rescan` | Timer reconcile: additions over DETECTED_TRUNKS as before; FR-41 (v0.4.0) adds its first removal path - carrier-down OWNED trunks are pruned on a routing-gated two-sample settle, fast-path-preserved (settle sleep only when an owned trunk is actually down). `have_routing` is checked twice - before the sleep (whether to settle at all) and again after it (whether to remove), since an uplink lost during the settle would otherwise produce a removal the health check cannot revert |
 | `do_dryrun` | Preview: same per-trunk candidate math (single pass) over owned-or-detected ifaces, plus a would-be FR-41 removal per trunk (single advisory sample, `have_routing`-gated); throwaway-tree validate, diff + count gate + FR-37 metric/conflict preview + C1 default-route-guard preview (would-refuse), per-trunk breakdown (now with carrier state) printed; never applies; returns non-zero when validation FAILs (M3), 0 otherwise, so `$?` works as a scripted pre-flight |
 | `do_reapply` | FR-39: regenerate the OWNED set (whatever trunks it spans) with this build, apply only if the body differs; NO detection (pins to `distinct_ifaces` of the owned tokens), full owned set lease-waited, count gate bypassed |

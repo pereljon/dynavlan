@@ -612,6 +612,68 @@ call default_iface_in_removals "enp1s0.10"  "enp1s0.100";            err "1aa no
 call default_iface_in_removals "enp1s0.100" "";                      err "1aa empty removals -> proceed"
 
 # ---------------------------------------------------------------------------
+# 1ab. detection_sample_valid - H1: a detector failure must not read as absence
+#
+# A capture method that FAILED at runtime (tcpdump could not open the device / bad
+# filter, lldpctl daemon down, or promisc could not be set) returns an empty or
+# truncated id set that is indistinguishable from a trunk that genuinely carries
+# nothing. A partial (failure-truncated) set must NOT authorize a detection-diff
+# removal. This pure helper decides, from the per-method run statuses, whether a
+# boot detection sample is complete enough to be trusted for REMOVALS (additions
+# still proceed on whatever positive evidence exists). METHOD SNIFF LLDP PREP,
+# each status ok|fail (na for a method the mode does not run); prints "valid" or
+# empty. A prep failure invalidates regardless of method. Under "both" only SNIFF
+# must have succeeded: sniff is the primary/authoritative wire signal and a failed
+# sniff is the real removal hazard, while LLDP is a supplement whose failure is
+# non-fatal (a down lldpd must not block removals on sniff-authoritative trunks).
+# ---------------------------------------------------------------------------
+
+call detection_sample_valid both  ok   ok   ok; ok  "1ab both: both methods ok -> valid"        "valid"
+call detection_sample_valid both  fail ok   ok; ok  "1ab both: sniff failed -> invalid"          ""
+call detection_sample_valid both  ok   fail ok; ok  "1ab both: lldp failed, sniff ok -> valid"   "valid"
+call detection_sample_valid both  fail fail ok; ok  "1ab both: both failed -> invalid"           ""
+call detection_sample_valid sniff ok   na   ok; ok  "1ab sniff: sniff ok -> valid"               "valid"
+call detection_sample_valid sniff fail na   ok; ok  "1ab sniff: sniff failed -> invalid"         ""
+call detection_sample_valid lldp  na   ok   ok; ok  "1ab lldp: lldp ok -> valid"                 "valid"
+call detection_sample_valid lldp  na   fail ok; ok  "1ab lldp: lldp failed -> invalid"           ""
+call detection_sample_valid both  ok   ok   fail; ok "1ab prep failure invalidates a good sample" ""
+call detection_sample_valid sniff ok   na   fail; ok "1ab prep failure invalidates sniff-only"    ""
+
+# ---------------------------------------------------------------------------
+# 1ac. store_detection - H1: the detect_iface "SNIFF LLDP IDS..." parse round-trip
+#
+# Locks the string contract between detect_iface (emits "SNIFFSTATUS LLDPSTATUS
+# IDS...") and store_detection (parses it, stashes TAGS_ + VALID_). The hazard case
+# the fix exists for: sniff FAILED but LLDP returned a partial set, so the tag set
+# is non-empty (still usable for additions) yet the sample is INVALID (must not
+# authorize a removal). Also covers a missing/empty raw line defaulting to invalid.
+# ---------------------------------------------------------------------------
+
+DETECT_METHOD=both
+# valid sample, ids from both methods -> TAGS unioned, VALID=valid
+unset PREPFAIL_v0 TAGS_v0 VALID_v0
+store_detection v0 "ok ok 100 200"
+assert_eq "$(iface_valid v0)|$(iface_tags v0)" "valid|100 200" "1ac both ok -> valid, tags unioned"
+# H1 hazard: sniff failed, LLDP partial -> tags survive for additions, VALID=invalid
+unset PREPFAIL_v1 TAGS_v1 VALID_v1
+store_detection v1 "fail ok 200"
+assert_eq "$(iface_valid v1)|$(iface_tags v1)" "invalid|200" "1ac sniff fail + partial lldp -> invalid, tags kept"
+# prep failure invalidates even when both methods returned ids
+PREPFAIL_v2=1
+unset TAGS_v2 VALID_v2
+store_detection v2 "ok ok 100 200"
+assert_eq "$(iface_valid v2)|$(iface_tags v2)" "invalid|100 200" "1ac prep fail -> invalid, tags kept"
+# empty raw (missing scratch file) defaults to invalid, no tags
+unset PREPFAIL_v3 TAGS_v3 VALID_v3
+store_detection v3 ""
+assert_eq "$(iface_valid v3)|$(iface_tags v3)" "invalid|" "1ac empty raw -> invalid, no tags"
+# valid but genuinely empty (quiet trunk) -> valid, no tags (removal-diff still allowed)
+unset PREPFAIL_v4 TAGS_v4 VALID_v4
+store_detection v4 "ok ok"
+assert_eq "$(iface_valid v4)|$(iface_tags v4)" "valid|" "1ac quiet trunk -> valid, no tags"
+unset PREPFAIL_v0 PREPFAIL_v2 TAGS_v0 TAGS_v1 TAGS_v2 TAGS_v4 VALID_v0 VALID_v1 VALID_v2 VALID_v3 VALID_v4
+
+# ---------------------------------------------------------------------------
 # 1m. config_body_differs - FR-39 reapply comparison
 #
 # Line 1 is the `# Managed by dynavlan <ver> (build <id>)` header. FR-38 put the

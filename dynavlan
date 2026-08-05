@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.4"
+ver="0.4.5"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -799,16 +799,54 @@ tags_var() { # IFACE -> per-iface tag-stash variable name (injective; no eval in
 	printf 'TAGS_%s' "$(iface_key "$1")"
 }
 
+valid_var() { # IFACE -> per-iface detection-validity stash (H1); parallel to tags_var
+	printf 'VALID_%s' "$(iface_key "$1")"
+}
+
+iface_valid() { eval "printf '%s' \"\${$(valid_var "$1"):-}\""; }
+
+prep_fail_var() { # IFACE -> per-iface prep-failure flag stash (H1)
+	printf 'PREPFAIL_%s' "$(iface_key "$1")"
+}
+
+# detection_sample_valid METHOD SNIFF LLDP PREP -> "valid" or "" (H1)
+#   A capture method that FAILED at runtime returns an empty/truncated id set that
+#   is indistinguishable from a genuinely empty trunk. A partial (failure-truncated)
+#   sample must not authorize a detection-diff REMOVAL. This decides, from the
+#   per-method run statuses, whether a boot sample is trustworthy for removals;
+#   additions still proceed on whatever positive evidence exists. Each status is
+#   ok|fail (na when the mode does not run that method). Prep failure invalidates
+#   regardless. Under "both" only SNIFF must have succeeded: sniff is the primary,
+#   authoritative wire signal and a failed sniff is the actual removal hazard (an
+#   LLDP-only partial set would otherwise authorize removing VLANs sniff would have
+#   seen); LLDP is a supplement whose failure is non-fatal, so a down lldpd does not
+#   block removals on sniff-authoritative trunks.
+detection_sample_valid() {
+	local method="$1" sniff="$2" lldp="$3" prep="$4" v=""
+	if [ "$prep" = ok ]; then
+		case "$method" in
+		sniff) [ "$sniff" = ok ] && v=valid ;;
+		lldp) [ "$lldp" = ok ] && v=valid ;;
+		both) [ "$sniff" = ok ] && v=valid ;;
+		esac
+	fi
+	printf '%s' "$v"
+}
+
 prep_iface() { # IFACE - set admin-up + promisc (no wait; carrier waited separately)
-	local i="$1"
-	ip link set "$i" up 2>/dev/null
-	ip link set "$i" promisc on 2>/dev/null # FR-2: makes the NIC VLAN filter transparent; left ON deliberately
+	local i="$1" rc=0
+	ip link set "$i" up 2>/dev/null || rc=1
+	ip link set "$i" promisc on 2>/dev/null || rc=1 # FR-2: makes the NIC VLAN filter transparent; left ON deliberately
+	# H1: a prep failure means the sample can be silently truncated (a NIC that
+	# never went promisc may drop tagged frames), so record it; run_detection folds
+	# it into the removal-trust decision.
+	eval "$(prep_fail_var "$i")=\"\$rc\""
 }
 
 has_carrier() { [ "$(cat "/sys/class/net/$1/carrier" 2>/dev/null)" = "1" ]; }
 
-detect_sniff() { # IFACE -> distinct 802.1Q VLAN ids seen (minimal snaplen, no disk write - FR-5)
-	local i="$1"
+detect_sniff() { # IFACE -> "STATUS IDS" - STATUS ok|fail (H1), IDS = distinct 802.1Q VLAN ids
+	local i="$1" out rc ids
 	# `-Q in` (INBOUND ONLY) is load-bearing, not a tidy-up: tcpdump captures egress
 	# too, and every VLAN we own transmits tagged DHCP on the parent (DISCOVER retries
 	# forever if it never leases, renewals if it did). Counting our own frames as
@@ -817,8 +855,21 @@ detect_sniff() { # IFACE -> distinct 802.1Q VLAN ids seen (minimal snaplen, no d
 	# trunking it. Only frames the switch actually delivers are evidence of the trunk.
 	# Hardware-validated (2026-07-25): the dead enp1s0.100 kept itself alive across
 	# reboots this way - 1 outbound VID-100 DHCP Request from our own MAC, 0 inbound.
-	timeout "$SNIFF_SECONDS" tcpdump -i "$i" -e -nn -p -Q in -s 64 'vlan' 2>/dev/null |
-		grep -oE 'vlan [0-9]+' | awk '{print $2}' | sort -n -u | tr '\n' ' ' | sed 's/ $//'
+	#
+	# H1: capture tcpdump's own exit BEFORE the grep/awk pipeline so a real
+	# open/filter failure is not lost (with pipefail on, grep returning 1 on no-match
+	# would otherwise mask it, and an empty capture from a failure would read as a
+	# genuinely quiet trunk). `timeout` returns 124 when it kills tcpdump at the end
+	# of the window - the NORMAL success case here, since tcpdump runs unbounded; 0 is
+	# a clean early exit; anything else is a real failure (device could not be opened,
+	# BPF filter rejected, runtime error) and the sample must not authorize removals.
+	out=$(timeout "$SNIFF_SECONDS" tcpdump -i "$i" -e -nn -p -Q in -s 64 'vlan' 2>/dev/null)
+	rc=$?
+	ids=$(printf '%s\n' "$out" | grep -oE 'vlan [0-9]+' | awk '{print $2}' | sort -n -u | tr '\n' ' ' | sed 's/ $//')
+	case "$rc" in
+	0 | 124) printf 'ok %s' "$ids" ;;
+	*) printf 'fail %s' "$ids" ;;
+	esac
 }
 
 # Pure: tagged VLAN ids from `lldpctl -f keyvalue` text, native VLAN excluded.
@@ -852,16 +903,56 @@ lldp_tagged_vlans() {
 	' | sort -n -u | tr '\n' ' ' | sed 's/ $//'
 }
 
-detect_lldp() { # IFACE -> tagged VLAN ids advertised via LLDP (PVID excluded)
-	local i="$1"
-	lldp_tagged_vlans "$(lldpctl -f keyvalue "$i" 2>/dev/null)"
+detect_lldp() { # IFACE -> "STATUS IDS" - STATUS ok|fail (H1), IDS = tagged LLDP VLAN ids (PVID excluded)
+	local i="$1" out rc
+	# lldpctl returns 0 even with no neighbors (empty output); a non-zero exit means
+	# the daemon is down or the query errored - a failed sample, not an empty trunk.
+	out=$(lldpctl -f keyvalue "$i" 2>/dev/null)
+	rc=$?
+	case "$rc" in
+	0) printf 'ok %s' "$(lldp_tagged_vlans "$out")" ;;
+	*) printf 'fail %s' "$(lldp_tagged_vlans "$out")" ;;
+	esac
 }
 
-detect_iface() { # IFACE -> union of enabled detection methods
-	local i="$1" ids=""
-	case "$DETECT_METHOD" in sniff | both) ids="$ids $(detect_sniff "$i")" ;; esac
-	case "$DETECT_METHOD" in lldp | both) ids="$ids $(detect_lldp "$i")" ;; esac
-	emit_set $ids
+# IFACE -> "SNIFFSTATUS LLDPSTATUS IDS..." (H1). Relays each enabled method's run
+# status (ok|fail, or na when the mode does not run it) plus the unioned id set;
+# run_detection folds these with the prep-failure flag via detection_sample_valid.
+detect_iface() {
+	local i="$1" ids="" sniff_st=na lldp_st=na out
+	case "$DETECT_METHOD" in
+	sniff | both)
+		out=$(detect_sniff "$i")
+		sniff_st=${out%% *}
+		case "$out" in *" "*) ids="$ids ${out#* }" ;; esac
+		;;
+	esac
+	case "$DETECT_METHOD" in
+	lldp | both)
+		out=$(detect_lldp "$i")
+		lldp_st=${out%% *}
+		case "$out" in *" "*) ids="$ids ${out#* }" ;; esac
+		;;
+	esac
+	printf '%s %s %s' "$sniff_st" "$lldp_st" "$(emit_set $ids)"
+}
+
+# IFACE RAW - parse a detect_iface line ("SNIFFSTATUS LLDPSTATUS IDS...") and stash
+# the tag set (TAGS_) and the removal-trust verdict (VALID_) for the iface (H1). A
+# missing/short line defaults to fail (safe: preserves owned VLANs on the diff path).
+store_detection() {
+	local i="$1" raw="$2" sniff_st lldp_st tg v pfv prep_st
+	IFS=' ' read -r sniff_st lldp_st tg <<<"$raw"
+	eval "pfv=\"\${$(prep_fail_var "$i"):-0}\""
+	prep_st=ok
+	[ "$pfv" = 0 ] || prep_st=fail
+	v=$(detection_sample_valid "$DETECT_METHOD" "${sniff_st:-fail}" "${lldp_st:-fail}" "$prep_st")
+	if [ "$v" = valid ]; then
+		eval "$(valid_var "$i")=valid"
+	else
+		eval "$(valid_var "$i")=invalid"
+	fi
+	[ -n "$tg" ] && eval "$(tags_var "$i")=\"\$tg\""
 }
 
 iface_tags() { eval "printf '%s' \"\${$(tags_var "$1"):-}\""; }
@@ -885,26 +976,16 @@ run_detection() { # sets DETECTED_TRUNKS + per-trunk tags via iface_tags; return
 			log info "no carrier on $i within ${CARRIER_WAIT_SECONDS}s; skipping detection on it"
 		fi
 	done
-	for i in $ifaces; do unset "$(tags_var "$i")" 2>/dev/null; done
+	for i in $ifaces; do unset "$(tags_var "$i")" "$(valid_var "$i")" 2>/dev/null; done
 	local scratch=""
 	[ -n "$up" ] && scratch=$(mktemp -d /run/dynavlan.detect.XXXXXX 2>/dev/null) || scratch=""
 	if [ -n "$scratch" ]; then
 		for i in $up; do detect_iface "$i" >"$scratch/$i" & done
 		wait
-		for i in $up; do
-			tags=$(cat "$scratch/$i" 2>/dev/null)
-			if [ -n "$tags" ]; then
-				eval "$(tags_var "$i")=\"\$tags\""
-			fi
-		done
+		for i in $up; do store_detection "$i" "$(cat "$scratch/$i" 2>/dev/null)"; done
 		rm -rf "$scratch"
 	else
-		for i in $up; do
-			tags=$(detect_iface "$i")
-			if [ -n "$tags" ]; then
-				eval "$(tags_var "$i")=\"\$tags\""
-			fi
-		done
+		for i in $up; do store_detection "$i" "$(detect_iface "$i")"; done
 	fi
 	DETECTED_TRUNKS=""
 	for i in $(printf '%s\n' $up | sort -u); do
@@ -1586,6 +1667,7 @@ do_boot() {
 		all_additions="$all_additions $(tag_tokens "$trunk" "$additions_ids")"
 
 		eval "_p1_$(iface_key "$trunk")=\"\$detected_ids\""
+		eval "_v1_$(iface_key "$trunk")=\"\$(iface_valid "$trunk")\"" # H1: pass-1 removal-trust
 
 		local c1=down
 		has_carrier "$trunk" && c1=up
@@ -1623,8 +1705,9 @@ do_boot() {
 		local routing_ok=unknown   # have_routing evaluated at most once, lazily
 		local pruned_ifaces=""     # trunks confirmed dead: their additions are stale
 		for trunk in $all_trunks; do
-			local p1 p2 c1 c2=down owned_on_trunk owned_ids removals_ids
+			local p1 p2 v1 v2 c1 c2=down owned_on_trunk owned_ids removals_ids
 			eval "p1=\"\${_p1_$(iface_key "$trunk")}\""
+			eval "v1=\"\${_v1_$(iface_key "$trunk")}\""
 			eval "c1=\"\${_c1_$(iface_key "$trunk")}\""
 			owned_on_trunk=$(tokens_for_iface "$owned" "$trunk")
 			owned_ids=$(untag_tokens "$owned_on_trunk")
@@ -1635,7 +1718,16 @@ do_boot() {
 				# (unchanged from the pre-feature behavior).
 				if [ "$RESET_ON_BOOT" = true ]; then
 					p2=$(emit_set $(iface_tags "$trunk"))
-					if [ -n "$p1" ] && [ -n "$p2" ]; then
+					v2=$(iface_valid "$trunk")
+					# H1: a detection-diff removal needs BOTH passes to be a trusted sample
+					# (no capture-method failure) AND non-empty. A failed sniff/LLDP yields
+					# a partial set indistinguishable from real absence, so it must not
+					# authorize a removal. An explicit "invalid" means a method FAILED (warn);
+					# an empty p1/p2 (incl. a trunk carrier-down at pass 1, so v1 is unset)
+					# is a genuine no-sample and preserves quietly.
+					if [ "$v1" = invalid ] || [ "$v2" = invalid ]; then
+						log warning "trunk $trunk: detection incomplete (a capture method failed) in a boot pass; preserving all owned VLANs (H1 - a failed sniff/LLDP must not authorize removals)"
+					elif [ "$v1" = valid ] && [ "$v2" = valid ] && [ -n "$p1" ] && [ -n "$p2" ]; then
 						removals_ids=$(boot_removals "$owned_ids" "$p1" "$p2")
 						all_removals="$all_removals $(tag_tokens "$trunk" "$removals_ids")"
 					else
