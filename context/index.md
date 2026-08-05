@@ -51,13 +51,17 @@ STATE (2026-08-04, v1.0 gate-4 review remediation): working the pre-1.0 adversar
 (`internal/codex-review-v0-4.md`) via a fix register (`docs/superpowers/plans/2026-08-04-v1.0-gate4-review-fixes.md`).
 Unit 1 (doc contradictions) + Unit 2 (M3 dry-run exit code, H7 build-deb version binding, H3 upgrade
 timer-state) DONE, HW-validated, merged to main (`4730206`), pushed. Unit 3 (pre-freeze blockers
-C2/H2/C1) underway: **C2** (apply-evidence gap on no-addition changes) CODE-COMPLETE + fork-reviewed
-on branch `fix/gate4-c2-apply-evidence` (minimal-#1: `APPLY_NOEVIDENCE_SETTLE` floor + exit backstop;
-`ver=` 0.4.2; `tests/unit.sh §1y`; rationale in `context/decisions.md` 2026-08-04). C2 hardware
-validation (slow removal-only + slow reapply, finalizes the provisional floor) PENDING, then H2, then C1.
-NEXT UP: hardware-validate C2 on the Protectli box, then H2 (config isolation) + C1 (routed-mode delete
-guard) to close the pre-freeze blockers; v1.0 gates (1)+(2) done, remaining gates are multi-site
-validation and the 1.0.0 freeze+review (see `context/todo.md` v1.0 milestone).
+C2/H2/C1) ALL THREE code-complete + fork-reviewed (no CRITICAL/HIGH/MEDIUM) and MERGED to main as
+`ver=0.4.2` (C2 `27f545a`, H2 `6cd7efb`, C1 `42c917d`; 213 unit tests, 0 failures): **C2** apply-evidence
+(`APPLY_NOEVIDENCE_SETTLE` floor + exit backstop, §1y), **H2** config isolation (parse-only allowlist
+`config_load_file`, §1z), **C1** routed-mode default-route delete guard (`default_iface_in_removals`,
+§1aa). Rationale in `context/decisions.md` 2026-08-04/05. NOT pushed yet (main is 3 commits ahead of
+origin). PENDING: batched console hardware session on the Protectli box - C2 (slow removal-only + slow
+reapply, finalizes the provisional `APPLY_NOEVIDENCE_SETTLE=16`) and C1 (routed mode, dynavlan VLAN as
+sole default, removed with carrier up -> prove refusal before write); H2 needs no hardware.
+NEXT UP: batched C2+C1 hardware validation (console up), finalize the C2 floor value + any fixes as
+follow-ups on main, then push, then the 1.0.0 freeze+review; v1.0 gates (1)+(2) done, remaining gates
+are multi-site validation and the freeze itself (see `context/todo.md` v1.0 milestone).
 
 Before coding a change, read in order:
 4. dev/SKELETON.md - logic flow and key invariants
