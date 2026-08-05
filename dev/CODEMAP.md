@@ -100,6 +100,7 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 |----------|------------------|
 | `default_routes_tokens` | Current default routes as "iface:metric" tokens |
 | `snapshot_default_route` / `snapshot_default_metric` | Iface / metric of the lowest-metric pre-apply default ("" if none) |
+| `default_iface_in_removals` | C1: 0 iff the current default-route iface is non-empty AND an exact token in the removal set (routed-mode-only backstop; drives `apply_change`'s pre-disk refusal and the `do_dryrun` preview; tests 1aa) |
 | `post_apply_health` | Sample routes now and delegate PASS/FAIL to `health_check_eval` |
 | `have_routing` | FR-41 pre-condition: true iff a lowest-metric default route exists, its egress iface has carrier, AND at least one physical NIC has carrier (composes `snapshot_default_route` + `has_carrier` + `discover_phys_ifaces`; tests 1s). The physical clause stops a tun/wireguard default - those report carrier whenever merely up - from making an all-dark box look routable |
 
@@ -125,7 +126,7 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 
 | function | one-line purpose |
 |----------|------------------|
-| `apply_change` | The §7 safety chain: snapshot → (FR-37 metric assign + conflict refusal) → backup → generate → validate → apply_with_revert → ACCEPT: prune/deletes/leases/restarts, FAIL: converge disk, nothing else |
+| `apply_change` | The §7 safety chain: snapshot → **C1 default-route removal guard (refuse if snap_iface in removals)** → (FR-37 metric assign + conflict refusal) → backup → generate → validate → apply_with_revert → ACCEPT: prune/deletes/leases/restarts, FAIL: converge disk, nothing else |
 | `log_exclusions` | Warn per detected-but-managed-elsewhere VLAN |
 | `warn_overlap` | FR-11: warn when an owned id is also defined in another netplan file |
 | `gate_vlan_count` | Orchestrate warn / refuse / fill per VLAN_LIMIT_MODE; removals-only always passes |
@@ -136,7 +137,7 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 |----------|------------------|
 | `do_boot` | All-trunks reconcile: `run_detection`'s rc is ignored (it means "saw nothing", not "failed" - there is no probe-error signal), branching on `DETECTED_TRUNKS` instead, so a zero detection blocks additions without blocking FR-41 pruning; per-trunk candidates over every owned-or-detected iface (union); carrier-UP trunks get sniff-based detection-diff removal (`RESET_ON_BOOT`); carrier-DOWN trunks get full-set FR-41 pruning (`carrier_removals`, gated on `have_routing` + `REMOVE_ON_CARRIER_LOSS`, a flap preserves); second settle+resample (`need_pass2`) fires for either reason; one unified `apply_change` across the whole box. No relocation branch: a tagless-but-carrier-UP trunk is preserved (detection uncertainty); a carrier-DOWN trunk is pruned once routing is healthy, not preserved |
 | `do_rescan` | Timer reconcile: additions over DETECTED_TRUNKS as before; FR-41 (v0.4.0) adds its first removal path - carrier-down OWNED trunks are pruned on a routing-gated two-sample settle, fast-path-preserved (settle sleep only when an owned trunk is actually down). `have_routing` is checked twice - before the sleep (whether to settle at all) and again after it (whether to remove), since an uplink lost during the settle would otherwise produce a removal the health check cannot revert |
-| `do_dryrun` | Preview: same per-trunk candidate math (single pass) over owned-or-detected ifaces, plus a would-be FR-41 removal per trunk (single advisory sample, `have_routing`-gated); throwaway-tree validate, diff + count gate + FR-37 metric/conflict preview, per-trunk breakdown (now with carrier state) printed; never applies; returns non-zero when validation FAILs (M3), 0 otherwise, so `$?` works as a scripted pre-flight |
+| `do_dryrun` | Preview: same per-trunk candidate math (single pass) over owned-or-detected ifaces, plus a would-be FR-41 removal per trunk (single advisory sample, `have_routing`-gated); throwaway-tree validate, diff + count gate + FR-37 metric/conflict preview + C1 default-route-guard preview (would-refuse), per-trunk breakdown (now with carrier state) printed; never applies; returns non-zero when validation FAILs (M3), 0 otherwise, so `$?` works as a scripted pre-flight |
 | `do_reapply` | FR-39: regenerate the OWNED set (whatever trunks it spans) with this build, apply only if the body differs; NO detection (pins to `distinct_ifaces` of the owned tokens), full owned set lease-waited, count gate bypassed |
 | `do_status` | Report for every owned trunk plus every currently-detected trunk: owned vs detected-now vs managed-elsewhere (root; runs a detection pass); also prints carrier up/down per owned trunk (FR-41) |
 | `render_timer_dropin` | Pure: timer drop-in text for an interval; restates ALL monotonic triggers, since the reset clears the whole list (FR-21a) |

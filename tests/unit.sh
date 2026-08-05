@@ -584,6 +584,29 @@ fi
 rm -f "$z_tmp" "$z_sentinel"
 
 # ---------------------------------------------------------------------------
+# 1aa. default_iface_in_removals - C1 routed-mode delete guard
+#
+# In routed mode a dynavlan VLAN can be the box's default egress (FR-37). If that
+# VLAN is also in the removal set, the post-ACCEPT `ip link delete` would tear down
+# the default route AFTER netplan try already committed (health passed because the
+# VLAN is still up during the try; the delete is post-accept) - unrevertable.
+# apply_change refuses the whole reconcile BEFORE any disk change when this holds.
+# The guard fires only for a NON-EMPTY snap_iface that exactly matches a removal
+# token: the base uplink (isolation default) is never a token, no default route
+# means nothing to protect, and a same-id VLAN on a DIFFERENT trunk is a distinct
+# token that must NOT false-positive.
+# ---------------------------------------------------------------------------
+
+call default_iface_in_removals "enp1s0.100" "enp1s0.100 enp1s0.101"; ok  "1aa default VLAN in removals -> guard fires"          ""
+call default_iface_in_removals "enp1s0"     "enp1s0.100";            err "1aa base uplink never a removal token (isolation)"
+call default_iface_in_removals ""           "enp1s0.100";            err "1aa no default route -> nothing to guard"
+call default_iface_in_removals "enp1s0.100" "enp1s0.101 enp1s0.102"; err "1aa default VLAN not being removed -> proceed"
+call default_iface_in_removals "enp2s0.100" "enp1s0.100";            err "1aa same id on a different trunk is distinct, no false positive"
+call default_iface_in_removals "enp1s0.100" "enp1s0.1000 enp1s0.101"; err "1aa no substring false-match (.100 vs .1000)"
+call default_iface_in_removals "enp1s0.10"  "enp1s0.100";            err "1aa no prefix false-match (.10 vs .100)"
+call default_iface_in_removals "enp1s0.100" "";                      err "1aa empty removals -> proceed"
+
+# ---------------------------------------------------------------------------
 # 1m. config_body_differs - FR-39 reapply comparison
 #
 # Line 1 is the `# Managed by dynavlan <ver> (build <id>)` header. FR-38 put the

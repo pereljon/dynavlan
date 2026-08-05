@@ -1181,6 +1181,14 @@ snapshot_default_metric() { # metric of the lowest-metric default route, "" if n
 	printf '%s' "$best"
 }
 
+# C1: is the current default-route iface itself in the removal set? Only reachable in
+# routed mode - with isolation the default route is always the base uplink, never a
+# dynavlan VLAN token, so snap_iface can never match a removal token. Exact token match,
+# so a same-id VLAN on a different trunk (a distinct token) does not false-positive.
+default_iface_in_removals() { # SNAP_IFACE REMOVALS -> 0 if snap_iface is non-empty AND in removals
+	[ -n "$1" ] && in_list "$1" "$2"
+}
+
 # have_routing
 #   True iff the box has a usable default route: a lowest-metric default exists,
 #   the iface it egresses currently has carrier, AND at least one physical NIC has
@@ -1379,6 +1387,16 @@ apply_change() { # TARGET_TOKENS ADDITION_TOKENS REMOVAL_TOKENS [LEASE_TOKENS]
 		break
 	done
 	snap_iface=$(snapshot_default_route)
+	# C1: refuse BEFORE any disk change if the box's current default-route iface is
+	# itself being removed. netplan try's health check would PASS (the VLAN is still up
+	# during the try; the delete happens only post-ACCEPT), we would ACCEPT, then
+	# `ip link delete` would tear down the default egress with no revert - a strand.
+	# Preserve the active default VLAN and change nothing; the operator must move the
+	# default (or the VLAN must stop being the default) before it can be removed.
+	if default_iface_in_removals "$snap_iface" "$removals"; then
+		log err "refusing reconcile: the current default-route interface ($snap_iface) is in the removal set [${removals}]; removing it would strand the box's default egress with no revert. Preserving it and changing nothing - provide an alternate default route (lower metric) or stop routing over this VLAN, then it can be removed."
+		return 1
+	fi
 	ROUTE_METRICS=""
 	if [ "$VLAN_ROUTES" = true ]; then
 		local snap_metric
@@ -1822,6 +1840,14 @@ do_dryrun() {
 		printf '  %s: carrier=%s detected=[%s] owned=[%s] +[%s] -[%s]\n' \
 			"$trunk" "$cstate" "${detected_ids:-none}" "${t_owned:-none}" "${t_adds:-none}" "${t_rems:-none}"
 	done
+
+	# C1 preview: mirror apply_change's default-route guard so the diff above is not
+	# misleading (a removal the apply would actually refuse).
+	local dry_snap
+	dry_snap=$(snapshot_default_route)
+	if default_iface_in_removals "$dry_snap" "$all_removals"; then
+		printf '  default-route guard: current default iface (%s) is in removals; --boot/--rescan would REFUSE and change nothing (C1: removing it would strand the default egress). Move the default (lower metric) or stop routing over this VLAN first.\n' "$dry_snap"
+	fi
 
 	if [ "$REMOVE_ON_CARRIER_LOSS" = true ] && [ "$routing_ok" = no ]; then
 		printf '  carrier-down: preserving (no healthy default route; --boot would preserve)\n'

@@ -624,3 +624,40 @@ the merges auto-reconcile). Branch `fix/gate4-h2-config-isolation`. Unit: `tests
 (16 asserts incl. protected-global-untouched and no-code-execution). Fork review: correct+safe,
 no CRITICAL/HIGH/MEDIUM; two LOW notes fixed (unquoted-list truncation -> preserve; log arg
 naming). No hardware validation needed - config parsing is pure, fully covered at Layer-1.
+
+## 2026-08-05 (Unit 3, C1) - routed-mode default-route delete guard: refuse-whole, not partial-preserve
+
+Review finding C1 (Codex CRITICAL; mine HIGH, routed-mode only): `apply_change` deletes every
+removal post-ACCEPT (`ip link delete`) with no check that the current default-route iface is in
+the removal set. In routed mode (VLAN_ROUTES=true, FR-37 failover) a dynavlan VLAN can be the
+box's default egress. `netplan try` health PASSes during the try (the VLAN is still up; deletion
+is post-ACCEPT), so we ACCEPT, then delete the default iface with no revert = strand. Confirmed
+control-flow gap. Unreachable at the default VLAN_ROUTES=false (default is always the base
+uplink, never a dynavlan token).
+
+FIX: pure helper `default_iface_in_removals(snap_iface, removals)` (snap_iface non-empty AND an
+exact `in_list` token match); `apply_change` calls it right after `snapshot_default_route`,
+BEFORE any disk change, and refuses (return 1, nothing changed) when true. `do_dryrun` previews
+the would-be refusal in the same idiom as the metric-conflict preview.
+
+DECISION - refuse-whole reconcile, NOT partial-preserve (drop snap_iface from removals and apply
+the rest). Both prevent the strand; the choice is what else happens. Refuse-whole chosen because:
+(1) a removal signal ON your default route is itself a contradiction worth stopping on, not
+silently working around - preserving the VLAN because it is load-bearing can mask a real
+"about to lose routing" problem; (2) it is consistent with the other pre-disk guards
+(metric-conflict, zero-detection) which all refuse rather than surgically edit the target set -
+partial-preserve would add a new post-decision code path reshaping `removals`; (3) partial-
+preserve produces a messier recurring state (keeps mutating the box around a stuck default VLAN
+each cycle), whereas refuse-whole recurs as "no change + err", a clear come-look signal; (4) the
+situation is rare and anomalous (routed mode + VLAN-as-sole-default + that VLAN in removals), so
+the conservative fail-stop is proportionate. Cost accepted: on a box where this happens
+legitimately (operator migrating the default off a VLAN while a new VLAN appears in the same
+window), refuse-whole DEFERS the new VLAN's provisioning until the default moves - a delay, not a
+strand, cleared next cycle. User weighed preserve-vs-refuse explicitly and took the recommendation.
+
+`ver=` 0.4.1 -> 0.4.2 (same unreleased Unit 3 batch as C2/H2). Branch
+`fix/gate4-c1-routed-default-guard`. Unit: `tests/unit.sh §1aa` (fires/no-fire cases +
+different-trunk and substring/prefix no-false-match). Fork review: correct+safe, no
+CRITICAL/HIGH/MEDIUM; one LOW (add substring-safety asserts) fixed. Hardware validation pending
+(routed VLAN as sole default, removed with carrier up -> prove refusal before write), batched
+with C2's console session.

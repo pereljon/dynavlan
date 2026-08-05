@@ -33,6 +33,15 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
   documented keys; an unknown/protected key or non-assignment line refuses the
   run, and values are assigned as inert literals (no code execution). The config
   surface is now exactly the documented keys. (`ver=` 0.4.1 -> 0.4.2.)
+- Routed-mode default-route delete guard (C1). In routed mode (`VLAN_ROUTES=true`)
+  a dynavlan VLAN can be the box's default egress. Removing it would strand the
+  box: the `ip link delete` runs only after `netplan try` ACCEPTs, and the health
+  check PASSes during the try (the VLAN is still up), so the delete tears down the
+  default route post-ACCEPT with no revert. `apply_change` now refuses the whole
+  reconcile before any disk change when the current default-route interface is in
+  the removal set, preserving it and changing nothing until an alternate default
+  exists; `--dry-run` previews the refusal. No-op at the default `VLAN_ROUTES=false`
+  (the default is always the base uplink, never a dynavlan VLAN). (`ver=` 0.4.1 -> 0.4.2.)
 - `--dry-run` now exits non-zero when `netplan generate` rejects the candidate
   config; it previously printed `validate: FAIL` but exited 0, so a scripted or
   attended pre-flight keying on `$?` could not tell a bad config from a good one.
