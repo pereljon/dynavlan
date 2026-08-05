@@ -46,8 +46,18 @@ API. Verified live (`https://pereljon.github.io/dynavlan` serves a signed `InRel
 listing dynavlan 0.4.0) and validated end-to-end on the Domotz test box (keyring + source added,
 `apt update`/`apt-cache policy`/`apt install --only-upgrade` all work correctly). Full detail:
 `context/decisions.md` 2026-08-04, `context/todo.md` APT repository hosting milestone.
-NEXT UP: v1.0 gates (1) and (2) of 4 are done; remaining gates are second-box/multi-site
-validation and the 1.0.0 freeze+review itself (see `context/todo.md` v1.0 milestone).
+
+STATE (2026-08-04, v1.0 gate-4 review remediation): working the pre-1.0 adversarial review
+(`internal/codex-review-v0-4.md`) via a fix register (`docs/superpowers/plans/2026-08-04-v1.0-gate4-review-fixes.md`).
+Unit 1 (doc contradictions) + Unit 2 (M3 dry-run exit code, H7 build-deb version binding, H3 upgrade
+timer-state) DONE, HW-validated, merged to main (`4730206`), pushed. Unit 3 (pre-freeze blockers
+C2/H2/C1) underway: **C2** (apply-evidence gap on no-addition changes) CODE-COMPLETE + fork-reviewed
+on branch `fix/gate4-c2-apply-evidence` (minimal-#1: `APPLY_NOEVIDENCE_SETTLE` floor + exit backstop;
+`ver=` 0.4.2; `tests/unit.sh §1y`; rationale in `context/decisions.md` 2026-08-04). C2 hardware
+validation (slow removal-only + slow reapply, finalizes the provisional floor) PENDING, then H2, then C1.
+NEXT UP: hardware-validate C2 on the Protectli box, then H2 (config isolation) + C1 (routed-mode delete
+guard) to close the pre-freeze blockers; v1.0 gates (1)+(2) done, remaining gates are multi-site
+validation and the 1.0.0 freeze+review (see `context/todo.md` v1.0 milestone).
 
 Before coding a change, read in order:
 4. dev/SKELETON.md - logic flow and key invariants

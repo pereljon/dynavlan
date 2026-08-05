@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.1"
+ver="0.4.2"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -31,7 +31,11 @@ BACKUP_DIR="/var/backups/dynavlan"             # FR-19: audit/history backups (o
 MIN_NETPLAN="0.106"                            # FR-0: pinned minimum (Ubuntu 22.04 baseline)
 TRY_TIMEOUT=30                                 # FR-18: netplan try confirmation window (starts AFTER its apply)
 POLL_INTERVAL=2                                # accept-loop sampling interval (§9)
-APPLY_FALLBACK_SETTLE=10                       # min settle before health sampling when no probe iface exists
+APPLY_FALLBACK_SETTLE=10                       # min settle before health sampling once probe-iface evidence exists
+APPLY_NOEVIDENCE_SETTLE=16                     # C2: larger floor for no-addition changes (removal-only/--reapply) that
+                                               # have NO in-kernel apply signal - sized to exceed a real apply so the
+                                               # first health sample lands post-apply, must stay <= TRY_TIMEOUT-2*POLL
+                                               # - HEALTH_CONSEC*POLL so a no-addition change can still accept (tests §1y)
 HEALTH_CONSEC=2                                # consecutive health PASSes required to accept
 REAPPLY_LOCK_WAIT=300                          # FR-39: --reapply waits for an in-flight run (a rescan can legitimately take minutes)
 
@@ -948,8 +952,10 @@ backend_validate() { # [ROOTDIR] - netplan generate; sets VALIDATE_ERRSRC/MSG on
 # AFTER the apply - accepting a change the health check never actually saw applied.
 # So the accept is gated on three conditions, evaluated in a poll loop:
 #   1. APPLY EVIDENCE: PROBE_IFC (an interface that exists only once the apply has
-#      run, i.e. the first added VLAN) is present; for changes with no additions,
-#      fall back to a settle floor of APPLY_FALLBACK_SETTLE seconds.
+#      run, i.e. the first added VLAN) is present, then a settle floor of
+#      APPLY_FALLBACK_SETTLE. Changes with no additions have no such signal, so they
+#      fall back to the LARGER APPLY_NOEVIDENCE_SETTLE floor (via apply_settle_floor)
+#      - see the C2 note below.
 #   2. LIVENESS: netplan try is still running at accept time. A dead try means it
 #      reverted or failed - either way, never accept (a false accept would delete
 #      interfaces and restart the agent for a change that was never applied).
@@ -958,9 +964,22 @@ backend_validate() { # [ROOTDIR] - netplan generate; sets VALIDATE_ERRSRC/MSG on
 # so it reverts via its own validated timeout path (stdin EOF behavior on early
 # close is NOT hardware-validated; do not exercise it). An independent wall-clock
 # guard bounds the whole interaction regardless of netplan try's own timer.
+# C2: with a probe iface the apply is observable (the netdev appears); without one
+# (removal-only / --reapply) nothing in the kernel changes during the try window, so
+# the floor must be conservative enough that the first health sample is post-apply.
+apply_settle_floor() { # PROBE_IFC -> seconds to settle before health sampling begins
+	if [ -n "$1" ]; then
+		printf '%s\n' "$APPLY_FALLBACK_SETTLE"
+	else
+		printf '%s\n' "$APPLY_NOEVIDENCE_SETTLE"
+	fi
+}
+
 backend_apply_with_revert() { # SNAP_IFACE PROBE_IFC -> 0 accepted, 1 reverted/failed
-	local snap_iface="$1" probe="$2" fifo result trypid
+	local snap_iface="$1" probe="$2" fifo result trypid try_rc
 	local waited=0 consec=0 accepted=0 seen_at=""
+	local settle_floor
+	settle_floor=$(apply_settle_floor "$probe")
 	local wall_guard=$((TRY_TIMEOUT * 3)) # apply phase + confirmation window + margin
 	# The accept must land INSIDE netplan try's confirmation window. Its revert timer
 	# starts when its apply completes, which is AT OR BEFORE the moment our probe
@@ -996,9 +1015,12 @@ backend_apply_with_revert() { # SNAP_IFACE PROBE_IFC -> 0 accepted, 1 reverted/f
 				seen_at=0
 			fi
 		fi
-		# Health sampling starts only after evidence AND an unconditional settle floor
-		# (probe appearance alone can precede the apply's routing effects by seconds).
-		if [ -n "$seen_at" ] && [ "$waited" -ge "$APPLY_FALLBACK_SETTLE" ]; then
+		# Health sampling starts only after evidence AND a settle floor (probe
+		# appearance alone can precede the apply's routing effects by seconds). For
+		# no-addition changes the floor is larger (settle_floor via apply_settle_floor):
+		# there is no probe to prove apply progress, so the floor alone must guarantee
+		# the sample lands post-apply, never on pre-apply routing (C2).
+		if [ -n "$seen_at" ] && [ "$waited" -ge "$settle_floor" ]; then
 			if [ $((waited - seen_at)) -ge "$accept_cutoff" ]; then
 				log err "confirmation window elapsed without sustained health (revert imminent or in progress); not accepting"
 				break
@@ -1022,7 +1044,12 @@ backend_apply_with_revert() { # SNAP_IFACE PROBE_IFC -> 0 accepted, 1 reverted/f
 	[ "$waited" -ge "$wall_guard" ] && log err "wall-clock guard (${wall_guard}s) expired waiting for apply evidence + health; not accepting"
 	if [ "$accepted" -eq 1 ]; then
 		exec 9>&- # close after the accept write; netplan try exits immediately on accept
+		# C2 backstop: netplan try exits 0 on an accepted keep. A non-zero exit here
+		# means the apply we just committed reported failure - record it (FR-38 audit);
+		# it does not un-accept (the newline is already sent) but it must not be silent.
 		wait "$trypid" 2>/dev/null
+		try_rc=$?
+		[ "$try_rc" -ne 0 ] && log err "netplan try reported non-zero exit ($try_rc) after ACCEPT; applied state should be verified"
 	else
 		# FAIL path: hold the write end OPEN so netplan try sees no EOF and reverts on
 		# its own timer (the hardware-validated path), bounded by an independent clock.
@@ -1036,6 +1063,8 @@ backend_apply_with_revert() { # SNAP_IFACE PROBE_IFC -> 0 accepted, 1 reverted/f
 			log err "netplan try still running after ${wall_guard}s post-decision; leaving it to its own revert; state uncertain"
 		else
 			wait "$trypid" 2>/dev/null
+			try_rc=$?
+			log info "netplan try exited $try_rc after revert/no-accept (expected non-zero on a timed revert)"
 		fi
 	fi
 	trap - PIPE

@@ -87,7 +87,8 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 | `backend_list_managed_vlans` | IFACE -> bare VLAN ids managed OUTSIDE our namespace on THAT trunk (netplan merge + kernel, minus our own tokens on that iface) |
 | `backend_generate_config` | Write our file atomically (same-dir mktemp 0600, fsync, rename) from a target token set; isolation stanza (incl. `accept-ra: false` in both modes, FR-14a), or routes+metric per FR-37, keyed per token |
 | `backend_validate` | `netplan generate`; on failure classify VALIDATE_ERRSRC ours-vs-base (base = freeze) |
-| `backend_apply_with_revert` | The accept primitive: netplan try + fifo, apply-evidence + liveness + consecutive-health + window-bound accept; FAIL holds fifo open for try's own revert timer |
+| `apply_settle_floor` | C2: returns the settle floor before health sampling - `APPLY_FALLBACK_SETTLE` when a probe iface exists, the larger `APPLY_NOEVIDENCE_SETTLE` for no-addition changes (removal-only/`--reapply`) that have no in-kernel apply signal |
+| `backend_apply_with_revert` | The accept primitive: netplan try + fifo, apply-evidence + liveness + consecutive-health + window-bound accept; per-change settle floor via `apply_settle_floor`; captures netplan try's exit on both paths (audit); FAIL holds fifo open for try's own revert timer |
 | `backend_remove_vlan` | `ip link delete` of a removed VLAN interface (only ever called after ACCEPT) |
 
 ## Health check (FR-18)

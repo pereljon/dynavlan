@@ -17,6 +17,14 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ### Fixed
 
+- Apply-evidence gap on no-addition changes (C2): a removal-only reconcile or
+  `--reapply` could ACCEPT a `netplan try` on elapsed time, sampling pre-apply
+  routing on a slow apply. These changes have no in-kernel signal to observe
+  (netplan try does not delete removed netdevs; a rerender changes no kernel
+  state), so they now use a larger, bounded settle floor
+  (`APPLY_NOEVIDENCE_SETTLE`) sized so the first health sample lands post-apply,
+  and netplan try's exit is logged on both accept and revert paths instead of
+  discarded. Additions are unchanged. (`ver=` 0.4.1 -> 0.4.2.)
 - `--dry-run` now exits non-zero when `netplan generate` rejects the candidate
   config; it previously printed `validate: FAIL` but exited 0, so a scripted or
   attended pre-flight keying on `$?` could not tell a bad config from a good one.

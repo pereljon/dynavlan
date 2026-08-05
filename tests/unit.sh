@@ -461,6 +461,47 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 1y. apply_settle_floor - C2 apply-evidence floor (minimal-#1)
+#
+# A no-addition change (removal-only, --reapply) has NO in-kernel apply signal
+# during the netplan-try window: netplan try does not delete removed VLAN
+# netdevs (dynavlan does, only post-ACCEPT), and a rerender changes no kernel
+# state (SKELETON: "No-additions changes anchor at t=0"). So there is nothing to
+# observe, and the box relies on a conservative settle floor sized to exceed a
+# real apply, so the FIRST health sample lands POST-apply, not on pre-apply
+# routing. apply_settle_floor returns that larger floor when no probe iface
+# exists, and the normal fallback floor when one does. The no-evidence floor
+# must still leave room for HEALTH_CONSEC health samples before accept_cutoff
+# (= TRY_TIMEOUT - 2*POLL_INTERVAL); otherwise a no-addition change could never
+# accept. Both relationships are asserted, not just the value, so tuning the
+# constant on hardware cannot silently push it past the cutoff.
+# ---------------------------------------------------------------------------
+
+call apply_settle_floor "enp1s0.100"; ok "1y probe present -> fallback floor"       "$APPLY_FALLBACK_SETTLE"
+call apply_settle_floor "";           ok "1y no probe -> larger no-evidence floor"  "$APPLY_NOEVIDENCE_SETTLE"
+
+tests=$((tests + 1))
+if [ -n "$APPLY_NOEVIDENCE_SETTLE" ] && [ "$APPLY_NOEVIDENCE_SETTLE" -gt "$APPLY_FALLBACK_SETTLE" ] 2>/dev/null; then
+	printf 'ok   - %s\n' "1y no-evidence floor exceeds the fallback floor"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       APPLY_NOEVIDENCE_SETTLE=[%s] must be > APPLY_FALLBACK_SETTLE=[%s]\n' \
+		"1y no-evidence floor exceeds the fallback floor" "$APPLY_NOEVIDENCE_SETTLE" "$APPLY_FALLBACK_SETTLE"
+fi
+
+y_cutoff=$((TRY_TIMEOUT - 2 * POLL_INTERVAL))
+y_maxfloor=$((y_cutoff - HEALTH_CONSEC * POLL_INTERVAL))
+tests=$((tests + 1))
+if [ -n "$APPLY_NOEVIDENCE_SETTLE" ] && [ "$APPLY_NOEVIDENCE_SETTLE" -le "$y_maxfloor" ] 2>/dev/null; then
+	printf 'ok   - %s\n' "1y no-evidence floor leaves room for HEALTH_CONSEC samples before cutoff"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       APPLY_NOEVIDENCE_SETTLE=[%s] must be <= cutoff(%s) - HEALTH_CONSEC*POLL(%s) = %s\n' \
+		"1y no-evidence floor leaves room for HEALTH_CONSEC samples before cutoff" \
+		"$APPLY_NOEVIDENCE_SETTLE" "$y_cutoff" "$((HEALTH_CONSEC * POLL_INTERVAL))" "$y_maxfloor"
+fi
+
+# ---------------------------------------------------------------------------
 # 1m. config_body_differs - FR-39 reapply comparison
 #
 # Line 1 is the `# Managed by dynavlan <ver> (build <id>)` header. FR-38 put the

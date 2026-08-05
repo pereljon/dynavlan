@@ -532,3 +532,54 @@ postinst - proven by a step-by-step repro where none of the postinst commands (`
 enabled+stopped timer (so it is specific to first-install). This means the deployment guide's "install
 changes nothing on the network / enables for next boot, never starts" does not currently hold on a
 fresh install. Predates all gate-4 work; needs its own investigation + decision.
+
+## 2026-08-04 (later still) - C2 apply-evidence fix: minimal-#1 (conservative no-addition settle floor), not prompt-parsing or refusal
+
+Review finding C2: `backend_apply_with_revert` can ACCEPT a `netplan try` on ELAPSED TIME for a
+no-addition change (removal-only, `--reapply`). With no probe iface, `seen_at=0` at t=0; on a slow
+apply, health then samples PRE-apply routing (which passes, since a removal in the default isolated
+mode never touches the uplink default route) and the buffered accept newline commits a change the
+health check never actually saw applied.
+
+KEY ARCHITECTURAL FACT that shaped the fix: a no-addition change has NO in-kernel signal to observe
+during the try window. `netplan try` does not delete removed VLAN netdevs - dynavlan does, with
+`ip link delete`, and ONLY post-ACCEPT (revert cannot recreate a destroyed iface; SKELETON Key
+Invariants). So the removed interfaces are still present throughout the try, and a `--reapply`
+rerender changes no kernel state either. A "symmetric delta" observer (watch removed ifaces vanish)
+was my first instinct and is IMPOSSIBLE here.
+
+Three options were weighed:
+- #1 conservative settle floor (chosen, minimal form): keep the probe-appearance evidence for
+  additions; for no-addition changes use a LARGER floor (`APPLY_NOEVIDENCE_SETTLE`) sized to exceed a
+  real apply so the first health sample lands POST-apply. Add an exit-status backstop (stop discarding
+  `wait "$trypid"`; log on both paths). No new config surface (internal constant, keeping it off the
+  H2-vulnerable config path).
+- #2 parse `netplan try`'s confirmation prompt as a positive completion signal: the ONLY option that
+  yields genuine positive evidence for the no-addition case, and touches only stdout capture (the
+  hardware-validated stdin FIFO is untouched - I initially overstated this risk). Rejected as
+  version/locale-fragile and not hardware-validated: the prompt text is netplan's human UI, not a
+  stable contract.
+- #3 refuse a no-delta `--reapply`: rejected. It addresses at most the reapply half of C2, does
+  NOTHING for removal-only (which is legitimate and cannot be refused - FR-24, FR-41), and breaks
+  reapply's purpose (persisting drift-corrected canonical YAML to disk, which is the job even when
+  kernel state is unchanged; `do_reapply` already short-circuits a byte-identical regen).
+
+Why minimal-#1 is sufficient despite adding no positive evidence: the reason a post-apply health
+signal matters is to catch an apply that BREAKS the uplink route, and every path that could do that on
+a no-addition change is already guarded elsewhere - dynavlan owns one file and never writes base
+uplink config (isolated mode: no VLAN carries a default route, so a removal/rerender cannot move it);
+`backend_validate` refuses a malformed config pre-try; the metric-conflict gate refuses a routed VLAN
+metric that would beat the uplink; and C1 (next fix) covers removing the routed VLAN that IS the
+default. So C2's residual real surface is the narrow timing mechanism (sampling pre-apply state on a
+slow apply), which the larger floor closes directly. Gold-plating with #2 was not warranted.
+
+INHERENT LIMITATION (documented, accepted): the floor must stay `<= TRY_TIMEOUT - 2*POLL - HEALTH_CONSEC*POLL`
+(= 22 at current constants) so a no-addition change can still accept. If real netplan-try apply on the
+box can exceed ~22s, the floor alone cannot guarantee post-apply sampling within `TRY_TIMEOUT=30`;
+covering that would need a longer try window, not a bigger floor. `APPLY_NOEVIDENCE_SETTLE=16` is
+PROVISIONAL pending a measured apply duration on the Protectli box; finalize before the release gate.
+
+`ver=` 0.4.1 -> 0.4.2 (behavior: no-addition accept timing changes). Branch
+`fix/gate4-c2-apply-evidence`. Unit coverage: `tests/unit.sh §1y` (selection + both cutoff-headroom
+invariants). Branch review (fork): correct and safe, no CRITICAL/HIGH/MEDIUM; one LOW stale header
+comment fixed. Hardware validation (slow removal-only + slow reapply) still pending.
