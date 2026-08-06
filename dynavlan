@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.7"
+ver="0.4.8"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -1264,11 +1264,53 @@ backend_remove_vlan() { # TOKEN (iface.id) - tear down live interface (FR-24)
 		if ip link delete "$ifc" 2>/dev/null; then
 			log notice "removed VLAN $(tok_id "$tok") (deleted interface $ifc)"
 		else
+			# M5: rc 1 tells the caller to record this for a retry next run; the
+			# stanza is already gone from our file, so a forgotten failure would
+			# strand the live interface (and its subnet) until reboot.
 			log warning "failed to delete interface $ifc"
+			return 1
 		fi
 	else
 		log info "VLAN $(tok_id "$tok") interface $ifc already absent"
 	fi
+}
+
+# M5: interfaces whose post-ACCEPT `ip link delete` failed and must be retried.
+# /run is tmpfs, wiped on reboot - the correct lifetime: a VLAN interface never
+# survives a reboot, so a pending-delete record must not either. The record is
+# ownership-safe: only tokens dynavlan itself removed are ever written here, so a
+# drain never touches a genuinely external VLAN (backend_list_managed_vlans still
+# excludes those). Runtime scratch, NOT config: config state lives only in the
+# owned netplan file.
+PENDING_DELETE_FILE="${PENDING_DELETE_FILE:-/run/dynavlan/pending-delete}"
+
+pending_deletes() { # -> sorted-unique iface.id tokens awaiting re-delete
+	[ -f "$PENDING_DELETE_FILE" ] || return 0
+	emit_tokens $(< "$PENDING_DELETE_FILE")
+}
+
+write_pending_deletes() { # TOKENS - replace the record (empty removes the file)
+	local toks
+	toks=$(emit_tokens $1)
+	if [ -z "$toks" ]; then
+		rm -f "$PENDING_DELETE_FILE"
+		return 0
+	fi
+	mkdir -p "$(dirname "$PENDING_DELETE_FILE")" 2>/dev/null || return 1
+	printf '%s\n' $toks >"$PENDING_DELETE_FILE"
+}
+
+record_pending_delete() { # TOKEN - remember a delete that failed, for next run
+	write_pending_deletes "$(pending_deletes) $1"
+}
+
+drain_pending_deletes() { # retry every recorded delete; keep only those still failing
+	[ -f "$PENDING_DELETE_FILE" ] || return 0
+	local tok survivors=""
+	for tok in $(pending_deletes); do
+		backend_remove_vlan "$tok" || survivors="$survivors $tok"
+	done
+	write_pending_deletes "$survivors"
 }
 
 # ---------------------------------------------------------------------------
@@ -1572,7 +1614,9 @@ apply_change() { # TARGET_TOKENS ADDITION_TOKENS REMOVAL_TOKENS [LEASE_TOKENS]
 		prune_backups
 		# ip link delete only AFTER accept; on revert the stale links are harmless
 		# but deleting them would lose monitoring on VLANs the revert just restored.
-		for tok in $removals; do backend_remove_vlan "$tok"; done
+		# M5: a delete that fails here is recorded, not forgotten - the next
+		# reconcile's drain_pending_deletes retries it (ownership-safe).
+		for tok in $removals; do backend_remove_vlan "$tok" || record_pending_delete "$tok"; done
 		wait_leases "$lease_set"
 		restart_targets
 		log notice "reconcile applied on [${trunks:-none}]: added [${additions:-none}] removed [${removals:-none}]"
@@ -1652,6 +1696,7 @@ gate_vlan_count() { # KEPT ADDITIONS - echoes the (possibly reduced) additions; 
 
 do_boot() {
 	log info "run start: dynavlan $(version_string "$ver" "$build") mode=boot detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}] reset_on_boot=$RESET_ON_BOOT remove_on_carrier_loss=$REMOVE_ON_CARRIER_LOSS"
+	drain_pending_deletes # M5: retry any delete a prior run recorded as failed
 
 	# Do NOT branch on run_detection's rc. It has exactly one non-zero return and it
 	# fires precisely when DETECTED_TRUNKS is empty; there is no probe-error signal
@@ -1822,6 +1867,7 @@ do_boot() {
 
 do_rescan() {
 	log info "run start: dynavlan $(version_string "$ver" "$build") mode=rescan detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}] remove_on_carrier_loss=$REMOVE_ON_CARRIER_LOSS"
+	drain_pending_deletes # M5: retry any delete a prior run recorded as failed
 	run_detection || : # rc is "saw nothing", not "failed" - see do_boot
 	if [ -z "$DETECTED_TRUNKS" ] && [ "$REMOVE_ON_CARRIER_LOSS" != true ]; then
 		log info "rescan: no trunks detected; nothing to add"
@@ -2016,6 +2062,12 @@ do_dryrun() {
 	if [ "$REMOVE_ON_CARRIER_LOSS" = true ] && [ "$routing_ok" = no ]; then
 		printf '  carrier-down: preserving (no healthy default route; --boot would preserve)\n'
 	fi
+
+	# M5 preview: a prior run may have failed to delete an already-removed interface
+	# and recorded it; --boot/--rescan would retry the delete. Read-only here.
+	local pend
+	pend=$(pending_deletes)
+	[ -n "$pend" ] && printf '  pending re-delete (prior removal left the live interface up; --boot/--rescan would retry): [%s]\n' "$pend"
 
 	if [ "$RESTART_ON_NEW_SUBNET" = true ]; then
 		local cur_sn new_sn

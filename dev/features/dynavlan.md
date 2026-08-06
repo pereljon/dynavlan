@@ -71,6 +71,7 @@ A startup `backend_detect` (reads `/etc/os-release`, probes for `netplan`) is de
 | `detect_iface` / `run_detection` | `detect_iface` unions the enabled methods for one iface; `run_detection` runs it concurrently over every carrier-up iface and sets `DETECTED_TRUNKS` to every iface with a non-empty tag set - all of them, not a single selected trunk. No trunk-selection contest, no hysteresis, no `select_trunk` |
 | `drop_iface_tokens` | Token set minus every token on any listed iface (tests 1w). Discards additions on a trunk confirmed carrier-down: detection filters carrier once and then sniffs for `SNIFF_SECONDS`, so a trunk that dies mid-sniff keeps its tags and would otherwise have new VLANs created on it in the same apply that tears its old ones down |
 | `ifaces_without_carrier` | Addition tokens -> the subset of their ifaces with no carrier NOW (tests 1ad). Single sample (declining an addition is fail-toward-no-change, re-added next rescan; unlike a removal it needs no debounce). do_boot/do_rescan/do_dryrun fold it into the `drop_iface_tokens` set unconditionally, so the drop covers a newly-detected but *not-yet-owned* trunk that died in the detection->apply window (M4). The existing carrier-down *removal* path is owned-only and misses that case |
+| `pending_deletes` / `write_pending_deletes` / `record_pending_delete` / `drain_pending_deletes` | Ownership-safe pending-delete record in `/run/dynavlan/pending-delete` (tests 1ae, M5). A post-ACCEPT `ip link delete` that fails leaves the stanza already gone from our file, so the live interface (and its subnet) would linger until reboot; `apply_change` records the token and every do_boot/do_rescan retries it via `drain_pending_deletes`. `/run` is tmpfs so the record dies with the interfaces on reboot. Only tokens dynavlan removed are ever recorded, so a retry never deletes a genuinely external VLAN |
 | `emit_tokens` / `tok_iface` / `tok_id` / `tag_tokens` / `untag_tokens` / `tokens_for_iface` / `distinct_ifaces` | Pure `iface.id` token helpers (tests via the mode functions that use them): convert between the token domain (every set downstream of detection) and the per-trunk bare-id domain `compute_candidates`/`boot_removals` operate in; `distinct_ifaces` drives the per-trunk loop in every mode |
 | `compute_candidates` | Per-trunk: `detected ∩ [MIN,MAX] − VLAN_IGNORE − backend_list_managed_vlans(iface) − owned-ids-on-that-iface`; caller tags the result to `iface.id` |
 | `carrier_removals` | Pure (FR-41, tests 1r): `OWNED_ON_TRUNK C1 C2 -> owned set if BOTH carrier samples are "down", else empty`. Full-teardown decision for a dead trunk, mirrors `boot_removals`' shape |
@@ -121,7 +122,8 @@ apply_change(target_set):
      return NO_CHANGE                             # NO deletes, NO lease-settle, NO restarts
 
   # ACCEPTED path only:
-  for vlan in removals: backend_remove_vlan(vlan) # FR-24: ip link delete ONLY here, after accept
+  for vlan in removals:                           # FR-24: ip link delete ONLY here, after accept
+     backend_remove_vlan(vlan) or record_pending_delete(vlan)  # M5: failed delete -> retry next run
   wait_leases(additions)                          # bounded, non-fatal (FR-27)
   restart_targets()                               # snaps then services (FR-27/28)
   log notice (summary)

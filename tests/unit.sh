@@ -710,6 +710,51 @@ ok "1ad additions on the dead trunk dropped, live trunk kept" "enp1s0.100"
 eval "$_hc_saved_1ad"
 
 # ---------------------------------------------------------------------------
+# 1ae. pending-delete record + drain - M5: a post-ACCEPT `ip link delete` that
+#      failed is remembered in /run and retried on the next reconcile, never
+#      forgotten. Uses a temp file (not /run) and stubs backend_remove_vlan so
+#      the drain's retry is exercised without touching the kernel.
+# ---------------------------------------------------------------------------
+_pd_saved=$PENDING_DELETE_FILE
+PENDING_DELETE_FILE=$(mktemp)
+rm -f "$PENDING_DELETE_FILE" # start from "no record" (absent file)
+
+call pending_deletes
+ok "1ae absent record -> empty" ""
+
+call write_pending_deletes "enp2s0.40 enp1s0.100 enp2s0.40"
+ok "1ae empty write succeeds silently" ""
+call pending_deletes
+ok "1ae round-trip is sorted-unique" "enp1s0.100 enp2s0.40"
+
+record_pending_delete "enp1s0.18"
+call pending_deletes
+ok "1ae record appends and dedups" "enp1s0.100 enp1s0.18 enp2s0.40"
+
+call write_pending_deletes ""
+ok "1ae empty write succeeds" ""
+call pending_deletes
+ok "1ae emptied record -> empty" ""
+
+# Drain: stub backend_remove_vlan to fail for a token marked "stuck", succeed
+# otherwise; survivors (failures) stay recorded, successes are dropped.
+_brv_saved=$(declare -f backend_remove_vlan)
+backend_remove_vlan() { case "$1" in *stuck*) return 1 ;; *) return 0 ;; esac; }
+write_pending_deletes "enp1s0.stuck enp1s0.100 enp2s0.40"
+drain_pending_deletes
+call pending_deletes
+ok "1ae drain keeps only the still-failing token" "enp1s0.stuck"
+
+backend_remove_vlan() { return 0; } # now everything deletes cleanly
+drain_pending_deletes
+call pending_deletes
+ok "1ae a clean drain clears the record" ""
+eval "$_brv_saved"
+
+rm -f "$PENDING_DELETE_FILE"
+PENDING_DELETE_FILE=$_pd_saved
+
+# ---------------------------------------------------------------------------
 # 1m. config_body_differs - FR-39 reapply comparison
 #
 # Line 1 is the `# Managed by dynavlan <ver> (build <id>)` header. FR-38 put the

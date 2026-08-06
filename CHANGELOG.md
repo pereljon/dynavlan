@@ -6,6 +6,15 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ### Fixed
 
+- A post-accept `ip link delete` that fails transiently is no longer forgotten.
+  The delete runs only after the change is accepted, at which point the stanza is
+  already gone from the owned netplan file, so a failed delete would leave the live
+  interface (and its subnet) up until reboot and the next run could not tell that
+  orphan from a genuine external VLAN. The failed token is now recorded in
+  `/run/dynavlan/pending-delete` (tmpfs, reboot-scoped) and retried at the start of
+  every `--boot`/`--rescan`; `--dry-run` previews the pending set read-only. Only
+  tokens dynavlan itself removed are ever recorded, so a retry never deletes an
+  external VLAN (gate-4 M5). (`ver=` 0.4.7 -> 0.4.8.)
 - Additions are no longer created on a trunk that lost carrier between detection
   and apply. Additions are computed from the detection sample taken before the
   carrier verdict; the prior drop-on-dead-trunk guard only covered **owned** trunks

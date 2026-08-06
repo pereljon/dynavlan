@@ -99,7 +99,9 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 | `backend_validate` | `netplan generate`; on failure classify VALIDATE_ERRSRC ours-vs-base (base = freeze) |
 | `apply_settle_floor` | C2: returns the settle floor before health sampling - `APPLY_FALLBACK_SETTLE` when a probe iface exists, the larger `APPLY_NOEVIDENCE_SETTLE` for no-addition changes (removal-only/`--reapply`) that have no in-kernel apply signal |
 | `backend_apply_with_revert` | The accept primitive: netplan try + fifo, apply-evidence + liveness + consecutive-health + window-bound accept; per-change settle floor via `apply_settle_floor`; captures netplan try's exit on both paths (audit); FAIL holds fifo open for try's own revert timer |
-| `backend_remove_vlan` | `ip link delete` of a removed VLAN interface (only ever called after ACCEPT) |
+| `backend_remove_vlan` | `ip link delete` of a removed VLAN interface (only ever called after ACCEPT). Returns rc 1 on delete failure so the caller can record a retry (M5) |
+| `pending_deletes` / `write_pending_deletes` / `record_pending_delete` | Ownership-safe pending-delete record in `/run` (tmpfs, reboot-scoped). `apply_change` records a token whose post-ACCEPT `ip link delete` failed; only tokens dynavlan itself removed are ever written, so a retry never touches an external VLAN (M5) |
+| `drain_pending_deletes` | Start of do_boot/do_rescan: retries every recorded delete via `backend_remove_vlan`, keeps only those still failing. do_dryrun previews the pending set read-only (M5) |
 
 ## Health check (FR-18)
 
