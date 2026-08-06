@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.9"
+ver="0.4.10"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -342,6 +342,24 @@ compute_candidates() {
 	done
 	emit_set $out
 	return 0
+}
+
+# M8 --status display: which detected VLANs the reconcile would exclude, split by
+# reason, for FR-35's per-trunk excluded/ignored report. Pure; emit_set sorts.
+ids_in_ignore() { # DETECTED IGNORE -> detected ids present in the ignore set
+	local id ign=" $2 " out=""
+	for id in $1; do
+		case "$ign" in *" $id "*) out="$out $id" ;; esac
+	done
+	emit_set $out
+}
+
+ids_out_of_range() { # DETECTED MIN MAX -> detected ids outside [MIN,MAX]
+	local id min="$2" max="$3" out=""
+	for id in $1; do
+		((id >= min && id <= max)) || out="$out $id"
+	done
+	emit_set $out
 }
 
 # ---------------------------------------------------------------------------
@@ -713,12 +731,21 @@ version_ge() { # A B -> 0 if A >= B
 	[ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -1)" = "$2" ]
 }
 
-check_preconditions() {
-	if [ "$(id -u)" -ne 0 ]; then
-		log err "must run as root"
-		return 1
-	fi
-	command -v netplan >/dev/null 2>&1 || {
+have_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+# Inbound-only capture is a correctness requirement, not an optimization (see
+# detect_sniff): without it we detect our own egress and removals can never fire.
+# `-d` compiles the filter and exits without opening the device: non-mutating,
+# and it does not need root.
+tcpdump_supports_inbound() { tcpdump -Q in -d vlan >/dev/null 2>&1; }
+
+# Non-mutating dependency gate for the DETECTION pass (M8). Shared by
+# check_preconditions (apply path) and do_status (report path): a missing tool
+# makes detection untrustworthy, so `--status` reports "unavailable" + non-zero
+# rather than a confident, wrong "detected: [none]". Deliberately checks neither
+# root nor `netplan try` - those gate the apply, not detection/reporting.
+check_detect_deps() {
+	have_cmd netplan || {
 		log err "netplan not found"
 		return 1
 	}
@@ -732,32 +759,38 @@ check_preconditions() {
 		log err "netplan >= $MIN_NETPLAN required (found $v)"
 		return 1
 	fi
-	# Non-mutating capability probe (FR-0): introspection only, never a live apply.
-	netplan try --help >/dev/null 2>&1 || {
-		log err "'netplan try' unavailable; refusing (no silent fallback to bare 'netplan apply')"
-		return 1
-	}
 	if [ "$DETECT_METHOD" = sniff ] || [ "$DETECT_METHOD" = both ]; then
-		command -v tcpdump >/dev/null 2>&1 || {
+		have_cmd tcpdump || {
 			log err "DETECT_METHOD=$DETECT_METHOD requires tcpdump (not installed)"
 			return 1
 		}
-		# Inbound-only capture is a correctness requirement, not an optimization
-		# (see detect_sniff): without it we detect our own egress and removals can
-		# never fire. Refuse rather than silently capture both directions. `-d`
-		# compiles the filter and exits without opening the device: non-mutating,
-		# and it does not need root.
-		tcpdump -Q in -d vlan >/dev/null 2>&1 || {
+		tcpdump_supports_inbound || {
 			log err "tcpdump does not support '-Q in' (inbound-only capture); refusing - without it detection counts our own transmitted frames and VLAN removal can never fire"
 			return 1
 		}
 	fi
 	if [ "$DETECT_METHOD" = lldp ] || [ "$DETECT_METHOD" = both ]; then
-		command -v lldpctl >/dev/null 2>&1 || {
+		have_cmd lldpctl || {
 			log err "DETECT_METHOD=$DETECT_METHOD requires lldpctl (not installed)"
 			return 1
 		}
 	fi
+	return 0
+}
+
+check_preconditions() {
+	if [ "$(id -u)" -ne 0 ]; then
+		log err "must run as root"
+		return 1
+	fi
+	check_detect_deps || return 1
+	# `netplan try` gates the APPLY path only (status/detection never apply); a box
+	# that can detect but lacks a working `netplan try` must still fail a reconcile,
+	# with no silent fallback to bare `netplan apply`. Non-mutating capability probe.
+	netplan try --help >/dev/null 2>&1 || {
+		log err "'netplan try' unavailable; refusing (no silent fallback to bare 'netplan apply')"
+		return 1
+	}
 	return 0
 }
 
@@ -2211,7 +2244,7 @@ do_reapply() {
 }
 
 do_status() { # FR-35 - report all trunks
-	local owned trunks managed
+	local owned trunks managed rc=0
 	owned=$(backend_owned_vlans)
 	trunks=$(distinct_ifaces "$owned")
 	printf 'dynavlan %s\n' "$(version_string "$ver" "$build")"
@@ -2225,18 +2258,29 @@ do_status() { # FR-35 - report all trunks
 		done
 	fi
 	printf '  detect_method: %s   range: %s-%s   ignore: [%s]\n' "$DETECT_METHOD" "$VLAN_MIN" "$VLAN_MAX" "${IGNORE_SET:-none}"
-	log info "status: running a ${SNIFF_SECONDS}s detection pass..."
-	if run_detection && [ -n "$DETECTED_TRUNKS" ]; then
-		printf '  detected trunks: [%s]\n' "$DETECTED_TRUNKS"
-		local trunk
-		for trunk in $DETECTED_TRUNKS; do
-			local detected_ids
-			detected_ids=$(emit_set $(iface_tags "$trunk"))
-			managed=$(backend_list_managed_vlans "$trunk")
-			printf '    %s: detected=[%s] managed-elsewhere=[%s]\n' "$trunk" "$detected_ids" "${managed:-none}"
-		done
+	# M8: gate the detection pass on its dependencies. A suppressed missing-tool
+	# failure would otherwise print "detected trunks: [none]" and exit 0 - a
+	# confident, wrong "no trunk" indistinguishable from a quiet wire. Report it as
+	# unavailable and fail non-zero instead (the specific tool is logged by the gate).
+	if check_detect_deps; then
+		log info "status: running a ${SNIFF_SECONDS}s detection pass..."
+		if run_detection && [ -n "$DETECTED_TRUNKS" ]; then
+			printf '  detected trunks: [%s]\n' "$DETECTED_TRUNKS"
+			local trunk detected_ids ignored oor
+			for trunk in $DETECTED_TRUNKS; do
+				detected_ids=$(emit_set $(iface_tags "$trunk"))
+				managed=$(backend_list_managed_vlans "$trunk")
+				ignored=$(ids_in_ignore "$detected_ids" "$IGNORE_SET")
+				oor=$(ids_out_of_range "$detected_ids" "$VLAN_MIN" "$VLAN_MAX")
+				printf '    %s: detected=[%s] ignored=[%s] out-of-range=[%s] managed-elsewhere=[%s]\n' \
+					"$trunk" "$detected_ids" "${ignored:-none}" "${oor:-none}" "${managed:-none}"
+			done
+		else
+			printf '  detected trunks: [none]\n'
+		fi
 	else
-		printf '  detected trunks: [none]\n'
+		printf '  detected trunks: unavailable (detection prerequisite missing; see log)\n'
+		rc=1
 	fi
 	printf '  run history: journalctl -t dynavlan\n'
 	if [ "$RESTART_ON_NEW_SUBNET" = true ]; then
@@ -2245,7 +2289,7 @@ do_status() { # FR-35 - report all trunks
 		new_sn=$(set_minus "$cur_sn" "$(read_seen)")
 		printf '  new IPv4 subnets since last seen (would restart): [%s]\n' "${new_sn:-none}"
 	fi
-	return 0
+	return $rc
 }
 
 # Pure: the timer drop-in text for a given rescan interval (minutes).

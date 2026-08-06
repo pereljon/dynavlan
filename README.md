@@ -111,7 +111,8 @@ dynavlan --reapply      # regenerate + apply the current VLAN set with this buil
                         #   only if it differs from what's on disk (use after an upgrade or a
                         #   config change like VLAN_ROUTES; no-ops if nothing changed)
 dynavlan --dry-run      # show the diff without applying anything
-dynavlan --status       # owned and detected VLANs per trunk (read-only, no apply)
+dynavlan --status       # owned and detected VLANs per trunk (read-only, no apply;
+                        #   exits non-zero if a detection tool is missing)
 dynavlan --reconfigure  # rewrite the timer drop-in after changing RESCAN_MINUTES
 dynavlan --version      # print version + build id (works unprivileged; safe with a broken config)
 ```

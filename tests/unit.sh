@@ -822,6 +822,71 @@ rm -f "$SEEN_FILE"
 SEEN_FILE=$_seen_saved
 
 # ---------------------------------------------------------------------------
+# 1ag. check_detect_deps - M8: the non-mutating detection dependency gate shared
+#      by check_preconditions and --status. A missing detection tool must FAIL it,
+#      so --status reports "unavailable" + non-zero instead of a false "detected:
+#      [none]" exit 0. Stubs have_cmd / netplan_version / tcpdump_supports_inbound
+#      so presence is controlled deterministically, independent of the host.
+# ---------------------------------------------------------------------------
+_hc_saved_1ag=$(declare -f have_cmd)
+_nv_saved_1ag=$(declare -f netplan_version)
+_ti_saved_1ag=$(declare -f tcpdump_supports_inbound)
+_dm_saved_1ag=$DETECT_METHOD
+HAVE="netplan tcpdump lldpctl"
+have_cmd() { case " $HAVE " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+netplan_version() { printf '0.107'; }
+tcpdump_supports_inbound() { return 0; }
+
+DETECT_METHOD=both
+HAVE="netplan tcpdump lldpctl"
+call check_detect_deps; ok "1ag both: all present -> ok" ""
+HAVE="netplan lldpctl" # tcpdump missing
+call check_detect_deps; err "1ag both: tcpdump missing -> fail"
+HAVE="netplan tcpdump" # lldpctl missing
+call check_detect_deps; err "1ag both: lldpctl missing -> fail"
+HAVE="netplan tcpdump lldpctl"
+tcpdump_supports_inbound() { return 1; } # present but no -Q in
+call check_detect_deps; err "1ag both: tcpdump lacks -Q in -> fail"
+tcpdump_supports_inbound() { return 0; }
+HAVE="tcpdump lldpctl" # netplan missing
+call check_detect_deps; err "1ag netplan missing -> fail"
+HAVE="netplan tcpdump lldpctl"
+netplan_version() { printf '0.104'; } # below MIN_NETPLAN (0.106)
+call check_detect_deps; err "1ag netplan too old -> fail"
+netplan_version() { printf '0.107'; }
+
+DETECT_METHOD=lldp # tcpdump not required for lldp-only
+HAVE="netplan lldpctl"
+call check_detect_deps; ok "1ag lldp: tcpdump not required -> ok" ""
+DETECT_METHOD=sniff # lldpctl not required for sniff-only
+HAVE="netplan tcpdump"
+call check_detect_deps; ok "1ag sniff: lldpctl not required -> ok" ""
+
+DETECT_METHOD=$_dm_saved_1ag
+unset HAVE
+eval "${_hc_saved_1ag:-unset -f have_cmd}"
+eval "${_nv_saved_1ag:-unset -f netplan_version}"
+eval "${_ti_saved_1ag:-unset -f tcpdump_supports_inbound}"
+
+# ---------------------------------------------------------------------------
+# 1ah. ids_in_ignore / ids_out_of_range - M8: per-trunk excluded/ignored detail
+#      for --status (FR-35). Pure display helpers: which detected VLANs status
+#      shows as excluded and why. emit_set output is numeric-sorted, deduped.
+# ---------------------------------------------------------------------------
+call ids_in_ignore "10 20 30 40" "20 40 99"
+ok "1ah ignored = detected intersect ignore" "20 40"
+call ids_in_ignore "10 20 30" ""
+ok "1ah empty ignore -> none" ""
+call ids_in_ignore "" "20 40"
+ok "1ah empty detected -> none" ""
+call ids_out_of_range "5 10 1500 2000" "1" "1000"
+ok "1ah out-of-range = detected outside [min,max]" "1500 2000"
+call ids_out_of_range "10 20 30" "1" "1000"
+ok "1ah all in range -> none" ""
+call ids_out_of_range "" "1" "1000"
+ok "1ah empty detected out-of-range -> none" ""
+
+# ---------------------------------------------------------------------------
 # 1m. config_body_differs - FR-39 reapply comparison
 #
 # Line 1 is the `# Managed by dynavlan <ver> (build <id>)` header. FR-38 put the

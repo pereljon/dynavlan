@@ -22,6 +22,7 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 | `plan_route_metrics` | THE FR-37 assignment decision point: owned map + target + additions -> full token:metric map; assigns for target tokens LACKING a metric (not additions). Every caller must use this | 1g |
 | `metric_conflict` | CONFLICT if any assigned metric <= uplink default's metric (tie counts), else OK | 1g |
 | `compute_candidates` | detected ∩ [MIN,MAX] − ignore − managed-elsewhere − owned (per-trunk bare-id math; caller tags the result to iface.id) | 1b |
+| `ids_in_ignore` / `ids_out_of_range` | M8 `--status` display: detected ids that fall in `VLAN_IGNORE` / outside `[MIN,MAX]`, for the per-trunk excluded/ignored report (FR-35) | 1ah |
 | `ipv4_network` | Network address for an IPv4 ADDR+PREFIX, dotted-quad (FR-40 subnet-token keying, so a same-pool renewal maps to an identical token) | 1q |
 
 ## Token helpers (iface.id canonical key, spec section 3; pure)
@@ -67,7 +68,10 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 |----------|------------------|
 | `parse_version` | Pure: first `N.N[.N]` in a version string, empty when none (handles dpkg epoch/revision) |
 | `netplan_version` / `version_ge` | Probe netplan version (`netplan --version` on 1.x, else dpkg-query on 0.10x) and compare against MIN_NETPLAN (sort -V) |
-| `check_preconditions` | root; netplan >= min; non-mutating `netplan try` capability probe; tcpdump/lldpctl per DETECT_METHOD; tcpdump `-Q in` support (FR-5a, probed via `-d`, non-mutating) |
+| `have_cmd` | `command -v CMD` presence test (stubbable seam for the dependency probes) |
+| `tcpdump_supports_inbound` | tcpdump `-Q in` support (FR-5a, probed via `-d`, non-mutating) |
+| `check_detect_deps` | M8: non-mutating DETECTION dependency gate (netplan>=min + tcpdump/`-Q in`/lldpctl per DETECT_METHOD); NOT root, NOT `netplan try`. Shared by `check_preconditions` and `do_status` |
+| `check_preconditions` | root; `check_detect_deps`; non-mutating `netplan try` capability probe (apply-only) |
 
 ## Discovery + detection (FR-1..5)
 
@@ -149,9 +153,9 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 | `do_rescan` | Timer reconcile: additions over DETECTED_TRUNKS as before; FR-41 (v0.4.0) adds its first removal path - carrier-down OWNED trunks are pruned on a routing-gated two-sample settle, fast-path-preserved (settle sleep only when an owned trunk is actually down). `have_routing` is checked twice - before the sleep (whether to settle at all) and again after it (whether to remove), since an uplink lost during the settle would otherwise produce a removal the health check cannot revert |
 | `do_dryrun` | Preview: same per-trunk candidate math (single pass) over owned-or-detected ifaces, plus a would-be FR-41 removal per trunk (single advisory sample, `have_routing`-gated); throwaway-tree validate, diff + count gate + FR-37 metric/conflict preview + C1 default-route-guard preview (would-refuse), per-trunk breakdown (now with carrier state) printed; never applies; returns non-zero when validation FAILs (M3), 0 otherwise, so `$?` works as a scripted pre-flight |
 | `do_reapply` | FR-39: regenerate the OWNED set (whatever trunks it spans) with this build, apply only if the body differs; NO detection (pins to `distinct_ifaces` of the owned tokens), full owned set lease-waited, count gate bypassed |
-| `do_status` | Report for every owned trunk plus every currently-detected trunk: owned vs detected-now vs managed-elsewhere (root; runs a detection pass); also prints carrier up/down per owned trunk (FR-41) |
 | `render_timer_dropin` | Pure: timer drop-in text for an interval; restates ALL monotonic triggers, since the reset clears the whole list (FR-21a) |
 | `do_reconfigure` | Write the rendered drop-in to `dynavlan.timer.d/interval.conf` + daemon-reload |
+| `do_status` | Report for every owned trunk plus every currently-detected trunk: owned vs detected-now, with per-trunk ignored/out-of-range/managed-elsewhere (FR-35); prints carrier up/down per owned trunk (FR-41); M8: gates the detection pass on `check_detect_deps` and returns non-zero if a prerequisite is missing (no false "detected: [none]" exit 0) |
 | `main` | Mode dispatch: `--version` (pre-config, pre-root) → config → (status/reconfigure) → preconditions → dry-run (non-blocking lock try) → boot/rescan under the fd-held flock, followed by `maybe_restart_on_new_subnet` (FR-40) on every boot/rescan exit path |
 
 ## Non-script artifacts

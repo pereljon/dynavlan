@@ -4,7 +4,22 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ## Unreleased
 
+### Changed
+
+- FR-35 narrowed: `--status` shows a `journalctl -t dynavlan` run-history hint
+  rather than a persisted last-run result (deferred; the journal already carries it).
+
 ### Fixed
+
+- `--status` no longer reports a confident, wrong "no trunk" when a detection tool
+  is missing. It ran its detection pass without a dependency check (those gated only
+  the reconcile path), so on a box lacking tcpdump/lldpctl/netplan it printed
+  `detected trunks: [none]` and exited 0 - indistinguishable from a genuinely quiet
+  wire. The tool checks are now shared with the reconcile path; `--status` gates its
+  detection on them, prints `detected trunks: unavailable` and exits non-zero when a
+  prerequisite is missing, while still printing the static report. Each detected
+  trunk now also shows per-trunk ignored / out-of-range / managed-elsewhere VLANs
+  (gate-4 M8). (`ver=` 0.4.9 -> 0.4.10.)
 
 - A new IPv4 subnet is no longer marked "seen" when NO restart target restarted at
   all. Previously `restart_targets` warned-and-continued on a failed snap/service

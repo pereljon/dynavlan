@@ -11,8 +11,9 @@ Every invocation follows the same spine; the mode decides the reconcile policy.
 main(mode)
   [--version: print "<ver> (build <id>)", exit 0 - BEFORE config load and root check, on purpose]
   load_config            # parse /etc/dynavlan.conf (allowlist-only, never sourced - H2), strict-validate every key; any bad value = refuse-to-run
-  [--status/--reconfigure: root check, run, exit]
-  check_preconditions    # root; netplan >= MIN_NETPLAN (--version on 1.x, else dpkg; undeterminable = its own refusal); `netplan try` capability probe (non-mutating); tcpdump/lldpctl per DETECT_METHOD
+  [--status/--reconfigure: root check, run, exit]   # --status gates its OWN detection pass on check_detect_deps and returns non-zero if a tool is missing (M8); it does NOT go through check_preconditions
+  check_preconditions    # root; check_detect_deps; `netplan try` capability probe (non-mutating, apply-only)
+  # check_detect_deps (M8, shared): netplan >= MIN_NETPLAN (--version on 1.x, else dpkg; undeterminable = its own refusal); tcpdump/`-Q in`/lldpctl per DETECT_METHOD. Non-mutating; the detection-trustworthiness gate, with no root or `netplan try` (those gate the apply, not a report).
   [--dry-run: try the flock non-blocking (hold if free; warn + proceed read-only if held), preview, exit]
   [--reapply: take fd-held flock BLOCKING (-w); busy past the timeout = err, rc 1, nothing applied]
   [--boot/--rescan: take fd-held flock (non-blocking; busy = "skipped", rc 0), dispatch]
