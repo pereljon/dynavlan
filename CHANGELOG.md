@@ -16,6 +16,14 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
   the primary **sniff** must have succeeded (a failed sniff is the actual removal
   hazard); LLDP is a supplement, so a down `lldpd` does not block removals
   (gate-4 H1). (`ver=` 0.4.4 -> 0.4.5.)
+- The Debian `prerm` no longer proceeds with an upgrade/removal when a dynavlan run
+  is still holding the FR-30 lock: it now **aborts** (like `install.sh` already
+  did) instead of warning and letting dpkg swap the script under a live run, which
+  could make the running invocation execute garbage mid-apply and strand the box.
+  The lock is always created+opened (the previous `-e` check/use guard is gone),
+  and if the abort happens after the rescan timer was stopped, the timer is
+  restarted so a refused upgrade leaves the box exactly as it was (gate-4 H4).
+  Maintainer-script only: the `dynavlan` script is unchanged, so **no `ver=` bump**.
 - `VLAN_LIMIT_MODE=fill` now keeps the lowest-**numeric**-id VLANs, matching the
   documented "lowest IDs" contract. It previously selected by lexicographic token
   order, so with VLANs 2/10/100 it kept 10 and 100 before 2 (gate-4 M7). (`ver=`

@@ -9,31 +9,43 @@ STATE_FILE="$STATE_DIR/upgrade-state"
 
 case "$1" in
 remove|upgrade)
-    # On upgrade, capture the operator's current enable/active state BEFORE we
-    # stop anything, so postinst can restore it exactly and never re-arm a unit
-    # the operator deliberately disabled. dpkg runs prerm then the new postinst in
-    # one transaction with no reboot between, so /run (tmpfs) persists across the
-    # swap and self-cleans on the next boot. remove does not need this.
+    # Was the rescan timer running before we touch it? Captured BEFORE the stop
+    # below, for two uses: restoring it if we must abort (below), and (on upgrade)
+    # handing postinst the exact prior state so it never re-arms a unit the operator
+    # deliberately disabled. dpkg runs prerm then the new postinst in one transaction
+    # with no reboot between, so /run (tmpfs) persists across the swap and self-cleans
+    # on the next boot.
+    tmr_active=0
+    systemctl is-active --quiet dynavlan.timer 2>/dev/null && tmr_active=1
+
     if [ "$1" = upgrade ]; then
         mkdir -p "$STATE_DIR" || true
         {
             printf 'svc_enabled=%s\n' "$(systemctl is-enabled --quiet dynavlan.service 2>/dev/null && echo 1 || echo 0)"
             printf 'tmr_enabled=%s\n' "$(systemctl is-enabled --quiet dynavlan.timer 2>/dev/null && echo 1 || echo 0)"
-            printf 'tmr_active=%s\n'  "$(systemctl is-active  --quiet dynavlan.timer 2>/dev/null && echo 1 || echo 0)"
+            printf 'tmr_active=%s\n'  "$tmr_active"
         } > "$STATE_FILE" || true
     fi
 
     # Stop the timer so no new runs start during the swap
     systemctl stop dynavlan.timer 2>/dev/null || true
 
-    # Wait for any in-flight run to finish (FR-30 lock)
-    if [ -e "$LOCK_FILE" ]; then
-        exec 9>"$LOCK_FILE"
-        if ! flock -w "$LOCK_WAIT" 9; then
-            echo "WARNING: dynavlan run still holds lock after ${LOCK_WAIT}s; proceeding anyway" >&2
-        fi
-        exec 9>&-
+    # Wait for any in-flight run to finish (FR-30 lock). Always create+open the lock
+    # (no `-e` check/use race), and match install.sh: a run still holding it past the
+    # timeout ABORTS the operation rather than proceeding (H4). dpkg would otherwise
+    # overwrite/remove the script under a live run, and bash reads a script lazily by
+    # file offset, so the running invocation could execute garbage mid-apply - e.g.
+    # between `netplan try` and its confirmation - and strand the box. Failing here
+    # leaves the currently-installed version in place, running and reachable. On abort
+    # we restart the timer if it was running, so a refused upgrade leaves the box
+    # exactly as it was rather than with rescan silently disabled until the next boot.
+    exec 9>"$LOCK_FILE"
+    if ! flock -w "$LOCK_WAIT" 9; then
+        echo "ERROR: a dynavlan run still holds $LOCK_FILE after ${LOCK_WAIT}s; refusing to replace the script under a live run (wait for it to finish, or stop dynavlan-rescan.service, then retry)" >&2
+        [ "$tmr_active" = 1 ] && systemctl start dynavlan.timer 2>/dev/null || true
+        exit 1
     fi
+    exec 9>&-
     ;;
 esac
 
