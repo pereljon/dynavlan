@@ -4,13 +4,16 @@ Owns: open tasks and their status. Does NOT hold permanent facts or decisions (t
 Maintain: update whenever a task is added, changes state, or completes.
 Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 
-## Current state (2026-08-04)
+## Current state (2026-08-06)
 
 See `context/index.md` STATE line for the authoritative up-to-date summary (kept current
-there to avoid two places drifting). As of this date: v0.4.0 (carrier-down VLAN removal,
-FR-41) RELEASED - hardware-validated (6/6 L3-30 sub-cases PASS), tagged, pushed, GitHub
-release created with `.deb` auto-built and attached by Actions (see the v0.4.0 milestone
-below). v0.3.0 (restart-on-new-subnet) also released, prior to this. Superseded, kept for history:
+there to avoid two places drifting). As of 2026-08-06: the gate-4 backlog is COMPLETE;
+main is at **ver 0.4.11** (unreleased, **10 commits ahead of origin, not pushed**) and the
+**next action is the consolidated hardware-validation pass** (`docs/hardware-validation-v0.4.10.md`)
+before any release. Last RELEASED version is **v0.4.2**; the box last saw 0.4.2, so 0.4.3->0.4.11
+is unrun on hardware. Older history: v0.4.0 (carrier-down VLAN removal, FR-41) hardware-validated
+(6/6 L3-30 sub-cases PASS), tagged, pushed, GitHub release with `.deb` auto-built (see the v0.4.0
+milestone below). v0.3.0 (restart-on-new-subnet) also released, prior to this. Superseded, kept for history:
 v0.2.1 was released and hardware-validated with 132 tests, ~1700 lines, on the commits
 below.
 

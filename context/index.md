@@ -93,6 +93,26 @@ Remaining Codex findings, in the register's suggested order:
 Then the 1.0.0 freeze+review itself. v1.0 gates (1)+(2) done; remaining gates are multi-site validation
 and the freeze. START a fresh session for group 4 (session hygiene - this session is long).
 
+STATE (2026-08-06, gate-4 backlog COMPLETE - pre-hardware-validation): the entire pre-1.0 gate-4 Codex
+review backlog is worked. Group 4 contract decisions (H6/M1/M7) shipped as 0.4.4. Group 5: H1 (0.4.5),
+H4 + M2 (packaging/CI, no ver bump), H5 (0.4.6), M4 (0.4.7), M5 (0.4.8), M6 (0.4.9), M8 (0.4.10), P3
+(0.4.11) - all code-complete, unit-tested, merged to main. PLAUSIBLE items: **P1 CLOSED** (not a defect -
+accept cannot gate on a netplan-try exit that only happens post-confirm), **P2 -> HARDWARE** (kill-mid-apply
+FIFO-EOF, added to the HV checklist). The injected-command **state-machine test harness is DEFERRED** (not
+built: spine already HW-validated + console-backed, cannot reproduce the real netplan-try FIFO/timing anyway,
+per-helper units already cover the M-fix decision logic; rationale + a preserved design sketch in
+`context/decisions.md` 2026-08-06 + the register). Unit suite **276/0**; main is at **ver 0.4.11** and is
+**10 commits ahead of origin, NOT pushed** (push held by the operator).
+**NEXT ACTION: run the consolidated hardware-validation pass**, console-backed on the Protectli box:
+`docs/hardware-validation-v0.4.10.md`. It gates the next release. NOTHING from 0.4.3->0.4.11 has been
+deployed to hardware yet (the box last saw 0.4.2), so even the safe refactors are unrun on the wire; the
+checklist starts with a build-identity gate (install from clean `main`, confirm `--version` matches HEAD).
+It covers happy-path + M8 (hide a tool) + H5 (multi-VLAN lease timing) + M6 (bogus restart target) + P2
+(kill mid-apply), and switch-access-gated C1 positive-refusal + L3-30 carrier-pull prune. AFTER HV passes:
+push, then cut the release (operator authorization required; the release gate is met - the shippable script
+changed). Per-item detail: `context/todo.md`; decisions: `context/decisions.md` 2026-08-05/06; register (git-
+excluded): `docs/superpowers/plans/2026-08-04-v1.0-gate4-review-fixes.md`.
+
 Before coding a change, read in order:
 4. dev/SKELETON.md - logic flow and key invariants
 5. dev/CODEMAP.md - where things live (per-function map)
