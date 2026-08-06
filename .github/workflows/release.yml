@@ -57,16 +57,39 @@ jobs:
       - name: Fetch every release .deb
         env:
           GH_TOKEN: ${{ github.token }}
+          PKG_VERSION: ${{ steps.version.outputs.version }}
         run: |
           mkdir -p debs
-          for tag in $(gh release list --repo "${{ github.repository }}" --json tagName -q '.[].tagName'); do
-            if ! gh release download "$tag" --repo "${{ github.repository }}" \
-              --pattern '*.deb' --dir debs --clobber; then
-              echo "::warning::could not fetch a .deb for release $tag (no asset, or a fetch error)"
-            fi
+          # Enumerate ALL releases. gh's default --limit is 30, so without this a
+          # rebuild after 30 releases would silently drop the oldest .debs from the
+          # published repo (M2). 1000 dwarfs any realistic count for this project;
+          # guard below fails loudly if we ever actually hit the cap.
+          tags=$(gh release list --repo "${{ github.repository }}" --limit 1000 \
+            --json tagName -q '.[].tagName')
+          [ "$(printf '%s\n' "$tags" | grep -c .)" -ge 1000 ] \
+            && { echo "::error::hit the 1000-release list cap; raise --limit or paginate"; exit 1; }
+          expected=0
+          for tag in $tags; do
+            # A release that carries a .deb MUST download; one with none (e.g. a
+            # docs-only tag) is legitimately skipped. This distinguishes "no asset"
+            # from "fetch error", which the old warning-and-continue conflated (M2).
+            n=$(gh release view "$tag" --repo "${{ github.repository }}" \
+              --json assets -q '[.assets[] | select(.name | endswith(".deb"))] | length')
+            [ "$n" -eq 0 ] && continue
+            expected=$((expected + n))
+            gh release download "$tag" --repo "${{ github.repository }}" \
+              --pattern '*.deb' --dir debs --clobber \
+              || { echo "::error::failed to fetch a .deb for release $tag"; exit 1; }
           done
+          got=$(find debs -maxdepth 1 -name '*.deb' | wc -l | tr -d ' ')
+          echo "expected $expected .deb asset(s) across all releases; downloaded $got"
+          [ "$got" -eq "$expected" ] \
+            || { echo "::error::downloaded $got .debs but $expected were expected"; exit 1; }
+          # The release being published now must be in the rebuilt repo, else this
+          # publish would ship a repo missing the very version it announces (M2).
+          test -f "debs/dynavlan_${PKG_VERSION}_all.deb" \
+            || { echo "::error::just-published dynavlan_${PKG_VERSION}_all.deb missing from rebuild"; exit 1; }
           ls -la debs
-          compgen -G "debs/*.deb" >/dev/null || { echo "::error::no .deb assets found across any release"; exit 1; }
 
       - name: Build the signed repo (ephemeral reprepro db)
         run: |

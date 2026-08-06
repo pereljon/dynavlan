@@ -33,6 +33,15 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
   and if the abort happens after the rescan timer was stopped, the timer is
   restarted so a refused upgrade leaves the box exactly as it was (gate-4 H4).
   Maintainer-script only: the `dynavlan` script is unchanged, so **no `ver=` bump**.
+- The APT-repo rebuild in the release workflow no longer silently drops packages.
+  It previously listed only the 30 most recent releases (gh's default) and treated
+  a failed `.deb` download as a warning, so after 30 releases the oldest versions
+  fell out of the published repo, and a transient fetch error on the just-published
+  version could ship a repo missing it, all with a green job. The step now lists all
+  releases (`--limit 1000`, guarded), hard-fails when a release that has a `.deb`
+  asset cannot be downloaded (while still skipping releases that legitimately carry
+  none), and asserts both the downloaded count and the just-published version are
+  present before publishing (gate-4 M2). CI workflow only: **no `ver=` bump**.
 - `VLAN_LIMIT_MODE=fill` now keeps the lowest-**numeric**-id VLANs, matching the
   documented "lowest IDs" contract. It previously selected by lexicographic token
   order, so with VLANs 2/10/100 it kept 10 and 100 before 2 (gate-4 M7). (`ver=`
