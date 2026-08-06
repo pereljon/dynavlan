@@ -755,6 +755,73 @@ rm -f "$PENDING_DELETE_FILE"
 PENDING_DELETE_FILE=$_pd_saved
 
 # ---------------------------------------------------------------------------
+# 1af. restart-failure must not consume the new-subnet event - M6: a TOTAL
+#      monitoring-target restart failure previously still recorded the subnet as
+#      seen, so it was never retried and the agent never learned it this uptime.
+#      Total-failure only: a partial success consumes (one broken target must not
+#      force a perpetual re-restart of the working ones). Stubs current_subnets +
+#      snap/systemctl so the real restart_targets and seen-write logic run.
+# ---------------------------------------------------------------------------
+_seen_saved=$SEEN_FILE
+_cs_saved=$(declare -f current_subnets)
+SEEN_FILE=$(mktemp)
+current_subnets() { emit_tokens "enp2s0:10.0.40.0/24"; }
+snap() { case "$2" in *fail*) return 1 ;; *) return 0 ;; esac; } # $1=restart $2=name
+systemctl() { return 0; }
+RESTART_ON_NEW_SUBNET=true
+RESTART_SERVICES=""
+
+# Case 1: total failure (the only target fails) -> unseen, so next run retries.
+rm -f "$SEEN_FILE"
+unset RESTARTED_THIS_RUN RESTART_NONE_SUCCEEDED_THIS_RUN
+RESTART_SNAPS="agent-fail"
+maybe_restart_on_new_subnet
+call read_seen
+ok "1af total restart failure leaves the new subnet unseen" ""
+
+# Case 2: restart succeeds -> new subnet consumed (recorded as seen).
+rm -f "$SEEN_FILE"
+unset RESTARTED_THIS_RUN RESTART_NONE_SUCCEEDED_THIS_RUN
+RESTART_SNAPS="agent"
+maybe_restart_on_new_subnet
+call read_seen
+ok "1af successful restart records the new subnet as seen" "enp2s0:10.0.40.0/24"
+
+# Case 3: partial failure (one of two targets restarts) -> consumed. A single
+# broken target must not force a perpetual re-restart of the working one.
+rm -f "$SEEN_FILE"
+unset RESTARTED_THIS_RUN RESTART_NONE_SUCCEEDED_THIS_RUN
+RESTART_SNAPS="agent-ok agent-fail"
+maybe_restart_on_new_subnet
+call read_seen
+ok "1af a partial success consumes the new subnet" "enp2s0:10.0.40.0/24"
+
+# Case 4: total failure across two targets -> unseen (the multi-target total path).
+rm -f "$SEEN_FILE"
+unset RESTARTED_THIS_RUN RESTART_NONE_SUCCEEDED_THIS_RUN
+RESTART_SNAPS="agent-fail other-fail"
+maybe_restart_on_new_subnet
+call read_seen
+ok "1af total failure across all targets leaves the subnet unseen" ""
+
+# Case 5: apply_change already restarted this run and it TOTALLY failed (dedup
+# branch, RESTART_NONE_SUCCEEDED_THIS_RUN preset) -> still must not consume.
+rm -f "$SEEN_FILE"
+unset RESTARTED_THIS_RUN RESTART_NONE_SUCCEEDED_THIS_RUN
+RESTARTED_THIS_RUN=1
+RESTART_NONE_SUCCEEDED_THIS_RUN=1
+maybe_restart_on_new_subnet
+call read_seen
+ok "1af failed apply-restart (dedup branch) leaves the subnet unseen" ""
+
+unset -f snap systemctl
+eval "$_cs_saved"
+unset RESTARTED_THIS_RUN RESTART_NONE_SUCCEEDED_THIS_RUN RESTART_ON_NEW_SUBNET
+RESTART_SNAPS=""; RESTART_SERVICES=""
+rm -f "$SEEN_FILE"
+SEEN_FILE=$_seen_saved
+
+# ---------------------------------------------------------------------------
 # 1m. config_body_differs - FR-39 reapply comparison
 #
 # Line 1 is the `# Managed by dynavlan <ver> (build <id>)` header. FR-38 put the

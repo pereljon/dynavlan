@@ -6,6 +6,16 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ### Fixed
 
+- A new IPv4 subnet is no longer marked "seen" when NO restart target restarted at
+  all. Previously `restart_targets` warned-and-continued on a failed snap/service
+  restart while the subnet was recorded as seen regardless, so a transient failure
+  meant it was never retried and the agent never learned it this uptime. On a total
+  restart failure the new subnet is now held out of the seen-set and retried on the
+  next `--boot`/`--rescan`; a partial success still consumes it (total-failure only,
+  since a subnet cannot be mapped to a specific target and blocking on any failure
+  would let one permanently-broken target re-restart the working agents every run
+  forever). Covers a failed VLAN-driven restart from an apply too (gate-4 M6).
+  (`ver=` 0.4.8 -> 0.4.9.)
 - A post-accept `ip link delete` that fails transiently is no longer forgotten.
   The delete runs only after the change is accepted, at which point the stanza is
   already gone from the owned netplan file, so a failed delete would leave the live

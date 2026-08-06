@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.8"
+ver="0.4.9"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -1470,23 +1470,38 @@ wait_leases() { # TOKENS (iface.id) - bounded, non-fatal wait for new-VLAN lease
 	done
 }
 
-restart_targets() {
-	local s
+restart_targets() { # -> rc 0 iff every target restarted (M6); also sets globals
+	local s rc=0 attempted=0 failed=0
 	RESTARTED_THIS_RUN=1
 	for s in $RESTART_SNAPS; do
+		attempted=$((attempted + 1))
 		if snap restart "$s" >/dev/null 2>&1; then
 			log notice "restarted snap $s"
 		else
 			log warning "failed to restart snap $s (missing or error); continuing"
+			rc=1
+			failed=$((failed + 1))
 		fi
 	done
 	for s in $RESTART_SERVICES; do
+		attempted=$((attempted + 1))
 		if systemctl restart "$s" >/dev/null 2>&1; then
 			log notice "restarted service $s"
 		else
 			log warning "failed to restart service $s (missing or error); continuing"
+			rc=1
+			failed=$((failed + 1))
 		fi
 	done
+	# M6: block maybe_restart_on_new_subnet from consuming the new-subnet event
+	# only on a TOTAL failure (nothing restarted at all) - a partial success means
+	# at least one agent was refreshed and most likely picked the subnet up, and we
+	# cannot map a subnet to a specific target. Blocking on any failure would let one
+	# permanently-broken target re-restart the working agents every run forever.
+	if [ "$attempted" -gt 0 ] && [ "$failed" -eq "$attempted" ]; then
+		RESTART_NONE_SUCCEEDED_THIS_RUN=1
+	fi
+	return "$rc"
 }
 
 # FR-40 ephemeral state: subnets the agent is known to have seen THIS uptime.
@@ -1552,7 +1567,18 @@ maybe_restart_on_new_subnet() {
 			restart_targets
 		fi
 	fi
-	write_seen "$(set_union "$seen" "$current")"
+	# M6: only mark subnets seen once a restart actually informed the agent. If NO
+	# target restarted this run (a total failure - transient snapd/systemd busy),
+	# leave the new subnet(s) unseen so the next run retries; "seen" must never claim
+	# a subnet no agent was restarted to pick up. Total-failure only (not any
+	# failure): a partial success consumes, since one broken target must not force a
+	# perpetual re-restart of the working ones. Covers a failed apply_change restart
+	# too, via the same flag.
+	if [ "${RESTART_NONE_SUCCEEDED_THIS_RUN:-0}" = 1 ]; then
+		write_seen "$(set_minus "$(set_union "$seen" "$current")" "$new")"
+	else
+		write_seen "$(set_union "$seen" "$current")"
+	fi
 }
 
 # ---------------------------------------------------------------------------
