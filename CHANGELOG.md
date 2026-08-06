@@ -11,6 +11,16 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ### Fixed
 
+- The post-apply health check is now order-independent for equal-metric multi-uplink
+  boxes. It kept the first default route listed at the minimum metric; with two
+  equal-metric defaults, a route-listing order flip between the pre-apply snapshot
+  and the post-apply sample (same routing state) could pick a different iface and
+  spuriously FAIL -> revert. The check is now set membership at the minimum metric
+  (the snapshot iface still holds a default at the min), so a legitimate multi-uplink
+  box no longer sees a needless revert. The prior behavior was preserve-biased (the
+  revert was a no-op, never a strand), so this removes churn, not a hazard (gate-4
+  P3). (`ver=` 0.4.10 -> 0.4.11.)
+
 - `--status` no longer reports a confident, wrong "no trunk" when a detection tool
   is missing. It ran its detection pass without a dependency check (those gated only
   the reconcile path), so on a box lacking tcpdump/lldpctl/netplan it printed

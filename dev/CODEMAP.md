@@ -13,7 +13,7 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 | `parse_vlan_ignore` | Expand VLAN_IGNORE comma/space list with low-high ranges into a set; any bad token = non-zero (refuse) | 1a |
 | `boot_removals` | Owned ids absent from BOTH boot passes; both-empty = remove nothing (zero-detection guard) | 1d |
 | `carrier_removals` | FR-41: full owned-on-trunk set if BOTH carrier samples are "down", else empty (dead-trunk full teardown, not a diff) | 1r |
-| `health_check_eval` | PASS iff the lowest-metric post-apply default egresses the snapshot iface (iface only; "" snap = PASS) | 1c |
+| `health_check_eval` | PASS iff the snapshot iface still holds a post-apply default AT the minimum metric (iface only; "" snap = PASS); order-independent for equal-metric multi-uplink (P3) | 1c |
 | `vlan_guard` | Count gate verdict: OVER (> limit, 0 = unlimited) / WARN (> warn) / OK | 1f |
 | `limit_fill` | Lowest-N subset of additions for fill mode by NUMERIC vlan id, iface tie-break (deterministic across a fleet; M7) | 1f |
 | `assign_route_metrics` | FR-37 iface.id:metric map: kept tokens verbatim + next-free ascending metric for new tokens (discovery order, the only mode) | 1g |

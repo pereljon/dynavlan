@@ -6,15 +6,18 @@ per-fix. Console-backed only: a bad apply drops SSH, so drive from the serial
 console, never SSH-only.
 
 **Build-identity gate (FR-38).** Before drawing any conclusion from behavior,
-confirm the running build. v0.4.10 is **not tagged**, so install from the `main`
-checkout (source install; `install.sh` stamps the commit) and verify:
+confirm the running build. This validates the accumulated pre-freeze build (0.4.11
+as of this writing); it is **not tagged**, so install from the `main` checkout
+(source install; `install.sh` stamps the commit) and verify the running build
+matches `main` HEAD:
 
 ```
-dynavlan --version   # expect: dynavlan 0.4.10 (build 3d89e82)
+git -C <repo> rev-parse --short HEAD   # the expected build id
+dynavlan --version                     # dynavlan <ver> (build <that short commit>)
 ```
 
 A `-dirty` suffix means the tree had uncommitted changes: rebuild from a clean
-`main` first. If the build id is not `3d89e82`, stop - you are testing the wrong
+`main` first. If the build id does not match HEAD, stop - you are testing the wrong
 code. Deploy steps: `docs/deployment-guide.md` §2 (source/tarball path).
 
 **Redaction.** If you paste journal/capture excerpts back, redact any real MAC to
@@ -62,6 +65,13 @@ do not chase them at the console.
 | 3.1 | **M6 total failure holds subnet unseen** | set `RESTART_SERVICES="dynavlan-nonexistent.service"` (only a bogus target), induce a new IPv4 subnet (add a VLAN that leases), `sudo dynavlan --rescan` | restart fails; `/run/dynavlan/seen` does **not** gain the new subnet; next `--rescan` retries the restart (subnet still "new") | [ ] |
 | 3.2 | **M6 partial success consumes** | add a REAL target alongside the bogus one (`RESTART_SERVICES="<real> dynavlan-nonexistent.service"`), repeat | the real target restarts; the subnet **is** recorded seen; next run does NOT re-restart (no storm) | [ ] |
 
+## Phase 3b - Script-death mid-apply (P2) - the FIFO-EOF assertion the code marks unvalidated
+
+| # | Check | Do | Expect | Pass |
+|---|-------|----|--------|------|
+| 3b.1 | **P2 kill mid-`netplan try`** | during an apply that would ACCEPT, `sudo kill -9` the dynavlan process while `netplan try` is running (before the accept newline) | `netplan try` sees the dead writer / no confirmation and **reverts** to the pre-apply config; box returns to the snapshot default route; no interface left deleted | [ ] |
+| 3b.2 | P2 systemd-timeout variant | let the run exceed the service `TimeoutStartSec` so systemd kills the cgroup mid-apply | same revert-to-prior outcome; confirm whether the same-cgroup kill takes `netplan try` down with it or it survives to its own timer revert (record which) | [ ] |
+
 ## Phase 4 - Switch-access-gated (schedule when you can reconfigure the switch)
 
 | # | Check | Do | Expect | Pass |
@@ -78,6 +88,7 @@ do not chase them at the console.
 | Phase 1 (smoke + M8) | | | |
 | Phase 2 (H5) | | | |
 | Phase 3 (M6) | | | |
+| Phase 3b (P2 kill-mid-apply) | | | |
 | Phase 4 (C1, L3-30) | | | |
 
 On completion, record the outcome in `context/todo.md` and, for the SKELETON /

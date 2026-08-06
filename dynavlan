@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.10"
+ver="0.4.11"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -155,24 +155,35 @@ carrier_removals() { # OWNED_ON_TRUNK C1 C2
 #   default that appears is the base uplink, not ours.
 health_check_eval() {
 	local snap_iface="$1" post_routes="$2"
-	local tok iface metric lowest="" minmetric=""
+	local tok iface metric minmetric=""
+	# P3: two passes, not "first at min", so equal-metric multi-uplink is
+	# order-independent. Pass 1 finds the minimum metric; pass 2 PASSes iff the
+	# snapshot iface holds a default AT that minimum. With two equal-metric
+	# defaults a route-listing order flip (same routing state) must not flip the
+	# verdict - the old "first route at the min metric" rule did exactly that.
 	for tok in $post_routes; do
-		iface="${tok%%:*}"
 		metric="${tok#*:}"
 		if [ -z "$minmetric" ] || ((metric < minmetric)); then
 			minmetric="$metric"
-			lowest="$iface"
 		fi
 	done
 	if [ -z "$snap_iface" ]; then
 		echo PASS
-	elif [ -z "$lowest" ]; then
-		echo FAIL
-	elif [ "$lowest" = "$snap_iface" ]; then
-		echo PASS
-	else
-		echo FAIL
+		return 0
 	fi
+	if [ -z "$minmetric" ]; then
+		echo FAIL
+		return 0
+	fi
+	for tok in $post_routes; do
+		iface="${tok%%:*}"
+		metric="${tok#*:}"
+		if [ "$iface" = "$snap_iface" ] && [ "$metric" = "$minmetric" ]; then
+			echo PASS
+			return 0
+		fi
+	done
+	echo FAIL
 	return 0
 }
 

@@ -50,6 +50,10 @@ A plain bash script (`tests/unit.sh`) with asserts, run manually or in a pre-com
 | (enp1s0, gw, 10) | via enp1s0, **metric 20** (metric changed) | PASS (FR-18 compares iface only; guards against a false-revert if someone tightens to compare metric) |
 | (enp1s0, gw1, 10) | via enp1s0, **gw2** (gateway changed) | PASS (iface unchanged; ARP is non-fatal, guards against it silently becoming fatal) |
 | (enp1s0, gw, 10) | two defaults: enp1s0 m10 AND enp2s0 **m5** | FAIL → revert (lowest-metric default moved off the snapshot iface; see design §8) |
+| (enp1s0, gw, 10) | two **equal-metric** defaults: enp1s0 m10 AND enp2s0 m10 | PASS in EITHER listing order (P3: order-independent; snapshot iface still holds a default at the min metric) |
+| (enp2s0, gw, 10) | two equal-metric defaults: enp1s0 m10 AND enp2s0 m10 | PASS (the other equal-metric uplink is the snapshot iface) |
+
+P3: the equal-metric rows are the order-independence guard - the evaluator is set membership at the minimum metric, not "the first route listed at the min metric", so a route-listing order flip between the pre and post samples (same routing state) cannot spuriously FAIL/revert on a legitimate multi-uplink box. The `m5`-elsewhere row still FAILs: a genuinely lower default elsewhere means the snapshot iface is no longer at the min.
 
 Run: `bash tests/unit.sh` → all asserts pass. No framework dependency.
 

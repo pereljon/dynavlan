@@ -100,6 +100,12 @@ call health_check_eval ""       "enp1s0:10";            ok "1c empty snap, uplin
 call health_check_eval "enp1s0" "enp1s0:20";            ok "1c metric changed -> PASS"        "PASS"
 call health_check_eval "enp1s0" "enp1s0:10";            ok "1c gateway changed -> PASS"       "PASS"
 call health_check_eval "enp1s0" "enp1s0:10 enp2s0:5";   ok "1c lower-metric elsewhere -> FAIL" "FAIL"
+# P3: equal-metric multi-uplink must be order-independent - the snapshot iface still
+# holds a min-metric default, so a route-listing order flip must not spuriously FAIL.
+call health_check_eval "enp1s0" "enp1s0:10 enp2s0:10";  ok "1c P3 equal-metric, snap listed first -> PASS"  "PASS"
+call health_check_eval "enp1s0" "enp2s0:10 enp1s0:10";  ok "1c P3 equal-metric, snap listed second -> PASS" "PASS"
+call health_check_eval "enp2s0" "enp1s0:10 enp2s0:10";  ok "1c P3 equal-metric, other snap iface -> PASS"   "PASS"
+call health_check_eval "enp1s0" "enp2s0:5 enp1s0:10";   ok "1c P3 snap iface no longer at min -> FAIL"       "FAIL"
 
 # ---------------------------------------------------------------------------
 # 1d. boot_removals - owned VLANs absent from BOTH boot passes; zero-detection guard
