@@ -6,6 +6,17 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ### Fixed
 
+- Additions are no longer created on a trunk that lost carrier between detection
+  and apply. Additions are computed from the detection sample taken before the
+  carrier verdict; the prior drop-on-dead-trunk guard only covered **owned** trunks
+  on the removal path, so a newly-detected but not-yet-owned trunk that died in the
+  detection->apply window still got new VLAN stanzas on a dead parent (they never
+  lease, stall the lease wait, and fire a pointless restart). `--boot`/`--rescan`
+  now recheck carrier on every addition-bearing interface immediately before apply
+  and drop additions on any that are down, regardless of ownership; `--dry-run`
+  applies the same filter so its preview matches. A single sample is used: declining
+  an addition is fail-toward-no-change and re-added next rescan (gate-4 M4).
+  (`ver=` 0.4.6 -> 0.4.7.)
 - The post-accept new-VLAN lease wait is now one box-wide deadline instead of a
   per-VLAN wait in series. The new VLANs all DHCP in parallel once the apply
   accepts, but `wait_leases` waited up to `LEASE_SETTLE_SECONDS` on each VLAN

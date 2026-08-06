@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.6"
+ver="0.4.7"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -417,6 +417,20 @@ distinct_ifaces() {
 	for tok in $toks; do out="$out ${tok%.*}"; done
 	[ -z "$out" ] && return 0
 	printf '%s\n' $out | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+# M4: the subset of interfaces bearing an addition that have no carrier right now.
+# Additions are computed from the pass-1 detection sample; a trunk that died in the
+# detection->apply window would otherwise get new stanzas on a dead parent (they
+# never lease, stall wait_leases, fire a pointless restart). A single sample is
+# right here: declining an addition is fail-toward-no-change (re-added next rescan),
+# unlike a removal, which is destructive and stays debounced.
+ifaces_without_carrier() { # ADDITION_TOKENS -> ifaces (subset) lacking carrier
+	local iface out=""
+	for iface in $(distinct_ifaces "$1"); do
+		has_carrier "$iface" || out="$out $iface"
+	done
+	printf '%s' "${out# }"
 }
 
 # ---------------------------------------------------------------------------
@@ -1658,7 +1672,7 @@ do_boot() {
 	fi
 	[ -z "$DETECTED_TRUNKS" ] && log info "boot: zero VLANs detected; owned carrier-down trunks remain eligible for removal"
 
-	local owned owned_ifaces trunk
+	local owned owned_ifaces trunk pruned_ifaces=""
 	local all_additions="" all_removals="" target any_owned_down=false
 	owned=$(backend_owned_vlans)
 	owned_ifaces=$(distinct_ifaces "$owned")
@@ -1714,7 +1728,6 @@ do_boot() {
 		[ "$RESET_ON_BOOT" = true ] && run_detection 2>/dev/null
 
 		local routing_ok=unknown   # have_routing evaluated at most once, lazily
-		local pruned_ifaces=""     # trunks confirmed dead: their additions are stale
 		for trunk in $all_trunks; do
 			local p1 p2 v1 v2 c1 c2=down owned_on_trunk owned_ids removals_ids
 			eval "p1=\"\${_p1_$(iface_key "$trunk")}\""
@@ -1778,6 +1791,11 @@ do_boot() {
 	# that was detected and then went dead would otherwise have new VLANs CREATED on
 	# it in the same apply that tears its old ones down - they can never lease, they
 	# stall wait_leases, and they trigger a pointless agent restart. Drop them.
+	# pruned_ifaces above holds only OWNED trunks the removal path confirmed dead, and
+	# only when pass 2 ran; M4 folds in every addition-bearing trunk that is
+	# carrier-down now, so a newly-detected but not-yet-owned trunk that died in the
+	# window (or any dead trunk on the fast path, where pass 2 never ran) is caught too.
+	pruned_ifaces=$(printf '%s\n' $pruned_ifaces $(ifaces_without_carrier "$all_additions") | sort -u | tr '\n' ' ' | sed 's/ $//')
 	if [ -n "$pruned_ifaces" ]; then
 		local kept_additions dropped
 		kept_additions=$(drop_iface_tokens "$all_additions" "$pruned_ifaces")
@@ -1876,6 +1894,11 @@ do_rescan() {
 	# then ran for SNIFF_SECONDS; a trunk that died mid-sniff kept its tags and is
 	# still in DETECTED_TRUNKS. Without this it would gain new VLANs in the very
 	# apply that tears its old ones down. See the matching guard in do_boot.
+	# pruned_ifaces above holds only OWNED trunks the removal path confirmed dead;
+	# M4 folds in every addition-bearing trunk that is carrier-down now, catching a
+	# newly-detected but not-yet-owned trunk that died in the window (down_trunks is
+	# built from owned_ifaces only, so it never sees an unowned trunk).
+	pruned_ifaces=$(printf '%s\n' $pruned_ifaces $(ifaces_without_carrier "$all_additions") | sort -u | tr '\n' ' ' | sed 's/ $//')
 	if [ -n "$pruned_ifaces" ]; then
 		local kept_additions dropped
 		kept_additions=$(drop_iface_tokens "$all_additions" "$pruned_ifaces")
@@ -1951,6 +1974,12 @@ do_dryrun() {
 
 	all_additions=$(emit_tokens $all_additions)
 	all_removals=$(emit_tokens $all_removals)
+	# M4 preview parity: boot/rescan drop additions on any addition-bearing trunk
+	# that is carrier-down now, so reflect that here or the preview over-lists an
+	# addition the real run would skip (same discipline as the removal preview above).
+	local pruned_ifaces
+	pruned_ifaces=$(ifaces_without_carrier "$all_additions")
+	[ -n "$pruned_ifaces" ] && all_additions=$(drop_iface_tokens "$all_additions" "$pruned_ifaces")
 	local target
 	target=$(set_union "$(set_minus "$owned" "$all_removals")" "$all_additions")
 

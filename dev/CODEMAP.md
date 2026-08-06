@@ -38,6 +38,7 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 | `untag_tokens` | Token set -> bare-id set (strips the iface part; used when a caller needs ids on one trunk) |
 | `tokens_for_iface` | Token set filtered to one iface's tokens |
 | `drop_iface_tokens` | Token set minus every token on any listed iface (tests 1w). Used to discard additions on a trunk confirmed carrier-down, since additions are computed from tags sniffed before the carrier verdict |
+| `ifaces_without_carrier` | Addition tokens -> subset of their ifaces that lack carrier NOW (tests 1ad, M4). Single sample. do_boot/do_rescan/do_dryrun fold its result into the drop set so a newly-detected but not-yet-owned trunk that dies in the detection->apply window doesn't get stanzas on a dead parent (the owned-only removal path misses it) |
 | `distinct_ifaces` | Token set -> sorted set of the distinct ifaces present (drives the per-trunk loop in do_boot/do_rescan/do_dryrun) |
 
 ## Set utilities

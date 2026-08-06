@@ -674,6 +674,42 @@ assert_eq "$(iface_valid v4)|$(iface_tags v4)" "valid|" "1ac quiet trunk -> vali
 unset PREPFAIL_v0 PREPFAIL_v2 TAGS_v0 TAGS_v1 TAGS_v2 TAGS_v4 VALID_v0 VALID_v1 VALID_v2 VALID_v3 VALID_v4
 
 # ---------------------------------------------------------------------------
+# 1ad. ifaces_without_carrier - M4: additions computed from the pass-1 detection
+#      sample get dropped for any addition-bearing iface that has no carrier RIGHT
+#      NOW, regardless of ownership. The existing pruned_ifaces guard only covers
+#      OWNED trunks on the carrier-down removal path, so a newly-detected but
+#      not-yet-owned trunk that dies between detection and apply otherwise keeps
+#      its stanzas on a dead parent. Single sample: dropping an addition is
+#      fail-toward-no-change (retried next rescan), unlike a removal.
+#      Re-stubs has_carrier (the §1s stub was restored at line 173).
+# ---------------------------------------------------------------------------
+
+_hc_saved_1ad=$(declare -f has_carrier)
+has_carrier() { case " $STUB_UP " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+STUB_UP="enp1s0"
+call ifaces_without_carrier "enp1s0.100 enp2s0.40"
+ok "1ad down addition iface reported (enp2s0 dead)" "enp2s0"
+call ifaces_without_carrier "enp1s0.100 enp1s0.21"
+ok "1ad all additions on a live iface -> none down" ""
+STUB_UP=""
+call ifaces_without_carrier "enp1s0.100 enp2s0.40"
+ok "1ad both ifaces dead -> both reported" "enp1s0 enp2s0"
+STUB_UP="enp1s0 enp2s0"
+call ifaces_without_carrier "enp1s0.100 enp2s0.40"
+ok "1ad both live -> none" ""
+call ifaces_without_carrier ""
+ok "1ad no additions -> none down" ""
+
+# End-to-end drop: fold the down set into pruned_ifaces, then drop_iface_tokens.
+STUB_UP="enp1s0"
+_m4_adds="enp1s0.100 enp2s0.40 enp2s0.41"
+call drop_iface_tokens "$_m4_adds" "$(ifaces_without_carrier "$_m4_adds")"
+ok "1ad additions on the dead trunk dropped, live trunk kept" "enp1s0.100"
+
+eval "$_hc_saved_1ad"
+
+# ---------------------------------------------------------------------------
 # 1m. config_body_differs - FR-39 reapply comparison
 #
 # Line 1 is the `# Managed by dynavlan <ver> (build <id>)` header. FR-38 put the
