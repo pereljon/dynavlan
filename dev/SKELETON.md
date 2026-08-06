@@ -71,7 +71,7 @@ apply_change(target, additions, removals)
   backend_generate_config(target)      # atomic: mktemp same-dir 0600, fsync, rename
   backend_validate                     # netplan generate; distinguishes "our YAML bad" vs "base file bad" (freeze)
   backend_apply_with_revert            # the accept primitive below
-  ACCEPT: prune backups → delete removed VLAN links (ONLY here) → wait leases → restart targets
+  ACCEPT: prune backups → delete removed VLAN links (ONLY here) → wait leases (ONE box-wide LEASE_SETTLE_SECONDS deadline, all pending polled together - never per-VLAN in series, which could outrun the systemd start timeout and skip the restarts, H5) → restart targets
   FAIL:   netplan try has reverted live state; converge disk back to the prior file; NO deletes, NO restarts
 ```
 

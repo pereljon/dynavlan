@@ -6,6 +6,15 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ### Fixed
 
+- The post-accept new-VLAN lease wait is now one box-wide deadline instead of a
+  per-VLAN wait in series. The new VLANs all DHCP in parallel once the apply
+  accepts, but `wait_leases` waited up to `LEASE_SETTLE_SECONDS` on each VLAN
+  before looking at the next, so the total stacked to as much as `VLAN_LIMIT` ×
+  the deadline (up to 1920s at the cap). That could exceed the systemd
+  `TimeoutStartSec` and get the run killed before `restart_targets` ran, silently
+  skipping the FR-27 monitoring-agent restart. All pending VLANs are now polled
+  together, bounding the wait to `LEASE_SETTLE_SECONDS` regardless of count
+  (gate-4 H5). (`ver=` 0.4.5 -> 0.4.6.)
 - A capture method that **fails** at runtime (tcpdump cannot open the device or the
   BPF filter is rejected, `lldpctl`'s daemon is down, or promisc could not be set)
   no longer reads as a genuinely empty trunk and can no longer authorize a boot

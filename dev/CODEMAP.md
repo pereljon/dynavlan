@@ -122,7 +122,8 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 
 | function | one-line purpose |
 |----------|------------------|
-| `wait_leases` | Bounded non-fatal wait for new-VLAN DHCP leases |
+| `iface_has_lease` | True if the iface has an IPv4 address (`ip -4 addr`); the lease predicate `wait_leases` polls |
+| `wait_leases` | Non-fatal wait for new-VLAN DHCP leases under ONE box-wide `LEASE_SETTLE_SECONDS` deadline (all pending polled together, bounded regardless of count; NOT per-VLAN in series, which stacked to VLAN_LIMIT × the deadline and could outrun the systemd start timeout - H5) |
 | `restart_targets` | Restart RESTART_SNAPS (snap) then RESTART_SERVICES (systemctl); warn-and-continue on failure; sets `RESTARTED_THIS_RUN` so FR-40's growth-check does not double-restart |
 | `current_subnets` | FR-40: sorted `iface:network/prefix` tokens from `ip -4 -o addr show scope global`, skipping non-CIDR peer lines and link-local/loopback |
 | `read_seen` / `write_seen` | FR-40: read/write the ephemeral seen-subnet set at `/run/dynavlan/seen` (absent file = empty set) |

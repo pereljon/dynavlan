@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.5"
+ver="0.4.6"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -1384,21 +1384,32 @@ prune_backups() {
 # Change-gated side effects (FR-27/28)
 # ---------------------------------------------------------------------------
 
+iface_has_lease() { ip -4 addr show dev "$1" 2>/dev/null | grep -q 'inet '; } # IPv4 addr present
+
 wait_leases() { # TOKENS (iface.id) - bounded, non-fatal wait for new-VLAN leases
-	local tokens="$1" tok ifc waited
+	# ONE box-wide deadline, not a per-token wait in series (H5). Every new VLAN
+	# is already DHCPing in parallel once the apply accepted, so poll them all each
+	# second and stop as soon as none are pending; the total wait is bounded by
+	# LEASE_SETTLE_SECONDS regardless of VLAN count. A per-token loop stacked to
+	# N x LEASE_SETTLE_SECONDS (up to 64 x 30s = 1920s at the cap), which could
+	# exceed the systemd start timeout and get the run killed BEFORE restart_targets
+	# ran, silently skipping the FR-27 monitoring-agent restart.
+	local tokens="$1" tok waited=0 pending
 	[ -z "$tokens" ] && return 0
-	for tok in $tokens; do
-		ifc="$tok"
-		waited=0
-		while [ "$waited" -lt "$LEASE_SETTLE_SECONDS" ]; do
-			ip -4 addr show dev "$ifc" 2>/dev/null | grep -q 'inet ' && break
-			sleep 1
-			waited=$((waited + 1))
+	while [ "$waited" -lt "$LEASE_SETTLE_SECONDS" ]; do
+		pending=""
+		for tok in $tokens; do
+			iface_has_lease "$tok" || pending="$pending $tok"
 		done
-		if ip -4 addr show dev "$ifc" 2>/dev/null | grep -q 'inet '; then
-			log info "VLAN $(tok_id "$tok") leased on $ifc"
+		[ -z "$pending" ] && break
+		sleep 1
+		waited=$((waited + 1))
+	done
+	for tok in $tokens; do
+		if iface_has_lease "$tok"; then
+			log info "VLAN $(tok_id "$tok") leased on $tok"
 		else
-			log warning "VLAN $(tok_id "$tok") ($ifc) acquired no lease within ${LEASE_SETTLE_SECONDS}s"
+			log warning "VLAN $(tok_id "$tok") ($tok) acquired no lease within ${LEASE_SETTLE_SECONDS}s"
 		fi
 	done
 }
