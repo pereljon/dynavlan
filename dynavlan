@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.12"
+ver="0.4.13"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -2370,7 +2370,13 @@ main() {
 		printf 'dynavlan %s\n' "$(version_string "$ver" "$build")"
 		return 0
 		;;
-	'' | -h | --help)
+	-h | --help)
+		# Explicitly requested help is success, not a usage error: exit 0 so a
+		# caller can distinguish `--help` from a bad invocation ('' / unknown -> 2).
+		usage
+		return 0
+		;;
+	'')
 		usage
 		return 2
 		;;

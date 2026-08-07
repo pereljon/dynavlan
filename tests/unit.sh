@@ -451,6 +451,17 @@ assert_eq "$(bash "$src" --version)" "dynavlan $ver (build source)" "1l unstampe
 rm -f "$stamp_tmp"
 
 # ---------------------------------------------------------------------------
+# 1l-bis. Frozen CLI exit codes (COMPATIBILITY.md): requested --help/-V succeed
+#   (0); a usage error - no mode or an unknown mode - is 2. Guards the exit-code
+#   surface so a dispatch edit cannot silently flip these. --version/-V/--help
+#   answer before load_config and the root check, so this runs unprivileged.
+bash "$src" --help >/dev/null 2>&1; assert_eq "$?" "0" "1l-bis --help exits 0 (requested help is success)"
+bash "$src" -h     >/dev/null 2>&1; assert_eq "$?" "0" "1l-bis -h exits 0"
+bash "$src" -V     >/dev/null 2>&1; assert_eq "$?" "0" "1l-bis -V exits 0"
+bash "$src"        >/dev/null 2>&1; assert_eq "$?" "2" "1l-bis no mode exits 2 (usage error)"
+bash "$src" --bogus >/dev/null 2>&1; assert_eq "$?" "2" "1l-bis unknown mode exits 2"
+
+# ---------------------------------------------------------------------------
 # 1x. build-deb.sh binds the packaged version to the script's ver= (H7/FR-38)
 #     A release is tag-triggered and CI passes the tag-derived version to
 #     build-deb.sh. If that version disagrees with the script's ver=, the

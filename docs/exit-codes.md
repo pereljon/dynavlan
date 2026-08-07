@@ -20,7 +20,7 @@ code.
 |------|-----------------|
 | `0` | success, OR a deliberate no-op (nothing to change / another run holds the lock / a guarded abort) |
 | `1` | operational failure or refusal — invalid config, not root, precondition fail, lock-acquire fail, validation fail, detection unavailable, **and an applied-then-health-failed-and-reverted run** |
-| `2` | usage error — no mode, `-h`/`--help`, unknown mode |
+| `2` | usage error — no mode given, or an unknown mode (a requested `-h`/`--help` is `0`) |
 
 The problem this draft resolves: `0` currently covers both "success" and three distinct
 "changed nothing" cases (one of which logs at `err`), and `1` conflates "refused before
@@ -33,7 +33,8 @@ Every terminal exit path, with `dynavlan` line references.
 
 ### All modes — `main` (2351-2400)
 - `--version` / `-V` → **0**, before config load and root check (2360-2362)
-- no arg / `-h` / `--help` → **2** (2364-2366)
+- `-h` / `--help` (explicitly requested) → **0** (0.4.13; requested help is success)
+- no arg → **2**; unknown mode → **2** (2367-2376)
 - unknown mode → **2** (2368-2371)
 - `load_config` failure → **1** (2374-2377)
 - `check_preconditions` failure → **1** (2400)
@@ -74,7 +75,7 @@ Every terminal exit path, with `dynavlan` line references.
 |------|---------|-------|
 | `0` | Success, or a deliberate no-op that left the box unchanged and healthy | Covers: applied+accepted; nothing to change; lock-skip; guarded aborts (see dispositions) |
 | `1` | Refused or failed *before* changing anything, OR an apply that was safely reverted | Fail-toward-safe: box reachable, logged. The union is intentional (see D4) |
-| `2` | Usage error (bad/missing mode) | Never touches config or hardware |
+| `2` | Usage error: no mode, or an unknown mode (requested `-h`/`--help` is `0`) | Never touches config or hardware |
 | `3` | *(proposed, optional)* Applied, post-apply health check FAILED, auto-reverted, box safe | Only if a real consumer needs it — see Decision below |
 
 Codes stay below 126 (shell/signal reserved range). Additions to this table are allowed

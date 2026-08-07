@@ -136,14 +136,14 @@ text AND severities declared unfrozen. Marked DRAFT (takes effect at 1.0.0); REA
 All three design rounds ran through an independent Fable-5 adversarial reviewer, which overturned several
 first-pass calls (blanket log level; add-code-3; "harden the YAML comparison") and caught real defects in
 the COMPATIBILITY draft (BOOT_SETTLE clamp mis-stated, --rescan mis-labeled add-only, enforcement
-overclaimed unbuilt hooks) - all fixed. Decisions: `context/decisions.md` 2026-08-07. Unit suite 276/0.
-OPEN pre-freeze decision surfaced: `--help` currently exits 2 alongside real usage errors - decide help->0
-vs keep, before the freeze (`context/open_questions.md`).
+overclaimed unbuilt hooks) - all fixed. Decisions: `context/decisions.md` 2026-08-07. Then `--help` was
+changed to exit **0** (was 2; requested help is success) as **ver 0.4.13** with §1l-bis unit tripwires,
+resolving the one open pre-freeze exit-code question. Unit suite **281/0**; main is at **ver 0.4.13**.
 
-NEXT ACTION: v1.0 remaining gates - gate (3) second-box/multi-site validation, then finish gate (4) the
-1.0.0 freeze (config-surface freeze STARTED via the three docs above; still needs: version-gate git hooks,
-the YAML "exactly one comment line at line 1" unit tripwire, the VLAN_LIMIT=0 caveat into `dynavlan.conf`
-where an operator sees it, the `--help` exit-code decision, README cross-link, then the full major review).
+NEXT ACTION: v1.0 remaining gates - gate (3) second-box/multi-site validation (a candidate box exists),
+then finish gate (4) the 1.0.0 freeze (config-surface freeze STARTED via the docs above; still needs:
+version-gate git hooks, the YAML "exactly one comment line at line 1" unit tripwire, the VLAN_LIMIT=0
+caveat into `dynavlan.conf` where an operator sees it, README cross-link, then the full major review).
 Also open: the `--report` command (design done, parked). Also unresolved: push main (4+ commits held).
 Per-item detail: `context/todo.md`; decisions: `context/decisions.md` 2026-08-05/06/07; register
 (git-excluded): `docs/superpowers/plans/2026-08-04-v1.0-gate4-review-fixes.md`.

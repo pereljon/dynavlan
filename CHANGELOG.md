@@ -4,6 +4,12 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ## Unreleased
 
+### Changed
+
+- `-h`/`--help`, when explicitly requested, now exits `0` (requested help is success)
+  instead of `2`. A missing mode or an unknown mode still exits `2`. Done in the
+  pre-1.0 window while exit codes are still free to change.
+
 ### Fixed
 
 - FR-22 zero-detection boot abort logged at `err` while exiting 0 (an error-severity

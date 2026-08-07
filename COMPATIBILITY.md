@@ -138,16 +138,12 @@ be added later as a free minor addition.
 
 | Code | Meaning |
 |------|---------|
-| `0` | success, or a deliberate no-op that left the box unchanged and healthy |
+| `0` | success, or a deliberate no-op that left the box unchanged and healthy (includes a requested `--help`/`-V`) |
 | `1` | refused or failed before changing anything, OR an apply that was safely reverted |
-| `2` | usage text was printed: help requested (`-h`/`--help`), or a bad/missing mode |
+| `2` | usage error: no mode given, or an unknown mode |
 
 Full per-mode inventory, dispositions, and the rationale for keeping a reverted apply at
 `1` (not `0`): [`docs/exit-codes.md`](docs/exit-codes.md).
-
-> **Open pre-freeze decision:** an explicitly requested `--help` currently exits `2`
-> alongside genuine usage errors. If a requested help should instead exit `0`, that is a
-> free change now but an exit-code-meaning break after `1.0`. Decide before the freeze.
 
 ## Documented limitations (out of scope for 1.0)
 
