@@ -4,6 +4,8 @@ Owns: open questions with their status and next step. Does NOT hold decisions (c
 Maintain: resolve a question by checking it and dating the outcome; do not delete.
 Entry format: `- [ ] question (status: open|blocked) - next step`  /  resolved: `- [x] question (resolved YYYY-MM-DD) - outcome`
 
+- [ ] dynavlan `--help` exit code: keep `2` or change to `0`? (status: open, decide before the 1.0.0 freeze) - an explicitly requested `-h`/`--help` currently exits `2` (`main`, dynavlan:2364-2366), the same code as a bad/missing mode. Conventionally a requested help succeeds (exit 0) while only usage ERRORS exit 2. Prerelease is the free moment to change it; after 1.0 it becomes an exit-code-meaning break under the compatibility contract. If changed: help->0 is a script behavior change (needs a `ver=` bump + the exit-code table row in COMPATIBILITY.md/exit-codes.md updated so code 2 no longer claims to cover help). If kept: the current COMPATIBILITY.md wording ("usage text was printed: help requested, or a bad/missing mode") already documents it accurately. Surfaced 2026-08-07 by the Fable review of COMPATIBILITY.md.
+
 - [x] Is the netplan config in docs/deployment-guide.md exactly correct? (resolved 2026-07-14) - confirmed by user: the actual 01-netcfg.yaml is correct as normalized; the internal deployment runbook's renderer strips/flattens indentation on display, that was the source of the ambiguity.
 
 - [x] dynavlan C1: Does `netplan apply` reliably non-zero-exit on a config that breaks routing? (resolved-moot 2026-07-14) - made moot by adopting `netplan try` + post-apply default-route health check instead of relying on any exit code. Did not need to break the production/lab uplink to confirm the negative.

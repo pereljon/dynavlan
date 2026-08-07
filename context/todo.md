@@ -4,14 +4,28 @@ Owns: open tasks and their status. Does NOT hold permanent facts or decisions (t
 Maintain: update whenever a task is added, changes state, or completes.
 Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 
-## Current state (2026-08-06)
+## Current state (2026-08-07)
 
 See `context/index.md` STATE line for the authoritative up-to-date summary (kept current
-there to avoid two places drifting). As of 2026-08-06 (later): the gate-4 backlog is COMPLETE,
-the consolidated hardware-validation pass PASSED 14/14 on the Protectli box (build `b0317b6`,
-`docs/hardware-validation.md`), and **v0.4.11 is RELEASED**. Last RELEASED version is now
-**v0.4.11** (was v0.4.2). Only C1 positive-refusal + the state-machine harness remain deferred.
-Next up: v1.0 gate (3) second-box/multi-site validation, then gate (4) the 1.0.0 freeze.
+there to avoid two places drifting). As of 2026-08-07: gate-4 backlog COMPLETE and v0.4.11
+RELEASED (2026-08-06, HV 14/14 on the Protectli box, `docs/hardware-validation.md`). The
+**1.0.0 freeze (gate 4) is now STARTED**: `docs/exit-codes.md` (exit-code table, {0,1,2}
+open-ended) and `COMPATIBILITY.md` (deprecate-with-warning contract, DRAFT) drafted, and the
+D1 script fix landed as **ver 0.4.12** (FR-22 abort log level; not released, rides the next
+release). All designed with an independent Fable-5 adversarial reviewer. Main is **4+ commits
+ahead of origin, NOT pushed**. Gate (3) second-box validation still open; only C1
+positive-refusal + the state-machine harness remain the standing deferrals.
+
+### Gate-4 freeze - remaining before the 1.0.0 tag
+- [ ] Version-gate git hooks (pre-commit `ver=` bump + `build=` column-0 invariant, FR-38)
+- [ ] YAML "exactly one comment line at line 1" unit tripwire in `tests/unit.sh` (asserts on
+      `backend_generate_config` output, not just `config_body_differs`)
+- [ ] Move the `VLAN_LIMIT=0` fixed-`TRY_TIMEOUT`/untested-at-scale caveat into `dynavlan.conf`
+      where an operator setting `0` will read it (it is in COMPATIBILITY.md + exit-codes.md only)
+- [ ] Decide `--help` exit code: keep `2` or change to `0` (free now, a break after 1.0) -
+      see `context/open_questions.md`
+- [ ] README cross-link to `COMPATIBILITY.md` (deferred until the contract is finalized)
+- [ ] Full major (X.0.0) review with >=1 non-Opus reviewer, after the surface is final
 Older history: v0.4.0 (carrier-down VLAN removal, FR-41) hardware-validated
 (6/6 L3-30 sub-cases PASS), tagged, pushed, GitHub release with `.deb` auto-built (see the v0.4.0
 milestone below). v0.3.0 (restart-on-new-subnet) also released, prior to this. Superseded, kept for history:

@@ -119,12 +119,34 @@ of the HW-validated `b0317b6`, so the shipped script is byte-identical to what w
 upgrade` swaps in the packaged 0.4.11 when the operator is ready. Rescan timer restored to active; config
 at defaults.
 
-NEXT ACTION: v1.0 remaining gates - gate (3) second-box/multi-site validation, then gate (4) the 1.0.0
-freeze itself (config-surface freeze + `COMPATIBILITY.md` + version-gate git hooks + full major review).
-Gate-4 pre-freeze review backlog is now fully worked (all groups closed; C1 positive-refusal + the
-state-machine harness are the only two documented deferrals). Also open: the `--report` command (design
-done, parked). Per-item detail: `context/todo.md`; decisions: `context/decisions.md` 2026-08-05/06;
-register (git-excluded): `docs/superpowers/plans/2026-08-04-v1.0-gate4-review-fixes.md`.
+STATE (2026-08-07, gate-4 freeze artifacts STARTED): began drafting the 1.0.0 config-surface freeze
+(gate 4). Three docs-only commits on main plus one script fix, NOT pushed (main 4+ ahead of origin):
+(1) `docs/exit-codes.md` - the exit-code table drafted; the full {0,1,2} vocabulary enumerated per mode,
+frozen as OPEN-ENDED (consumer treats any unknown non-zero as failure), reverted-apply stays `1` on
+observability grounds (Type=oneshot, no OnFailure), NO distinct code 3 for 1.0. (2) **D1 script fix,
+`ver=` 0.4.11 -> 0.4.12** (fix/fr22-abort-log-level, merged): the FR-22 zero-detection boot abort logged
+at `err` while exiting 0 (err on an intended no-op; do_rescan already logged `info`). Now computes `owned`
+first and branches severity - `warning` when preserving owned VLANs behind a quiet wire (the per-trunk
+preserve warning is unreachable from the early return), `info` when nothing owned. Exit 0 unchanged. NOT
+released (cosmetic, rides the next substantive release); does NOT need its own HV pass (outside the
+apply/rollback/detection blast radius). (3) `COMPATIBILITY.md` DRAFT - the deprecate-with-warning contract:
+all four surfaces enumerated inline (21 config keys, YAML shape, CLI flags, exit codes -> links
+exit-codes.md), integration identifiers frozen (config path, unit/timer names, `dynavlan` syslog id), log
+text AND severities declared unfrozen. Marked DRAFT (takes effect at 1.0.0); README cross-link deferred.
+All three design rounds ran through an independent Fable-5 adversarial reviewer, which overturned several
+first-pass calls (blanket log level; add-code-3; "harden the YAML comparison") and caught real defects in
+the COMPATIBILITY draft (BOOT_SETTLE clamp mis-stated, --rescan mis-labeled add-only, enforcement
+overclaimed unbuilt hooks) - all fixed. Decisions: `context/decisions.md` 2026-08-07. Unit suite 276/0.
+OPEN pre-freeze decision surfaced: `--help` currently exits 2 alongside real usage errors - decide help->0
+vs keep, before the freeze (`context/open_questions.md`).
+
+NEXT ACTION: v1.0 remaining gates - gate (3) second-box/multi-site validation, then finish gate (4) the
+1.0.0 freeze (config-surface freeze STARTED via the three docs above; still needs: version-gate git hooks,
+the YAML "exactly one comment line at line 1" unit tripwire, the VLAN_LIMIT=0 caveat into `dynavlan.conf`
+where an operator sees it, the `--help` exit-code decision, README cross-link, then the full major review).
+Also open: the `--report` command (design done, parked). Also unresolved: push main (4+ commits held).
+Per-item detail: `context/todo.md`; decisions: `context/decisions.md` 2026-08-05/06/07; register
+(git-excluded): `docs/superpowers/plans/2026-08-04-v1.0-gate4-review-fixes.md`.
 
 Before coding a change, read in order:
 4. dev/SKELETON.md - logic flow and key invariants
