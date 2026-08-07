@@ -144,7 +144,8 @@ NEXT ACTION: v1.0 remaining gates - gate (3) second-box/multi-site validation (a
 then finish gate (4) the 1.0.0 freeze (config-surface freeze STARTED via the docs above; still needs:
 version-gate git hooks, the YAML "exactly one comment line at line 1" unit tripwire, the VLAN_LIMIT=0
 caveat into `dynavlan.conf` where an operator sees it, README cross-link, then the full major review).
-Also open: the `--report` command (design done, parked). Also unresolved: push main (4+ commits held).
+Also open: the `--report` command (design done, parked). Main is pushed and clean (origin at `02bee53`,
+ver 0.4.13). The Gate-3 candidate box details are still to be gathered (deferred by the operator).
 Per-item detail: `context/todo.md`; decisions: `context/decisions.md` 2026-08-05/06/07; register
 (git-excluded): `docs/superpowers/plans/2026-08-04-v1.0-gate4-review-fixes.md`.
 
