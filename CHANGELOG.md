@@ -2,6 +2,15 @@
 
 Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle that section to `## [x.y.z] - YYYY-MM-DD`.
 
+## Unreleased
+
+### Fixed
+
+- FR-22 zero-detection boot abort logged at `err` while exiting 0 (an error-severity
+  line on an intended no-op). Severity now tracks the owned set: `warning` when owned
+  VLANs are preserved behind a now-quiet wire, `info` when nothing is owned. Exit code
+  unchanged (0). The same predicate was already `info` in the rescan path.
+
 ## [0.4.11] - 2026-08-06
 
 Consolidates the pre-1.0 gate-4 review hardening (0.4.3 through 0.4.11) into one

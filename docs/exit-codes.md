@@ -55,7 +55,9 @@ Every terminal exit path, with `dynavlan` line references.
 
 ### `--boot` — `do_boot` / `--rescan` — `do_rescan`
 - lock busy → **0** `skipped, run in progress` (2437-2439) — deliberate, FR-30
-- **FR-22 zero-detection abort → `log err` then 0 (1785-1786)** — the anomaly
+- FR-22 zero-detection abort → **0**, severity now conditional on the owned set
+  (`warning` if owned VLANs are preserved behind a quiet wire, else `info`; D1, fixed
+  in 0.4.12) — was `log err` then 0
 - no change → **0** (1925, 1930)
 - `gate_vlan_count` refuse (limit exceeded, `refuse` mode) → **1** (1928 / rescan 2031)
 - fill-mode → proceeds to apply; exit reflects the apply outcome (not a distinct code)
@@ -84,13 +86,24 @@ i.e. a consumer must treat any unknown non-zero as failure, not assume {1,2} exh
 Three terminal states currently return 0 for "changed nothing." Each needs a ruling so
 the freeze is deliberate.
 
-### D1 — FR-22 zero-detection abort (1785-1786): **FIX before freeze**
-Currently `log err "...aborted..."` then `return 0`. An error-severity log paired with a
-success exit is internally inconsistent: it is *either* a real failure or an intended
-no-op, not both. It is in fact an intended no-op ("no carrier / no tags / zero VLANs and
-removal disabled → change nothing"), so the exit 0 is correct and the **log level is the
-bug**. Recommendation: **lower the log to `warning` (or `notice`)**, keep exit 0. One-line
-change, no behavior change beyond severity. This is the one concrete pre-freeze fix.
+### D1 — FR-22 zero-detection abort: **FIXED in 0.4.12**
+Was `log err "...aborted..."` then `return 0` — an error-severity log paired with a
+success exit, internally inconsistent. It is an intended no-op (zero detection + removal
+disabled → change nothing), so exit 0 is correct and the log level was the bug. The same
+predicate was already `log info` in `do_rescan` (1943), so boot was the outlier.
+
+Fixed by making the severity track the owned set (the guard now computes `owned` first):
+`warning` when owned VLANs are being preserved behind a now-quiet wire (the per-trunk
+preserve `warning` at 1882 is unreachable from this early return, so this is the only
+signal — matching that line's convention), `info` when nothing is owned and there is
+genuinely nothing to do (matching 1788/1943). A blanket `warning` was rejected: it would
+cry-wolf on every boot of a dark spare box; a blanket `info` would lose the signal under
+`LOG_LEVEL=warning`. `notice` was rejected: the codebase reserves it for state changes.
+
+Note: dynavlan's `log()` prints the level as *text* to stderr and no unit sets
+`SyslogLevel=`, so journald records every line at one uniform priority — severity is
+visible to human readers and to dynavlan's own `LOG_LEVEL` gate, but NOT to
+`journalctl -p`. The severity choice matters for those two, not for priority filtering.
 
 ### D2 — Lock-skip (2437-2439): **KEEP 0, document**
 `log info "skipped, run in progress"` → 0. Deliberate per FR-30: a timer rescan that
@@ -128,8 +141,8 @@ proliferate.
 
 ## Summary of actions
 
-1. **D1:** lower the FR-22 abort log from `err` to `warning`/`notice` (keep exit 0). Only
-   code change. Needs a `ver=` patch bump.
+1. **D1:** DONE in 0.4.12 — FR-22 abort severity now tracks the owned set (`warning` if
+   preserving owned VLANs, else `info`), exit 0 unchanged.
 2. **D2/D3:** no change; document as deliberate 0-exits.
 3. **D4:** keep revert → 1; document.
 4. **Code 3:** deferred; freeze `{0,1,2}` as open-ended, add `3` post-1.0 only on real demand.

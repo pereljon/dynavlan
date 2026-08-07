@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.11"
+ver="0.4.12"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -1781,15 +1781,25 @@ do_boot() {
 	# detection-diff path, and carrier is a separate authoritative signal. The in-loop
 	# empty-detection guard below still preserves every carrier-UP trunk, so the
 	# detection-diff path keeps its FR-22 protection either way.
+	local owned owned_ifaces trunk pruned_ifaces=""
+	local all_additions="" all_removals="" target any_owned_down=false
+	owned=$(backend_owned_vlans)
 	if [ -z "$DETECTED_TRUNKS" ] && [ "$REMOVE_ON_CARRIER_LOSS" != true ]; then
-		log err "boot reconcile aborted: no carrier / no tags / zero VLANs detected and REMOVE_ON_CARRIER_LOSS=false. Changing nothing (FR-22 zero-detection guard)"
+		# Intended no-op (exit 0): zero detection with carrier-down removal disabled,
+		# so nothing can be added and the detection-diff removal path is off. Severity
+		# tracks the owned set - warning when owned VLANs are being preserved behind a
+		# now-quiet wire (the per-trunk preserve warnings below are unreachable from
+		# this early return, so this is the only signal), info when nothing is owned
+		# and there is genuinely nothing to do. Not err: nothing failed (FR-22).
+		if [ -n "$owned" ]; then
+			log warning "boot: zero VLANs detected and REMOVE_ON_CARRIER_LOSS=false; preserving $(count_ids "$owned") owned VLAN(s), changing nothing (FR-22 zero-detection guard)"
+		else
+			log info "boot: zero VLANs detected, nothing owned; changing nothing (FR-22 zero-detection guard)"
+		fi
 		return 0
 	fi
 	[ -z "$DETECTED_TRUNKS" ] && log info "boot: zero VLANs detected; owned carrier-down trunks remain eligible for removal"
 
-	local owned owned_ifaces trunk pruned_ifaces=""
-	local all_additions="" all_removals="" target any_owned_down=false
-	owned=$(backend_owned_vlans)
 	owned_ifaces=$(distinct_ifaces "$owned")
 
 	local all_trunks
