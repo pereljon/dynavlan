@@ -103,15 +103,28 @@ built: spine already HW-validated + console-backed, cannot reproduce the real ne
 per-helper units already cover the M-fix decision logic; rationale + a preserved design sketch in
 `context/decisions.md` 2026-08-06 + the register). Unit suite **276/0**; main is at **ver 0.4.11** and is
 **10 commits ahead of origin, NOT pushed** (push held by the operator).
-**NEXT ACTION: run the consolidated hardware-validation pass**, console-backed on the Protectli box:
-`docs/hardware-validation-v0.4.10.md`. It gates the next release. NOTHING from 0.4.3->0.4.11 has been
-deployed to hardware yet (the box last saw 0.4.2), so even the safe refactors are unrun on the wire; the
-checklist starts with a build-identity gate (install from clean `main`, confirm `--version` matches HEAD).
-It covers happy-path + M8 (hide a tool) + H5 (multi-VLAN lease timing) + M6 (bogus restart target) + P2
-(kill mid-apply), and switch-access-gated C1 positive-refusal + L3-30 carrier-pull prune. AFTER HV passes:
-push, then cut the release (operator authorization required; the release gate is met - the shippable script
-changed). Per-item detail: `context/todo.md`; decisions: `context/decisions.md` 2026-08-05/06; register (git-
-excluded): `docs/superpowers/plans/2026-08-04-v1.0-gate4-review-fixes.md`.
+STATE (2026-08-06, later - HV PASSED + v0.4.11 RELEASED): the consolidated gate-4 hardware-validation
+pass ran console-backed on the Protectli box (build `b0317b6`, installed from a locally-built `.deb` over
+the prior 0.4.2 test build) and PASSED 14/14 targeted checks: build-identity gate, Phase 1 smoke + M8
+dep-gate + M5 drain, H5 lease timing (7 leases in one 179ms bounded pass), M6 restart-failure seen-set
+(total holds unseen + retries, partial consumes + no storm), P2 kill-mid-apply FIFO-EOF revert (~4.3s
+after writer death, box intact), and L3-30 carrier-pull PRUNE + re-add re-confirmed on 0.4.11. Only C1
+POSITIVE refusal stays deferred (needs switch access to make a dynavlan VLAN the box default route; its
+true-negative was observed live during the prune). Sign-off matrix: `docs/hardware-validation-v0.4.10.md`.
+Preserve-biased detail found: neither `VLAN_MAX` nor `VLAN_IGNORE` prunes an already-owned VLAN, and
+`--reapply` no-ops on a matching on-disk yaml. Docs updated (CHANGELOG retitled `[0.4.11]`, SKELETON P2
+EOF status, tests-doc 2026-08-06 run note, this file, todo). **v0.4.11 RELEASED** (docs-only commit on top
+of the HW-validated `b0317b6`, so the shipped script is byte-identical to what was validated; `ver=` stays
+0.4.11, no bump for the doc commit). The box still runs the 0.4.11 test build; `sudo apt update && apt
+upgrade` swaps in the packaged 0.4.11 when the operator is ready. Rescan timer restored to active; config
+at defaults.
+
+NEXT ACTION: v1.0 remaining gates - gate (3) second-box/multi-site validation, then gate (4) the 1.0.0
+freeze itself (config-surface freeze + `COMPATIBILITY.md` + version-gate git hooks + full major review).
+Gate-4 pre-freeze review backlog is now fully worked (all groups closed; C1 positive-refusal + the
+state-machine harness are the only two documented deferrals). Also open: the `--report` command (design
+done, parked). Per-item detail: `context/todo.md`; decisions: `context/decisions.md` 2026-08-05/06;
+register (git-excluded): `docs/superpowers/plans/2026-08-04-v1.0-gate4-review-fixes.md`.
 
 Before coding a change, read in order:
 4. dev/SKELETON.md - logic flow and key invariants

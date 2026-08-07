@@ -42,7 +42,7 @@ do not chase them at the console.
 
 | # | Check | Do | Expect | Pass |
 |---|-------|----|--------|------|
-| 1.1 | Build id | `dynavlan --version` | `0.4.10 (build 3d89e82)`, no `-dirty` | [ ] |
+| 1.1 | Build id | `dynavlan --version` | `0.4.11 (build b0317b6)`, no `-dirty` | [x] |
 | 1.2 | Status static report | `sudo dynavlan --status` | owned / owned-trunks / per-trunk `carrier=up\|down` / `detect_method`+`range`+`ignore` all print | [ ] |
 | 1.3 | Status per-trunk columns (M8/FR-35) | same output | each **detected** trunk line shows `detected=[..] ignored=[..] out-of-range=[..] managed-elsewhere=[..]` | [ ] |
 | 1.4 | Status exit 0 when healthy | `sudo dynavlan --status; echo $?` | `0` | [ ] |
@@ -83,14 +83,18 @@ do not chase them at the console.
 
 ## Sign-off
 
+Completed 2026-08-06, console-backed on the Protectli box, build `b0317b6` (0.4.11),
+installed from a locally-built `.deb` over the box's prior 0.4.2 test build.
+
 | Item | Result | Build id | Notes |
 |------|--------|----------|-------|
-| Phase 1 (smoke + M8) | | | |
-| Phase 2 (H5) | | | |
-| Phase 3 (M6) | | | |
-| Phase 3b (P2 kill-mid-apply) | | | |
-| Phase 4 (C1, L3-30) | | | |
+| Phase 1 (smoke + M8) | PASS (8/8) | b0317b6 | M8: hidden lldpctl -> `detected trunks: unavailable`, exit 1, restored to exit 0. M5 drain: `pending-delete` absent, early return. No-change reconcile: no netplan try, no restart. |
+| Phase 2 (H5) | PASS | b0317b6 | Re-add of 7 `enp1s0.*`: ACCEPT -> 7 leases in **179 ms** (one bounded pass, not per-VLAN serial) -> restart once; run 76s << 600s TimeoutStartSec. Domotz restart confirmed by ExecMainStartTimestamp. Fast-DHCP caveat: does not contrast vs the old serial path (structural fix is unit-covered). |
+| Phase 3 (M6) | PASS | b0317b6 | Total failure (bogus-only target): new subnets held OUT of `seen`, retried next run. Partial success (real snap + bogus service): snap restarted, subnets recorded, next run no re-restart (no storm). Staged by clearing `/run/dynavlan/seen`. |
+| Phase 3b (P2 kill-mid-apply) | PASS (3b.1) | b0317b6 | `kill -9` the dynavlan writer during `netplan try` (via a perturbed `--reapply` to open a real try window; applied config == canonical, safe): FIFO EOF -> netplan try reverted+exited ~4.3s later (<< 30s timer), 14 ifaces intact, box reachable. enp1s0 base default briefly dropped during the revert reconcile, DHCP-recovered. 3b.2 (systemd-cgroup kill) not run - secondary variant, core EOF path validated. |
+| Phase 4 (C1, L3-30) | L3-30 PASS; C1 positive DEFERRED | b0317b6 | L3-30 carrier-pull PRUNE on 0.4.11: enp1s0 down -> 20s debounce -> 7 VLANs pruned via netplan try (removal-only accept ~18.2s, C2 floor), enp2s0's 7 preserved, box reachable; re-plug re-add PASS. C1 true-negative observed live (no isolated VLAN was default, guard silent). C1 POSITIVE refusal still deferred (needs routed-mode + switch to make a dynavlan VLAN the default route). |
 
-On completion, record the outcome in `context/todo.md` and, for the SKELETON /
-tests-doc invariants any case touches (esp. L3-30 prune, C1 positive), update
-their "hardware-validated" status so the docs stop saying "not yet run".
+Findings recorded in `context/todo.md`; SKELETON P2/FIFO-EOF status and the tests-doc
+L3-30 note updated. Preserve-biased behavior confirmed along the way: neither
+`VLAN_MAX` narrowing nor `VLAN_IGNORE` prunes an already-owned VLAN, and `--reapply`
+no-ops when the on-disk yaml already matches the generated config.

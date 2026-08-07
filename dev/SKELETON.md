@@ -85,7 +85,7 @@ apply_change(target, additions, removals)
 3. **Health**: HEALTH_CONSEC consecutive PASSes - the snapshotted iface still holds a default route at the MINIMUM post-apply metric (iface only; metric/gateway changes are normal DHCP events). Equal-metric multi-uplink is order-independent (P3): the check is set membership at the min metric, not "the first route at the min metric", so a route-listing order flip between the pre and post samples (same routing state) cannot spuriously FAIL/revert.
 4. **Confirmation-window bound**: no accept once `waited - first_evidence >= TRY_TIMEOUT - 2*POLL_INTERVAL`. Past that, a still-alive try may be mid-REVERT and the revert itself restores routing (health would PASS) - a buffered newline would false-ACCEPT a rolled-back change.
 
-On FAIL the fifo write-end is held OPEN until try exits on its own timer (stdin-EOF-on-early-close is not hardware-validated and is never exercised). An independent wall-clock guard (3× TRY_TIMEOUT) bounds the whole interaction.
+On FAIL the fifo write-end is held OPEN until try exits on its own timer, deliberately avoiding an early stdin-EOF on the normal path. The involuntary EOF (the writer process killed mid-apply) IS now hardware-validated (P2, 2026-08-06): a `kill -9` of the dynavlan process during `netplan try` closed the fifo write end and `netplan try` reverted and exited ~4.3s later (well short of its 30s timer), leaving all interfaces intact and the box reachable via its redundant uplink - no strand, no false accept. An independent wall-clock guard (3× TRY_TIMEOUT) bounds the whole interaction.
 
 ## Routed mode (FR-37, opt-in)
 

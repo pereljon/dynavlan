@@ -2,7 +2,14 @@
 
 Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle that section to `## [x.y.z] - YYYY-MM-DD`.
 
-## Unreleased
+## [0.4.11] - 2026-08-06
+
+Consolidates the pre-1.0 gate-4 review hardening (0.4.3 through 0.4.11) into one
+release. Console-backed hardware validation on the Protectli box (build `b0317b6`,
+2026-08-06): build-identity gate, M8 dep-gate, H5 lease timing, M5 drain, M6
+restart-failure seen-set (total + partial), P2 kill-mid-apply FIFO-EOF revert, and
+the L3-30 carrier-pull prune + re-add all PASS. Details in
+`docs/hardware-validation-v0.4.10.md`.
 
 ### Changed
 
