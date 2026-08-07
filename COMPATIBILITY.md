@@ -14,17 +14,23 @@ surface can still evolve during `1.x`, at the cost of a two-step process for any
 
 ## Scope: the four frozen surfaces
 
-The promise covers exactly these, and nothing else:
+The deprecate-with-warning rules below govern exactly these four evolving surfaces:
 
 1. **Config keys** (names, accepted values, defaults)
 2. **The generated `/etc/netplan/90-dynavlan.yaml` shape**
 3. **CLI flags** (modes and their meaning)
 4. **Exit codes**
 
-**Not covered:** internal code layout, log message wording, the order of unrelated log
-lines, journal tags, and anything the docs explicitly mark as a limitation. dynavlan is
-single-file by design and its apply/rollback state machine is deliberately coupled;
-internal refactors stay free even after `1.0`.
+**Also frozen (integration identifiers).** These are names an external consumer binds to,
+so a rename would break silently: the config path `/etc/dynavlan.conf`, the systemd unit
+and timer names (`dynavlan.service`, `dynavlan-rescan.service`, `dynavlan.timer`), and the
+`dynavlan` syslog identifier (`--status` tells operators to run `journalctl -t dynavlan`).
+
+**Not covered:** internal code layout, log message text **and severities** (exit codes are
+the only contractual outcome signal, so a severity change like 0.4.12's is free), the order
+of unrelated log lines, structured journal fields, `/run` state paths, and the backup
+directory. dynavlan is single-file by design and its apply/rollback state machine is
+deliberately coupled; internal refactors stay free even after `1.0`.
 
 ## The rules
 
@@ -53,12 +59,12 @@ The promise covers each key's **name, accepted values, and default**.
 | `DETECT_METHOD` | `both` | `both` \| `lldp` \| `sniff` |
 | `VLAN_MIN` | `1` | int 1-4094 |
 | `VLAN_MAX` | `1000` | int 1-4094, >= `VLAN_MIN` |
-| `VLAN_IGNORE` | `""` | comma/space list of ids/ranges |
+| `VLAN_IGNORE` | `""` | comma/space list of ids/ranges within 1-4094 |
 | `VLAN_WARN` | `32` | int >= 1 |
 | `VLAN_LIMIT` | `64` | int; `0` = unlimited |
 | `VLAN_LIMIT_MODE` | `refuse` | `refuse` \| `fill` |
 | `SNIFF_SECONDS` | `60` | int >= 1 |
-| `BOOT_SETTLE_SECONDS` | `20` | non-neg int (also the FR-41 carrier debounce; clamped up to 5 when `REMOVE_ON_CARRIER_LOSS=true`) |
+| `BOOT_SETTLE_SECONDS` | `20` | non-neg int (the FR-41 carrier-sample interval derives from it and is floored at 5 when `REMOVE_ON_CARRIER_LOSS=true`; the sniff-comparison settle uses the raw value) |
 | `CARRIER_WAIT_SECONDS` | `30` | non-neg int |
 | `LEASE_SETTLE_SECONDS` | `30` | non-neg int |
 | `RESCAN_MINUTES` | `5` | int >= 1 |
@@ -73,7 +79,9 @@ The promise covers each key's **name, accepted values, and default**.
 | `RESTART_ON_NEW_SUBNET` | `true` | `true` \| `false` |
 
 The "unknown key is refused" behavior is itself part of the contract: the frozen set is
-exactly these keys, and a 22nd is a free minor addition.
+exactly these keys, and a 22nd is a free minor addition. `dynavlan` also refuses to run if
+`/etc/dynavlan.conf` is not root-owned or is group/other-writable; that refusal is
+contractual, not an incidental check.
 
 ### 2. Generated `90-dynavlan.yaml` shape
 
@@ -114,7 +122,7 @@ One mode per invocation. `-V` is the only short alias.
 | Flag | Meaning |
 |------|---------|
 | `--boot` | full reconcile (add + remove) |
-| `--rescan` | timer reconcile (add as VLANs appear) |
+| `--rescan` | timer reconcile (add as VLANs appear; prune a confirmed carrier-down trunk) |
 | `--reapply` | operator re-apply of the current owned set |
 | `--dry-run` | preview, no apply |
 | `--status` | owned vs detected-now report |
@@ -132,10 +140,14 @@ be added later as a free minor addition.
 |------|---------|
 | `0` | success, or a deliberate no-op that left the box unchanged and healthy |
 | `1` | refused or failed before changing anything, OR an apply that was safely reverted |
-| `2` | usage error (bad or missing mode) |
+| `2` | usage text was printed: help requested (`-h`/`--help`), or a bad/missing mode |
 
 Full per-mode inventory, dispositions, and the rationale for keeping a reverted apply at
 `1` (not `0`): [`docs/exit-codes.md`](docs/exit-codes.md).
+
+> **Open pre-freeze decision:** an explicitly requested `--help` currently exits `2`
+> alongside genuine usage errors. If a requested help should instead exit `0`, that is a
+> free change now but an exit-code-meaning break after `1.0`. Decide before the freeze.
 
 ## Documented limitations (out of scope for 1.0)
 
@@ -146,10 +158,15 @@ Stated plainly, not silently absent (detail in
 - **One validated non-Meraki vendor** (UniFi), not a broad matrix.
 - **No per-VLAN MAC derivation** (the reserved key was removed, not frozen).
 - **No automatic config-drift detection** on boot/rescan.
+- **`VLAN_LIMIT=0` (unlimited) is frozen semantics but unvalidated at scale.** A large
+  owned set stresses the fixed `TRY_TIMEOUT` (30s) apply window, which is not scaled by
+  VLAN count and not hardware-validated at high counts. `0` opts out of the guard; the
+  operator assumes that timing risk.
 
 ## Enforcement
 
-The policy is documentation plus review discipline. What makes it enforceable is the FR-38
-version/build identity contract and its version-gate git hooks (Gate 4): a change that
-alters behavior cannot silently skip the `ver=` bump that signals it, so a
-compatibility-relevant change is always visible in the version history.
+The policy is documentation plus review discipline. It will be reinforced by the FR-38
+version/build identity contract's version-gate git hooks once Gate 4 lands them (they are
+designed but not yet built): a change that alters behavior cannot silently skip the `ver=`
+bump that signals it, so a compatibility-relevant change stays visible in the version
+history. Until those hooks exist, the `ver=` bump is enforced by review discipline alone.
