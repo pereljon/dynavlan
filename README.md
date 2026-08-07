@@ -1,8 +1,8 @@
 # dynavlan
 
-A self-configuring VLAN provisioner for headless Linux appliances: designed for monitoring/discovery platforms (which is why isolation is its default), but a general dynamic-VLAN tool at its core. dynavlan detects the active tagged VLANs on every trunk a box is plugged into, brings each one up with DHCP (address only, fully route/DNS-isolated by default), and restarts the services you nominate so any agent that enumerates interfaces at startup picks up the new subnets. No SSH, no hand-edited YAML.
+A self-configuring VLAN provisioner for headless Linux appliances. Built for monitoring and discovery platforms, but a general dynamic-VLAN tool at its core. dynavlan detects the active tagged VLANs on every trunk a box is plugged into, brings each one up with DHCP (address only, fully route/DNS-isolated by default), and restarts the services you nominate so any agent that enumerates interfaces at startup picks up the new subnets. No SSH, no hand-edited YAML.
 
-> **v0.4.0**, hardware-validated (Protectli/igb, dual trunks, Meraki + UniFi switches, 2026-08-04).
+> **v0.4.11**, hardware-validated on a Protectli/igb appliance with Meraki and UniFi switches. Full matrix and supported-hardware list: [Hardware validation](docs/hardware-validation.md).
 
 ## The problem
 

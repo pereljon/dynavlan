@@ -1,4 +1,28 @@
-# Hardware validation checklist - v0.4.10 (gate-4 group-5 accumulation)
+# Hardware validation
+
+Where dynavlan's validated hardware and its latest console-backed validation pass
+are recorded. This is a living doc: the checklist and sign-off below are rewritten
+in place each release; prior passes are recoverable via git tags
+(`git show v0.4.2:docs/hardware-validation.md`).
+
+## Validated hardware
+
+dynavlan is hardware- and vendor-agnostic by design; this table records the gear it
+has actually been validated on, not a hardware requirement.
+
+| Component | Validated on |
+|-----------|--------------|
+| Appliance | Protectli (Intel igb NICs), dual trunk ports |
+| OS / stack | Ubuntu 22.04, netplan >= 0.106 with the systemd-networkd renderer |
+| Switches (detection) | Meraki (edge trunk), UniFi (edge trunk + access port) |
+| Monitoring agent (restart hook) | Domotz snap |
+
+Any netplan/systemd-networkd box on any switch vendor should work; the above is the
+maintainer's validation bed. Latest sign-off: v0.4.11, 2026-08-06 (below).
+
+---
+
+## Current validation pass (v0.4.11, gate-4 group-5 accumulation)
 
 Consolidated console-backed validation of everything merged since the last
 hardware pass (v0.4.2). Run this **once** before cutting the next release, not

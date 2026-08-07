@@ -101,8 +101,8 @@ accept cannot gate on a netplan-try exit that only happens post-confirm), **P2 -
 FIFO-EOF, added to the HV checklist). The injected-command **state-machine test harness is DEFERRED** (not
 built: spine already HW-validated + console-backed, cannot reproduce the real netplan-try FIFO/timing anyway,
 per-helper units already cover the M-fix decision logic; rationale + a preserved design sketch in
-`context/decisions.md` 2026-08-06 + the register). Unit suite **276/0**; main is at **ver 0.4.11** and is
-**10 commits ahead of origin, NOT pushed** (push held by the operator).
+`context/decisions.md` 2026-08-06 + the register). Unit suite **276/0**; main is at **ver 0.4.11**. (Those commits were pushed with the
+v0.4.11 release, below; main is now up to date with origin.)
 STATE (2026-08-06, later - HV PASSED + v0.4.11 RELEASED): the consolidated gate-4 hardware-validation
 pass ran console-backed on the Protectli box (build `b0317b6`, installed from a locally-built `.deb` over
 the prior 0.4.2 test build) and PASSED 14/14 targeted checks: build-identity gate, Phase 1 smoke + M8
@@ -110,7 +110,7 @@ dep-gate + M5 drain, H5 lease timing (7 leases in one 179ms bounded pass), M6 re
 (total holds unseen + retries, partial consumes + no storm), P2 kill-mid-apply FIFO-EOF revert (~4.3s
 after writer death, box intact), and L3-30 carrier-pull PRUNE + re-add re-confirmed on 0.4.11. Only C1
 POSITIVE refusal stays deferred (needs switch access to make a dynavlan VLAN the box default route; its
-true-negative was observed live during the prune). Sign-off matrix: `docs/hardware-validation-v0.4.10.md`.
+true-negative was observed live during the prune). Sign-off matrix: `docs/hardware-validation.md`.
 Preserve-biased detail found: neither `VLAN_MAX` nor `VLAN_IGNORE` prunes an already-owned VLAN, and
 `--reapply` no-ops on a matching on-disk yaml. Docs updated (CHANGELOG retitled `[0.4.11]`, SKELETON P2
 EOF status, tests-doc 2026-08-06 run note, this file, todo). **v0.4.11 RELEASED** (docs-only commit on top
