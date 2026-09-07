@@ -470,7 +470,7 @@ Rejected: extracting the shared workflow conventions up into `~/Claude/CLAUDE.md
 
 ## 2026-08-03 - v0.4.0 minor-release code review
 
-**`run_detection` keeps its single rc; callers branch on `DETECTED_TRUNKS`.** Both first-round reviewers proposed a distinct rc for "hard probe failure" vs "detected nothing". Rejected on verification: nothing in `run_detection` can produce a hard failure, so the branch would have no producer and the empty-vs-failed distinction the docs asserted would stay fictional. Do not reintroduce it without first giving `run_detection` a real failure signal.
+**`run_detection` returns 0 or 1 but carries only one bit of signal - no distinct failure-state code; callers branch on `DETECTED_TRUNKS`.** Both first-round reviewers proposed a distinct rc for "hard probe failure" vs "detected nothing". Rejected on verification: nothing in `run_detection` can produce a hard failure, so the branch would have no producer and the empty-vs-failed distinction the docs asserted would stay fictional. The two return values mean "saw at least one tag-bearing trunk" (0) and "saw none" (1); neither encodes a detector failure, which is exactly why the modes branch on `DETECTED_TRUNKS` instead of on the return code. Do not reintroduce a third code without first giving `run_detection` a real failure signal to produce it.
 
 **`have_routing` requires a live physical NIC, not a physical egress device.** The obvious fix - whitelist the default route's egress iface against `discover_phys_ifaces` - is wrong twice: that helper filters on `[ -e "$p/device" ]` and so excludes VLAN netdevs, and it would disable FR-41 outright on a box that legitimately routes over a VPN. Requiring one physical NIC with carrier catches the all-dark case (AC-4) without either failure.
 
@@ -809,3 +809,83 @@ default via enp2s0, SSH stable on enp2s0 (.247; the .39 path is on enp1s0.101 an
 Why: the `publish-apt` job rebuilds the whole APT repo from every release's `.deb` on each publish (ephemeral reprepro db, so the re-downloaded asset set is the ONLY source of truth for which versions stay installable). Three holes let it publish a green but incomplete repo: `gh release list` had no `--limit` (defaults to 30, so the oldest versions drop off after 30 releases), a failed `gh release download` was a `::warning::`+continue (a transient fetch error on the just-published version silently regressed it out of the repo), and nothing asserted the result. Keeping every version matters for rollback (`apt install dynavlan=0.4.6` after a bad upgrade), version pins, and reproducibility - the workflow already commits to "every release stays installable".
 Chosen: rewrite the fetch step to (1) list ALL releases (`--limit 1000`, with a guard that hard-fails if we ever actually hit the cap, so it is never a silent truncation), (2) per release query its assets and REQUIRE a successful download for any release that carries a `.deb` while still skipping a release that legitimately has none - distinguishing "no asset" from "fetch error", which the old warning-and-continue conflated, and (3) assert both the downloaded count == expected count AND that `dynavlan_${PKG_VERSION}_all.deb` (the version being published now) is in the rebuild, failing the job otherwise. Rejected true pagination (over-engineered; 1000 dwarfs any realistic count and the guard makes the cap loud, not silent).
 CI-workflow only: the `dynavlan` script and its FRs are unchanged, so NO `ver=` bump. Cannot be run locally (only exercises on a real tagged release); verified by reading + `bash -n` on the extracted snippet, same class as H4. Register: gate-4 register M2.
+
+## 2026-09-05 - Full major (1.0.0) review: scope and re-litigation policy
+
+Why: prepping for the still-outstanding "full major (X.0.0) review" line in `context/todo.md`'s
+Gate-4 checklist. An external code-reviewer pass (2026-09-04, conversational, not yet executed as an
+actual review) asked whether the review should cover only `dynavlan`+`tests/unit.sh`, and whether
+documented pre-1.0 decisions should be treated as fixed or reopenable.
+
+**Scope decided: the full deployable surface, not just the script.** CLAUDE.md's own release-review
+rule ties depth to release size ("Major (X.0.0): full review of the relevant surface"), and
+`COMPATIBILITY.md` (draft) already defines the frozen 1.0 surface to include integration identifiers -
+config path, unit/timer names, syslog id - that live in `install.sh` and the systemd units, not in the
+script. Concretely in scope alongside `dynavlan`/`tests/unit.sh`: `install.sh`, the Debian maintainer
+scripts (or their `.deb`-generation equivalent), and the systemd units, at the same depth as the script
+(they run as root, unattended, on the same box - this project's stated threat model). Release workflows
+(GitHub Actions) are in scope but lighter-touch: reviewed for what they bind into the shipped artifact
+(version/build stamping - H7 was a real defect class here - signing, `.deb` metadata), not general CI
+hygiene. Driver: the one open item most likely to surprise an operator at install time - HV-1, a fresh
+`dpkg -i`/`apt install` starting `dynavlan.timer` against the deployment guide's "never starts" claim
+(`context/open_questions.md`) - lives entirely in this packaging/systemd territory, not in the script.
+
+**Pre-1.0 decisions stay fixed by default; reopened only on concrete evidence, not restated preference.**
+Not a new bar - `context/index.md`'s read-order already frames `context/decisions.md` as "decisions
+already made (do not re-litigate)", and the standing precedent (`run_detection`'s one bit of return-code
+signal - it returns 0 or 1, but neither value is a distinct failure-state code, only "found something" vs
+"found nothing" - proposed for a split by two independent reviewers and rejected both times, see the
+2026-07-23 entry above) already states it: don't reintroduce without a real producer/new fact. Pre-1.0 specifically means these are
+still internal engineering calls, not yet an external compatibility promise (`COMPATIBILITY.md` is
+DRAFT), so the bar is lower than it will be post-freeze, but it is still evidence - a demonstrated gap,
+field data, a hardware finding - not a fresh reviewer's independent preference for how something should
+have been designed.
+
+**Four subjects identified for the review's first pass** (from the same 2026-09-04 conversation, not
+yet acted on):
+1. Detection evidence/failure-state model: whether the five distinct detection states (no physical
+   interfaces / no carrier / successful-but-empty / runtime-invalid / positive-but-partially-trusted)
+   are sufficiently exposed through reconciliation, `--status`, exit codes, and logging, or collapse into
+   signals an operator can't tell apart. New question - not yet in `open_questions.md` before this entry.
+2. Promiscuous-mode ownership and lifecycle: hardware evidence supports turning it on for detection;
+   leaving it on indefinitely is a separate, not-yet-justified lifecycle decision (does dynavlan own the
+   prior state? would restoring it impair detection/monitoring? is the persistent-on behavior clearly
+   disclosed?). New question.
+3. The accept/revert assurance boundary: the project already declined a full state-machine test harness
+   (2026-08-06 entry above) because the real `netplan try` FIFO/timing is hardware-only - but a harness
+   could still cover orchestration, cleanup, and return-code propagation without touching that hardware-
+   only part. Whether that narrower slice is worth building is unresolved, not re-litigating the original
+   decision.
+4. Fresh-install timer activation vs. the install contract - already tracked as HV-1 in
+   `context/open_questions.md`; carried forward as one of the four, not new.
+
+Added items 1 and 2 to `context/open_questions.md` this session. No code changed; this is pre-review
+scoping only.
+
+## 2026-09-07 - D2 whole-cgroup hardware evidence accepted; defect confirmed without severity testing
+
+Why: the major-review D2 evidence gate asked whether the background `netplan try` can still perform
+its revert when systemd terminates the complete `dynavlan-rescan.service` cgroup. The prior P2 hardware
+case killed only the Bash FIFO writer and left Netplan alive, so it could not answer this question.
+
+**Decision:** accept the console-backed HV-01 result as a `CONFIRMED DEFECT`, severity HIGH with
+potentially CRITICAL impact. During a natural isolated-mode one-VLAN addition, the interrupt was gated
+on both the direct `netplan try` child and the new probe interface existing. `systemctl stop` then
+terminated Bash and Netplan; no confirmation or revert occurred, and the candidate remained live and
+in the owned file beyond the try window. This proves the recovery invariant is broken while accurately
+stopping short of claiming demonstrated loss of reachability.
+
+Do not run SIGKILL, routed-mode, removal, or another destructive variant merely to refine severity.
+None would change the disposition, and intentionally breaking routing is disproportionate now that the
+control-flow defect is established. Documentation-only acceptance, a larger `TimeoutStartSec`, and a
+`FinalKillSignal` change are insufficient because they do not restore both live and on-disk prior
+state. A unit-only `KillMode` change is not presumed sufficient for the same reason.
+
+The next bounded design pass must make service stop/start-timeout a graceful transaction: preserve the
+Netplan child long enough to revert, restore the prior owned file before the main process exits, and
+retain a final whole-cgroup kill bound if cleanup wedges. `KillMode=mixed` plus a TERM-aware main
+cleanup path is the leading option to evaluate, not yet an approved implementation. Defer HV-02/D6
+until corrected units exist so the package/lifecycle pass runs once against the final artifact.
+
+Evidence, canonical watcher reconstruction, and separately authorized cleanup procedure:
+`docs/superpowers/plans/2026-09-07-group0-d2-report-for-codex.md` (local-only, never push).

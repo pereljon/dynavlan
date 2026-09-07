@@ -4,17 +4,22 @@ Owns: open tasks and their status. Does NOT hold permanent facts or decisions (t
 Maintain: update whenever a task is added, changes state, or completes.
 Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 
-## Current state (2026-08-07)
+## Current state (2026-09-06 PDT / 2026-09-07 UTC)
 
-See `context/index.md` STATE line for the authoritative up-to-date summary (kept current
-there to avoid two places drifting). As of 2026-08-07: gate-4 backlog COMPLETE and v0.4.11
-RELEASED (2026-08-06, HV 14/14 on the Protectli box, `docs/hardware-validation.md`). The
-**1.0.0 freeze (gate 4) is now STARTED**: `docs/exit-codes.md` (exit-code table, {0,1,2}
-open-ended) and `COMPATIBILITY.md` (deprecate-with-warning contract, DRAFT) drafted, and the
-D1 script fix landed as ver 0.4.12 (FR-22 abort log level) and `--help`->0 as **ver 0.4.13**
-(both rides-the-next-release, not tagged). All designed with an independent Fable-5 adversarial
-reviewer. Gate (3) second-box validation is next (a candidate box exists); only C1
-positive-refusal + the state-machine harness remain the standing deferrals.
+The v1.0 major review is underway on `release/1.0.0-review`. Group 1 (D1/L1/L6/L7) is locally
+code/test approved after two Codex correction rounds (`ver=0.4.14`, 312 unit assertions, 0 failures),
+but remains uncommitted/unpushed and has not been deployed. Group 0 hardware evidence used the clean
+pre-remediation `0.4.13 (build e3f2cef)`: HV-00 passed, then HV-01 failed cleanly. Stopping the real
+rescan service during an applied-but-unconfirmed addition killed both Bash and `netplan try`; no
+revert occurred and the candidate remained live/on disk. D2 is now a confirmed HIGH defect with
+potentially CRITICAL impact and blocks release. No D2 correction is designed or implemented.
+HV-02/D6 and Groups 2-9 are deferred. The hardware box was restored to its recorded 14-VLAN baseline on
+2026-09-07 (verified: original owned-file checksum, exactly 14 VLAN interfaces, both default routes,
+healthy `--status`/`--dry-run`, rescan unit reset, timer enabled+active with a finite next elapse). It
+deliberately still runs the reviewed `0.4.13 (build e3f2cef)` package - which PREDATES Group 1's fixes,
+so validating Group 1 behavior on hardware requires deploying the reviewed build first. Full local-only
+evidence and Codex disposition:
+`docs/superpowers/plans/2026-09-07-group0-d2-report-for-codex.md`.
 
 ### Gate-4 freeze - remaining before the 1.0.0 tag
 - [ ] Version-gate git hooks (pre-commit `ver=` bump + `build=` column-0 invariant, FR-38)
@@ -25,7 +30,27 @@ positive-refusal + the state-machine harness remain the standing deferrals.
 - [x] Decide `--help` exit code (done 2026-08-07): changed to `0`, requested help is success;
       no-mode/unknown stay `2`. ver 0.4.13, §1l-bis tripwires. (`context/open_questions.md`)
 - [ ] README cross-link to `COMPATIBILITY.md` (deferred until the contract is finalized)
-- [ ] Full major (X.0.0) review with >=1 non-Opus reviewer, after the surface is final
+- [ ] Full major (X.0.0) review with >=1 non-Opus reviewer, after the surface is final. Scope +
+      re-litigation policy decided 2026-09-05 (`context/decisions.md`): covers `install.sh`, Debian
+      maintainer scripts, systemd units, and release workflows alongside `dynavlan`/`tests/unit.sh`,
+      not the script alone; four first-pass focus subjects identified (detection failure-state
+      exposure, promiscuous-mode lifecycle, accept/revert assurance boundary, HV-1 fresh-install
+      timer) - first two now tracked in `context/open_questions.md`.
+      STATUS (2026-09-07 UTC): findings register + remediation plan written
+      (`docs/superpowers/plans/2026-09-04-v1.0-major-review-findings.md`,
+      `docs/superpowers/plans/2026-09-05-v1.0-major-review-remediation.md`, operator-approved). Group 1
+      (D1/L1/L6/L7) implemented (ver 0.4.13 -> 0.4.14) and locally Codex-approved after two correction
+      rounds (312/0). Group 0: HV-00 PASS; HV-01/D2 FAIL accepted as a confirmed HIGH defect with
+      potentially CRITICAL impact because whole-cgroup stop kills the process required to revert and
+      leaves the candidate applied/on disk. Release is blocked; no additional destructive D2 variant
+      is required. D2 correction design/implementation, HV-02/D6, and Groups 2-9 remain outstanding.
+      Nothing committed, pushed, merged, or released.
+- [ ] Fix `dev/CODEMAP.md` doc drift found during review-prep 2026-09-04/05 (not yet applied): the
+      `tests/unit.sh` row still says "Layer-1 pure-helper asserts (1a-1g)" though the suite now runs
+      sections through `1ah` plus `1g-bis`/`1l-bis`/`1x`; `iface_tags` is listed twice (once bundled
+      with `tags_var`, once standalone, same description); the "Token helpers ... pure" section header
+      is inaccurate - `tag_tokens` calls `log warning` on an over-length name and `ifaces_without_carrier`
+      reads live carrier state via `has_carrier`, neither is side-effect-free.
 Older history: v0.4.0 (carrier-down VLAN removal, FR-41) hardware-validated
 (6/6 L3-30 sub-cases PASS), tagged, pushed, GitHub release with `.deb` auto-built (see the v0.4.0
 milestone below). v0.3.0 (restart-on-new-subnet) also released, prior to this. Superseded, kept for history:
@@ -46,7 +71,7 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 ## Outstanding (see `context/index.md` SESSION HANDOFF for detail)
 
 - [x] Gate-4 Codex review backlog (register groups 4-5) - COMPLETE + HW-validated + released as v0.4.11 (2026-08-06). GROUP 4 (pre-freeze contract decisions) DECIDED + CODE-COMPLETE 2026-08-05 as ver 0.4.4 (H6 refuse over-IFNAMSIZ names + document/defer generated short-names; M1 refuse `.` + injective `iface_key`; M7 `fill` selects lowest NUMERIC id; 224 unit tests, 0 failures) - H6 not yet HW-validated (Protectli uses short `enp` names). GROUP 5 in progress (all merged to main 2026-08-05): H1 CODE-COMPLETE as ver 0.4.5 (detector-failure guard: a failed sniff/LLDP/promisc no longer reads as an empty trunk and cannot authorize a boot detection-diff removal; under default `both`, sniff-ok suffices - Option B; 239 unit tests, 0 failures; fork-reviewed no CRITICAL/HIGH; NOT HW-validated - the wire trigger cannot be reproduced on the Protectli, acceptable given the preserve-only direction). H4 CODE-COMPLETE (packaging-only, no ver bump; `debian/prerm` aborts on lock-timeout instead of proceeding + restores the rescan timer on abort; control-flow verified with stubbed flock, real flock -w timeout needs the box). H5 CODE-COMPLETE as ver 0.4.6 (post-accept lease wait is now ONE box-wide deadline, not per-VLAN in series that stacked to VLAN_LIMIT × LEASE_SETTLE and could outrun the systemd timeout and skip the restart; verified with a stubbed-predicate harness, real timing needs the box). M2 CODE-COMPLETE (CI-only, no ver bump; release-workflow APT rebuild lists all releases + hard-fails a missing/failed `.deb` while skipping releases that carry none + asserts the just-published version is present; verified by reading + `bash -n`, only exercises on a real tagged release). M4 CODE-COMPLETE as ver 0.4.7 (`ifaces_without_carrier` drops additions on any addition-bearing trunk carrier-down at apply time, regardless of ownership/need_pass2, so an unowned trunk that dies in the detection->apply window no longer gets stanzas on a dead parent; do_dryrun mirrors it; §1ad, 245 tests; NOT HW-reproducible - narrow window, guard only ever drops additions). M5 CODE-COMPLETE as ver 0.4.8 (a failed post-ACCEPT `ip link delete` is recorded in `/run/dynavlan/pending-delete` and retried at the start of every do_boot/do_rescan via `drain_pending_deletes`, instead of leaving the orphan interface up until reboot; ownership-safe, reboot-scoped; do_dryrun previews read-only; §1ae, 253 tests; NOT HW-reproducible - needs a transient delete failure). M6 CODE-COMPLETE as ver 0.4.9 (a TOTAL restart failure no longer marks the new subnet as seen: `restart_targets` sets `RESTART_NONE_SUCCEEDED_THIS_RUN` when nothing restarted, and `maybe_restart_on_new_subnet` holds the new tokens out of the seen-set to retry next run instead of stranding the subnet unseen this uptime; total-failure ONLY - a partial success consumes, else one permanently-broken target would re-restart the working agents every run forever (restart storm); covers a failed apply-driven restart too; §1af 5 cases, 258 tests; NOT HW-reproducible - needs a transient restart failure). M8 CODE-COMPLETE as ver 0.4.10 (`--status` no longer prints a false `detected trunks: [none]` exit 0 when a detection tool is missing: tool checks extracted into a shared non-mutating `check_detect_deps`, `--status` gates its detection on it and returns non-zero with `detected trunks: unavailable` instead, still printing the static report; per-trunk ignored/out-of-range/managed-elsewhere added via pure `ids_in_ignore`/`ids_out_of_range`; FR-35 narrowed to drop the unimplemented last-run result; §1ag+§1ah, 272 tests; NOT HW-reproducible - needs a detection tool absent from an otherwise-working box). P3 CODE-COMPLETE as ver 0.4.11 (health_check_eval made order-independent for equal-metric multi-uplink: two passes - find the min post-apply metric, then PASS iff the snapshot iface holds a default AT the min, set membership not "first at min"; a route-listing order flip on equal-metric defaults no longer spuriously FAILs->reverts; single-default identical to before; §1c +4 rows, 276 tests; preserve-biased, so this removes churn not a hazard). P1 CLOSED (not a defect - the proposed "require child exit before accept" is impossible by construction: netplan try only exits AFTER the confirming write; accept is health-gated and a post-confirm nonzero exit is already logged and cannot un-accept). P2 -> HARDWARE (kill-mid-apply/FIFO-EOF is empirical, added as Phase 3b to docs/hardware-validation.md). GROUP 5 remaining: NONE - HV-1 (consolidated HV pass) DONE 2026-08-06, PASS 14/14, released as v0.4.11. The state-machine test harness is DEFERRED 2026-08-06 (not built): apply/rollback is already HW-validated + console-backed, the harness cannot cover the real netplan-try FIFO/timing anyway, and per-helper units already cover the M-fix decision logic; deferred until a real driver (second backend / fleet outgrowing per-change HW validation / a recurring apply-path regression). Rationale + preserved design sketch: context/decisions.md 2026-08-06 + register "Test coverage gap" section. Faithful C1 positive-refusal HW test deferred (needs switch access). Full register: `docs/superpowers/plans/2026-08-04-v1.0-gate4-review-fixes.md`.
-- [ ] Upgrade the Protectli box from its 0.4.2 `build source` test build to the released packaged 0.4.2 (`sudo apt update && sudo apt upgrade`) - operator will do when ready.
+- [x] (obsolete 2026-09-07) Upgrade the Protectli box from its 0.4.2 `build source` test build - superseded twice over: the box went to 0.4.11, and Group 0 then installed the reviewed **0.4.13 (build e3f2cef)** package, which it deliberately still runs. NOTE for future hardware work: that build PREDATES Group 1's fixes, so validating Group 1 behavior requires deploying the reviewed build first. Separately, `apt` cannot currently serve either version - the public repo still offers only 0.4.2 (live client-side corroboration of D3; HV-31 stays release-gated).
 - [ ] Review + implement the `--report` command (redaction-first diagnostic bundle for crowdsourcing edge-switch LLDP coverage). Design DONE + committed locally (git-excluded): `docs/superpowers/specs/2026-08-05-report-command-design.md`. Next: operator reviews the spec, then `writing-plans` -> implement (ver 0.4.3 -> 0.5.0, new `--report` CLI mode, no new config key). Parked 2026-08-05 to continue the gate-4 Codex backlog.
 - [ ] Add a consolidated **Hardware Validation** section to `dynavlan/CLAUDE.md` (the rules are currently scattered across Testing Plan / Development Workflow / Commands / Version-and-build-identity). Fold in: console-backed only (never SSH-only), the FR-38 build-identity gate before drawing any conclusion, and a new rule to **snapshot/back up `/etc/dynavlan.conf` before any package upgrade on a box** (belt-and-suspenders over dpkg confold, so a modified conffile can always be diffed/restored). Point to `docs/hardware-validation-*.md` as the per-pass checklist. Raised 2026-08-06 during the v0.4.11 HV pass.
 - [ ] (Deferred, from gate-4 M8) Persisted machine-readable last-run RESULT for `--status`. FR-35 originally promised it; M8 narrowed FR-35 to a `journalctl -t dynavlan` hint instead, since a `/run/dynavlan/last-run` record would add state + a write on the apply exit path for marginal gain over the journal. Revisit if a real consumer needs it without parsing the journal.

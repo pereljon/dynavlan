@@ -140,14 +140,53 @@ overclaimed unbuilt hooks) - all fixed. Decisions: `context/decisions.md` 2026-0
 changed to exit **0** (was 2; requested help is success) as **ver 0.4.13** with §1l-bis unit tripwires,
 resolving the one open pre-freeze exit-code question. Unit suite **281/0**; main is at **ver 0.4.13**.
 
-NEXT ACTION: v1.0 remaining gates - gate (3) second-box/multi-site validation (a candidate box exists),
-then finish gate (4) the 1.0.0 freeze (config-surface freeze STARTED via the docs above; still needs:
-version-gate git hooks, the YAML "exactly one comment line at line 1" unit tripwire, the VLAN_LIMIT=0
-caveat into `dynavlan.conf` where an operator sees it, README cross-link, then the full major review).
-Also open: the `--report` command (design done, parked). Main is pushed and clean (origin at `02bee53`,
-ver 0.4.13). The Gate-3 candidate box details are still to be gathered (deferred by the operator).
-Per-item detail: `context/todo.md`; decisions: `context/decisions.md` 2026-08-05/06/07; register
-(git-excluded): `docs/superpowers/plans/2026-08-04-v1.0-gate4-review-fixes.md`.
+STATE (2026-09-05, pre-major-review scoping): no code changed. A conversational external-review pass
+(2026-09-04) on the design/fragility questions ahead of the pending 1.0.0 major review produced two
+outcomes, both recorded: (1) review-scope + re-litigation-policy decision - the major review covers
+`install.sh`/Debian maintainer scripts/systemd units/release workflows alongside `dynavlan`/`tests/unit.sh`,
+and documented pre-1.0 decisions stay fixed unless concrete evidence emerges (`context/decisions.md`
+2026-09-05); (2) two new open questions - promiscuous-mode lifecycle and detection failure-state exposure
+(`context/open_questions.md`) - plus a still-unapplied `dev/CODEMAP.md` doc-drift fix logged in
+`context/todo.md` (stale test-section description, duplicated `iface_tags` row, "Token helpers ... pure"
+mislabeling two impure functions). Session closed out here to start a separate debug coding run.
+
+STATE (2026-09-07 UTC, major-review Group 1 approved locally; Group 0 D2 failed on hardware): the
+operator-approved remediation plan is active on `release/1.0.0-review`. Group 1 (D1/L1/L6/L7) is
+implemented at working-tree `ver=0.4.14` and passed two Codex correction/re-review rounds plus the
+312/0 local unit suite. It remains uncommitted, unpushed, and undeployed; `main`/`origin/main` remain at
+`e3f2cef` (`ver=0.4.13`). Group 0 then ran against the clean `0.4.13 (build e3f2cef)` package on the
+console-backed hardware box. HV-00 passed. HV-01/D2 failed cleanly: once an isolated-mode candidate
+VLAN existed and `netplan try` was alive, `systemctl stop dynavlan-rescan.service` terminated the whole
+cgroup; the child did not revert and the unconfirmed candidate remained live and in the owned file.
+Codex accepted D2 as a confirmed HIGH defect with potentially CRITICAL impact; no SIGKILL,
+routing-breaking, removal, or second destructive reproduction is required. HV-02/D6 and Groups 2-9 are
+deferred. Evidence and disposition:
+`docs/superpowers/plans/2026-09-07-group0-d2-report-for-codex.md`.
+
+Group 1's pending-delete fail-safe has two DIFFERENT failure modes, which must not be conflated: a
+failed current-Netplan **query** preserves the entire pending record untouched and returns non-zero
+before any delete is attempted (nothing processed); a failure to persist the **surviving record** after
+the retry loop is weaker - the deletes have already run, and the direct `>` write can truncate or partly
+rewrite the file, so a still-failing token can be lost and go unretried until reboot. Both return
+non-zero and both abort `do_boot`/`do_rescan`, but only the query case can claim "nothing changed".
+
+BOX BASELINE MOVED (2026-09-07): the hardware box now runs the reviewed **0.4.13 (build e3f2cef)**
+package - deliberately NOT downgraded after Group 0 - superseding every earlier STATE paragraph that
+describes it as running 0.4.11 (or 0.4.2). Note this build PREDATES Group 1's fixes, so the box is not a
+valid platform for validating Group 1 behavior until the reviewed build is deployed. Its network state
+was restored to the recorded 14-VLAN baseline on 2026-09-07 (owned-file sha256 `c6ce5fb2...f986f8a`,
+both default routes intact, timer enabled+active with a finite next elapse, rescan unit reset).
+
+NEXT ACTION: the hardware baseline restore is DONE (2026-09-07, verified: original owned-file checksum,
+exactly 14 VLAN interfaces, both default routes, healthy `--status`/`--dry-run`, timer restored with a
+finite next elapse). Next is a clean Group 1 commit checkpoint (prepared, awaiting approval), and only
+then design and review the smallest bounded D2 graceful-stop protocol. It must preserve
+the Netplan child long enough to revert, restore the prior owned file, and retain a final whole-cgroup
+kill bound if cleanup wedges; `KillMode=mixed` plus a TERM-aware main cleanup path is the leading option
+to evaluate, not an approved implementation. After the correction is locally reviewed, rerun one benign
+HV-01 stop case and run the deferred HV-02/D6 lifecycle evidence once against the final service units.
+No commit, push, merge, or release is authorized. Per-item status: `context/todo.md`; full sequence:
+`docs/superpowers/plans/2026-09-05-v1.0-major-review-remediation.md`.
 
 Before coding a change, read in order:
 4. dev/SKELETON.md - logic flow and key invariants
