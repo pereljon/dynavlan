@@ -754,9 +754,17 @@ call pending_deletes
 ok "1ae emptied record -> empty" ""
 
 # Drain: stub backend_remove_vlan to fail for a token marked "stuck", succeed
-# otherwise; survivors (failures) stay recorded, successes are dropped.
+# otherwise; survivors (failures) stay recorded, successes are dropped. Also
+# stub snapshot_default_route/backend_netplan_vlan_tokens (D1/L7 re-checks
+# drain_pending_deletes now runs on every call) so this M5-only test stays
+# hermetic on a real box, instead of relying on this dev machine's absent
+# ip/netplan binaries to make both calls harmlessly empty by accident.
 _brv_saved=$(declare -f backend_remove_vlan)
+_sdr_pd_saved=$(declare -f snapshot_default_route)
+_bnvt_pd_saved=$(declare -f backend_netplan_vlan_tokens)
 backend_remove_vlan() { case "$1" in *stuck*) return 1 ;; *) return 0 ;; esac; }
+snapshot_default_route() { :; }
+backend_netplan_vlan_tokens() { :; }
 write_pending_deletes "enp1s0.stuck enp1s0.100 enp2s0.40"
 drain_pending_deletes
 call pending_deletes
@@ -767,6 +775,9 @@ drain_pending_deletes
 call pending_deletes
 ok "1ae a clean drain clears the record" ""
 eval "$_brv_saved"
+eval "$_sdr_pd_saved"
+eval "$_bnvt_pd_saved"
+unset _sdr_pd_saved _bnvt_pd_saved
 
 rm -f "$PENDING_DELETE_FILE"
 PENDING_DELETE_FILE=$_pd_saved
@@ -1381,6 +1392,645 @@ ok "1v knob off leaves a zero settle alone" "0/0"
 rm -rf "$_conf_dir"
 CONF_FILE="$_conf_saved"
 unset _conf_dir _conf_saved
+
+# ---------------------------------------------------------------------------
+# 1ai. Netplan VLAN identity is link:+id:, never the mapping key (L1 adversarial
+#      review finding). A stanza may be keyed ANY way ("vlan20", "en-vpn", ...);
+#      backend_netplan_vlan_tokens, backend_list_managed_vlans and warn_overlap
+#      must all derive iface.id from the stanza's own fields, not its key.
+#      Stubs netplan/ip as plain shell functions (neither binary exists on this
+#      dev machine; there is no real one to save via declare -f, so restore is
+#      a plain unset -f) to feed canned `netplan get network.vlans` YAML and an
+#      empty `ip -d link show type vlan` half of the union.
+# ---------------------------------------------------------------------------
+
+_ai_netplan_yaml=""
+netplan() { # stub: only `netplan get network.vlans` is exercised here
+	case "$1 $2" in
+	"get network.vlans") printf '%s\n' "$_ai_netplan_yaml" ;;
+	esac
+}
+ip() { :; } # stub: contributes nothing to the kernel-VLAN half of the union
+
+_ai_tokens() { backend_netplan_vlan_tokens | tr '\n' ' ' | sed 's/ $//'; }
+
+# Core bug: two arbitrarily-keyed stanzas on the SAME parent must not collapse
+# into one (the old awk only flushed at an <iface>.<id>: header, so neither
+# "vlan20:" nor "vlan30:" ever flushed and only the last id/link pair survived).
+read -r -d '' _ai_arbitrary_keys_yaml <<'YAML' || true
+vlan20:
+  id: 20
+  link: enp1s0
+vlan30:
+  id: 30
+  link: enp1s0
+YAML
+_ai_netplan_yaml="$_ai_arbitrary_keys_yaml"
+call _ai_tokens
+ok "1ai arbitrary-keyed stanzas on the same parent both survive" "enp1s0.20 enp1s0.30"
+
+# id: before link: (netplan 0.107) and link: before id: both parse.
+read -r -d '' _ai_mixed_order_yaml <<'YAML' || true
+enp1s0.5:
+  id: 5
+  link: enp1s0
+enp2s0.6:
+  link: enp2s0
+  id: 6
+YAML
+_ai_netplan_yaml="$_ai_mixed_order_yaml"
+call _ai_tokens
+ok "1ai id-before-link and link-before-id both parse" "enp1s0.5 enp2s0.6"
+
+# Multiple parent ifaces in one fixture: tokens attributed to their own parent.
+read -r -d '' _ai_multi_parent_yaml <<'YAML' || true
+vlan20:
+  id: 20
+  link: enp1s0
+en-vpn:
+  id: 99
+  link: enp2s0
+vlan30:
+  id: 30
+  link: enp1s0
+YAML
+_ai_netplan_yaml="$_ai_multi_parent_yaml"
+call _ai_tokens
+ok "1ai multiple parent ifaces attributed to their own parent" "enp1s0.20 enp2s0.99 enp1s0.30"
+
+# Identity-only: a VLAN live only in this merged config (not one dynavlan owns)
+# still appears - the function does not know or care about ownership. NETPLAN_FILE
+# (dynavlan's own file) holds a completely different VLAN throughout.
+_write_fixture "$multi_parent_yaml"
+_ai_netplan_yaml='vlan99:
+  id: 99
+  link: enp3s0'
+call _ai_tokens
+ok "1ai VLAN not owned by dynavlan still appears (identity-only)" "enp3s0.99"
+_cleanup_fixture
+
+# Duplicate (link,id) under two different keys: BOTH occurrences retained, not
+# deduped - warn_overlap below needs to count raw occurrences.
+read -r -d '' _ai_duplicate_yaml <<'YAML' || true
+vlan40:
+  id: 40
+  link: enp1s0
+enp1s0.40:
+  id: 40
+  link: enp1s0
+YAML
+_ai_netplan_yaml="$_ai_duplicate_yaml"
+call _ai_tokens
+ok "1ai duplicate (link,id) under two keys is retained, not deduped" "enp1s0.40 enp1s0.40"
+_ai_dupcount=$(backend_netplan_vlan_tokens | grep -cx "enp1s0.40")
+tests=$((tests + 1))
+if [ "$_ai_dupcount" = "2" ]; then
+	printf 'ok   - %s\n' "1ai duplicate (link,id) occurrence count is exactly 2"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       expected 2, got %s\n' "1ai duplicate (link,id) occurrence count is exactly 2" "$_ai_dupcount"
+fi
+
+# backend_list_managed_vlans: an arbitrary-keyed external stanza sharing a
+# parent with a dynavlan-owned enp1s0.18-shaped entry - the external VLAN is
+# reported managed-elsewhere, the owned id is correctly subtracted.
+read -r -d '' _ai_owned_yaml <<'YAML' || true
+network:
+  version: 2
+  vlans:
+    enp1s0.18:
+      id: 18
+      link: enp1s0
+      dhcp4: true
+      accept-ra: false
+      dhcp4-overrides:
+        use-routes: false
+        use-dns: false
+        use-ntp: false
+        use-domains: false
+YAML
+read -r -d '' _ai_merged_yaml <<'YAML' || true
+enp1s0.18:
+  id: 18
+  link: enp1s0
+vlan20:
+  id: 20
+  link: enp1s0
+vlan30:
+  id: 30
+  link: enp1s0
+YAML
+_write_fixture "$_ai_owned_yaml"
+_ai_netplan_yaml="$_ai_merged_yaml"
+call backend_list_managed_vlans "enp1s0"
+ok "1ai backend_list_managed_vlans: arbitrary-keyed external VLANs reported, owned id subtracted" "20 30"
+_cleanup_fixture
+
+# warn_overlap: an owned token whose (link,id) also appears under a different
+# key elsewhere warns; one with no other definition does not. A single stanza
+# contributing exactly one token (count 1) models the exact-same-key case too
+# - netplan itself would have already merged an identical key before dynavlan
+# ever sees this output, so it can't be constructed as two entries.
+read -r -d '' _ai_overlap_yaml <<'YAML' || true
+enp1s0.18:
+  id: 18
+  link: enp1s0
+dup-vlan18:
+  id: 18
+  link: enp1s0
+enp1s0.100:
+  id: 100
+  link: enp1s0
+YAML
+_ai_netplan_yaml="$_ai_overlap_yaml"
+_ai_warn() { warn_overlap "$1" 2>&1; }
+
+call _ai_warn "enp1s0.18"
+ok "1ai warn_overlap warns: owned VLAN also defined under a different key" "dynavlan[warning]: dynavlan VLAN enp1s0.18 also defined in another netplan file (FR-11); keeping dynavlan's entry"
+
+call _ai_warn "enp1s0.100"
+ok "1ai warn_overlap silent: no other definition (count 1, incl. exact-same-key case)" ""
+
+unset -f netplan ip _ai_tokens _ai_warn
+unset _ai_netplan_yaml _ai_arbitrary_keys_yaml _ai_mixed_order_yaml _ai_multi_parent_yaml \
+	_ai_duplicate_yaml _ai_dupcount _ai_owned_yaml _ai_merged_yaml _ai_overlap_yaml
+
+# do_rescan calls warn_overlap before its "no changes" early return (mirroring
+# do_boot, which already had this right). Codex review 2026-09-05 (finding 5,
+# tightened by the correction re-review's finding 4) asked for direct coverage
+# of this specific ordering AND that it prove warn_overlap actually receives
+# the owned token set, not merely that a same-named stub fired: stub do_rescan's
+# seam dependencies just enough to reach a steady no-change rescan
+# deterministically (including `backend_list_managed_vlans`, whose real body
+# now fails on this dev machine per the correction re-review's finding 2 fix,
+# since there is no real `netplan`/`ip` binary here - stubbing it isolates this
+# ordering test from that unrelated query-failure path), and capture the
+# argument warn_overlap was actually called with.
+_dr_saved_rd=$(declare -f run_detection)
+_dr_saved_wo=$(declare -f warn_overlap)
+_dr_saved_bov=$(declare -f backend_owned_vlans)
+_dr_saved_it=$(declare -f iface_tags)
+_dr_saved_drain=$(declare -f drain_pending_deletes)
+_dr_saved_blmv=$(declare -f backend_list_managed_vlans)
+_dr_saved_dt="$DETECTED_TRUNKS"
+_dr_saved_rocl="$REMOVE_ON_CARRIER_LOSS"
+
+drain_pending_deletes() { return 0; }
+run_detection() {
+	DETECTED_TRUNKS="enp1s0"
+	return 0
+}
+backend_owned_vlans() { printf '%s' "enp1s0.18"; }
+iface_tags() { printf '%s' "18"; } # detected == owned -> zero additions, steady state
+backend_list_managed_vlans() { return 0; } # nothing managed elsewhere; query succeeds
+REMOVE_ON_CARRIER_LOSS=false
+_dr_warn_arg="(not called)"
+warn_overlap() { _dr_warn_arg="$1"; }
+
+do_rescan >/dev/null 2>&1
+_dr_rc=$?
+tests=$((tests + 1))
+if [ "$_dr_rc" -eq 0 ] && [ "$_dr_warn_arg" = "enp1s0.18" ]; then
+	printf 'ok   - %s\n' "1ai do_rescan: warn_overlap runs on a steady no-change rescan with the owned token set"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       warn_overlap arg=[%s] (expected enp1s0.18) rc=%s\n' "1ai do_rescan: warn_overlap runs on a steady no-change rescan with the owned token set" "$_dr_warn_arg" "$_dr_rc"
+fi
+
+eval "$_dr_saved_rd"
+eval "$_dr_saved_wo"
+eval "$_dr_saved_bov"
+eval "$_dr_saved_it"
+eval "$_dr_saved_drain"
+eval "$_dr_saved_blmv"
+DETECTED_TRUNKS="$_dr_saved_dt"
+REMOVE_ON_CARRIER_LOSS="$_dr_saved_rocl"
+unset _dr_saved_rd _dr_saved_wo _dr_saved_bov _dr_saved_it _dr_saved_drain _dr_saved_blmv \
+	_dr_saved_dt _dr_saved_rocl _dr_warn_arg _dr_rc
+
+# Codex review 2026-09-05 (correction re-review, finding 3): every existing
+# query-failure case replaces backend_netplan_vlan_tokens itself, so regressing
+# its `return "$rc"` line would leave the suite green. This stubs the `netplan`
+# COMMAND instead (not the wrapper function) and exercises the REAL
+# backend_netplan_vlan_tokens, the REAL backend_list_managed_vlans, and a real
+# applying-mode caller (do_boot), proving a genuine netplan-command failure
+# actually reaches the applying boundary and is not swallowed anywhere in
+# between.
+netplan() { return 1; }
+
+call backend_netplan_vlan_tokens
+tests=$((tests + 1))
+if [ "$STATUS" -ne 0 ]; then
+	printf 'ok   - %s\n' "1ai finding-3: real backend_netplan_vlan_tokens propagates a netplan-command failure"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       expected non-zero rc, got 0\n' "1ai finding-3: real backend_netplan_vlan_tokens propagates a netplan-command failure"
+fi
+
+call backend_list_managed_vlans "enp1s0"
+tests=$((tests + 1))
+if [ "$STATUS" -ne 0 ]; then
+	printf 'ok   - %s\n' "1ai finding-3: real backend_list_managed_vlans propagates the same failure"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       expected non-zero rc, got 0\n' "1ai finding-3: real backend_list_managed_vlans propagates the same failure"
+fi
+
+_f3_saved_rd=$(declare -f run_detection)
+_f3_saved_bov=$(declare -f backend_owned_vlans)
+_f3_saved_it=$(declare -f iface_tags)
+_f3_saved_drain=$(declare -f drain_pending_deletes)
+_f3_saved_dt="$DETECTED_TRUNKS"
+drain_pending_deletes() { return 0; }
+run_detection() {
+	DETECTED_TRUNKS="enp1s0"
+	return 0
+}
+backend_owned_vlans() { :; }
+iface_tags() { printf '%s' "18"; }
+
+_f3_out=$(do_boot 2>&1)
+_f3_rc=$?
+tests=$((tests + 1))
+if [ "$_f3_rc" -eq 1 ]; then
+	case "$_f3_out" in
+	*"could not determine externally-managed VLANs"*)
+		printf 'ok   - %s\n' "1ai finding-3: the real chain reaches do_boot's applying boundary and aborts"
+		;;
+	*)
+		fails=$((fails + 1))
+		printf 'FAIL - %s\n       got [%s]\n' "1ai finding-3: the real chain reaches do_boot's applying boundary and aborts" "$_f3_out"
+		;;
+	esac
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       expected rc=1, got rc=%s\n' "1ai finding-3: the real chain reaches do_boot's applying boundary and aborts" "$_f3_rc"
+fi
+
+eval "$_f3_saved_rd"
+eval "$_f3_saved_bov"
+eval "$_f3_saved_it"
+eval "$_f3_saved_drain"
+DETECTED_TRUNKS="$_f3_saved_dt"
+unset -f netplan
+unset _f3_saved_rd _f3_saved_bov _f3_saved_it _f3_saved_drain _f3_saved_dt _f3_out _f3_rc
+
+# ---------------------------------------------------------------------------
+# 1aj. drain_pending_deletes re-checks CURRENT state, not just historical
+#      ownership (D1 + L7 adversarial review findings). A pending token proves
+#      only that a delete FAILED in some earlier run; by the time of a later
+#      drain, the box's current default route or its current Netplan
+#      configuration may have changed underneath it. Stubs snapshot_default_route
+#      (declare -f save/restore, matching the 1s convention) and
+#      backend_netplan_vlan_tokens (same convention - L1 made this a real
+#      function) so both guards are deterministic; stubs backend_remove_vlan
+#      like 1ae so every ordinary delete "succeeds" and only preserve-vs-drain
+#      is under test.
+# ---------------------------------------------------------------------------
+_pd2_saved=$PENDING_DELETE_FILE
+PENDING_DELETE_FILE=$(mktemp)
+_sdr2_saved=$(declare -f snapshot_default_route)
+_bnvt_saved=$(declare -f backend_netplan_vlan_tokens)
+_brv2_saved=$(declare -f backend_remove_vlan)
+backend_remove_vlan() { return 0; }
+
+# D1: the pending token IS the box's current default-route interface.
+snapshot_default_route() { printf '%s' "enp1s0.100"; }
+backend_netplan_vlan_tokens() { :; }
+write_pending_deletes "enp1s0.100 enp2s0.40"
+_1aj_out=$(drain_pending_deletes 2>&1)
+call pending_deletes
+ok "1aj D1: current-default token is preserved, the other still drains" "enp1s0.100"
+tests=$((tests + 1))
+case "$_1aj_out" in
+*"enp1s0.100 is now the box's CURRENT default-route interface"*)
+	printf 'ok   - %s\n' "1aj D1 warning names the preserved token"
+	;;
+*)
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       got [%s]\n' "1aj D1 warning names the preserved token" "$_1aj_out"
+	;;
+esac
+
+# L7: the pending token is now defined in current Netplan configuration (an
+# operator or another file adopted the same link,id since the delete failed).
+snapshot_default_route() { :; }
+backend_netplan_vlan_tokens() { printf '%s\n' "enp1s0.100"; }
+write_pending_deletes "enp1s0.100 enp2s0.40"
+_1aj_out=$(drain_pending_deletes 2>&1)
+call pending_deletes
+ok "1aj L7: externally-adopted token is preserved, the other still drains" "enp1s0.100"
+tests=$((tests + 1))
+case "$_1aj_out" in
+*"enp1s0.100 is now defined in the current Netplan configuration"*)
+	printf 'ok   - %s\n' "1aj L7 warning names the preserved token"
+	;;
+*)
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       got [%s]\n' "1aj L7 warning names the preserved token" "$_1aj_out"
+	;;
+esac
+
+# Ordinary case unchanged: no default-route match, nothing externally
+# configured -> both pending tokens drain cleanly (one survivor never blocks
+# another - the D1/L7 cases above already show this for their own guard; this
+# confirms the ordinary path is not itself over-cautious).
+snapshot_default_route() { :; }
+backend_netplan_vlan_tokens() { :; }
+write_pending_deletes "enp1s0.100 enp2s0.40"
+drain_pending_deletes
+call pending_deletes
+ok "1aj ordinary drain with neither guard triggered clears the record" ""
+
+# Codex review 2026-09-05 (finding 1): a FAILED current-Netplan ownership query
+# must fail SAFE, not open - an empty "configured" set is indistinguishable
+# from "nothing else owns any pending token", so a query failure must preserve
+# the ENTIRE record untouched and return non-zero, never attempt a delete on
+# unknown evidence.
+_brv_qf_calls=0
+backend_remove_vlan() {
+	_brv_qf_calls=$((_brv_qf_calls + 1))
+	return 0
+}
+snapshot_default_route() { :; }
+backend_netplan_vlan_tokens() { return 1; }
+write_pending_deletes "enp1s0.100 enp2s0.40"
+drain_pending_deletes
+_drain_qf_rc=$?
+tests=$((tests + 1))
+if [ "$_drain_qf_rc" -eq 1 ]; then
+	printf 'ok   - %s\n' "1aj query failure: drain_pending_deletes returns non-zero"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       expected rc=1, got rc=%s\n' "1aj query failure: drain_pending_deletes returns non-zero" "$_drain_qf_rc"
+fi
+call pending_deletes
+ok "1aj query failure: the entire pending record is preserved untouched" "enp1s0.100 enp2s0.40"
+tests=$((tests + 1))
+if [ "$_brv_qf_calls" -eq 0 ]; then
+	printf 'ok   - %s\n' "1aj query failure: no delete is attempted (fail safe, not open)"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       backend_remove_vlan was called %s time(s), expected 0\n' "1aj query failure: no delete is attempted (fail safe, not open)" "$_brv_qf_calls"
+fi
+
+# Finding 1 also requires the SURVIVING-record write failure to be visible/
+# non-zero (the approved HV-14 case), not just the query failure above.
+backend_netplan_vlan_tokens() { :; } # query succeeds this time; nothing configured
+backend_remove_vlan() { return 1; } # every token still fails -> non-empty survivors
+write_pending_deletes "enp1s0.100 enp2s0.40" # seed with the REAL writer first
+_wpd_saved=$(declare -f write_pending_deletes)
+write_pending_deletes() { return 1; } # now fail only the drain's own internal write
+_drain_wf_out=$(drain_pending_deletes 2>&1)
+_drain_wf_rc=$?
+eval "$_wpd_saved"
+tests=$((tests + 1))
+case "$_drain_wf_rc" in
+1)
+	case "$_drain_wf_out" in
+	*"could not persist the surviving pending-delete record"*)
+		printf 'ok   - %s\n' "1aj surviving-record write failure: drain_pending_deletes returns non-zero and logs it"
+		;;
+	*)
+		fails=$((fails + 1))
+		printf 'FAIL - %s\n       rc=1 but missing the expected log line: [%s]\n' "1aj surviving-record write failure: drain_pending_deletes returns non-zero and logs it" "$_drain_wf_out"
+		;;
+	esac
+	;;
+*)
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       expected rc=1, got rc=%s\n' "1aj surviving-record write failure: drain_pending_deletes returns non-zero and logs it" "$_drain_wf_rc"
+	;;
+esac
+
+eval "$_sdr2_saved"
+eval "$_bnvt_saved"
+eval "$_brv2_saved"
+rm -f "$PENDING_DELETE_FILE"
+PENDING_DELETE_FILE=$_pd2_saved
+unset _pd2_saved _sdr2_saved _bnvt_saved _brv2_saved _1aj_out \
+	_brv_qf_calls _drain_qf_rc _wpd_saved _drain_wf_out _drain_wf_rc
+
+# Finding 1 also requires do_boot/do_rescan to visibly HONOR a failed drain
+# rather than continuing to detect/apply on top of unknown pending-delete
+# state. Stub drain_pending_deletes itself (its own internals are covered
+# above) and confirm each caller aborts, propagating non-zero, before ever
+# reaching detection.
+_dpd_saved=$(declare -f drain_pending_deletes)
+_rd_saved_prop=$(declare -f run_detection)
+drain_pending_deletes() { return 1; }
+_rd_calls=0
+run_detection() {
+	_rd_calls=$((_rd_calls + 1))
+	return 0
+}
+
+do_boot >/dev/null 2>&1
+_boot_rc=$?
+tests=$((tests + 1))
+if [ "$_boot_rc" -eq 1 ] && [ "$_rd_calls" -eq 0 ]; then
+	printf 'ok   - %s\n' "1aj do_boot: a failed drain aborts the run before detection"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       rc=%s run_detection calls=%s\n' "1aj do_boot: a failed drain aborts the run before detection" "$_boot_rc" "$_rd_calls"
+fi
+
+_rd_calls=0
+do_rescan >/dev/null 2>&1
+_rescan_rc=$?
+tests=$((tests + 1))
+if [ "$_rescan_rc" -eq 1 ] && [ "$_rd_calls" -eq 0 ]; then
+	printf 'ok   - %s\n' "1aj do_rescan: a failed drain aborts the run before detection"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       rc=%s run_detection calls=%s\n' "1aj do_rescan: a failed drain aborts the run before detection" "$_rescan_rc" "$_rd_calls"
+fi
+
+eval "$_dpd_saved"
+eval "$_rd_saved_prop"
+unset _dpd_saved _rd_saved_prop _rd_calls _boot_rc _rescan_rc
+
+# ---------------------------------------------------------------------------
+# 1ak. Apply/recovery reporting must not overstate what is actually known
+#      (L6 adversarial review finding), and a post-accept cleanup failure that
+#      cannot even be recorded is a truthful operational failure, not a
+#      silent success (D1's implementation-boundary point 5). Stubs the
+#      backend_* seam functions apply_change already treats as its boundary
+#      (declare -f save/restore, matching 1s/1ae's convention) so the real
+#      apply_change / backend_apply_with_revert / restore_prior run, without a
+#      real netplan/ip/systemd underneath them.
+# ---------------------------------------------------------------------------
+
+# backend_apply_with_revert: a pre-try failure (fifo setup) never even started
+# a try - it must still return 1 like every other non-accept outcome (there is
+# no longer a status global to distinguish sub-cases; see apply_change below).
+mkfifo() { return 1; }
+backend_apply_with_revert "" "" >/dev/null 2>&1
+_bawr_rc=$?
+tests=$((tests + 1))
+if [ "$_bawr_rc" -eq 1 ]; then
+	printf 'ok   - %s\n' "1ak backend_apply_with_revert: fifo setup failure returns 1"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       expected rc=1, got rc=%s\n' "1ak backend_apply_with_revert: fifo setup failure returns 1" "$_bawr_rc"
+fi
+unset -f mkfifo
+
+# apply_change's FAIL branch must never claim a completed revert - a non-accept
+# covers several distinct backend outcomes (fifo setup never started a try, the
+# child died before accept, or it is still running past the wall-clock guard)
+# and none of them is positive proof of a COMPLETED revert. Codex review
+# 2026-09-05 found the prior three-way APPLY_STATUS split still let every dead
+# child reach "reverted" regardless of why it died; the corrected disposition
+# collapses to one conservative caller-side message and drops that global
+# entirely rather than adding a fourth state.
+_bc_saved=$(declare -f backup_current)
+_bgc_saved=$(declare -f backend_generate_config)
+_bv_saved=$(declare -f backend_validate)
+_sdr3_saved=$(declare -f snapshot_default_route)
+_bawr_saved=$(declare -f backend_apply_with_revert)
+backup_current() { return 0; }
+backend_generate_config() { return 0; }
+backend_validate() { return 0; }
+snapshot_default_route() { :; }
+VLAN_ROUTES=false
+_saved_npf3="$NETPLAN_FILE"
+NETPLAN_FILE=$(mktemp -u)
+backend_apply_with_revert() { return 1; }
+
+_out=$(apply_change "enp1s0.999" "" "enp1s0.999" 2>&1)
+_rc=$?
+tests=$((tests + 1))
+if [ "$_rc" -eq 1 ]; then
+	case "$_out" in
+	*"apply not accepted; live state may be uncertain; no deletes/restarts"*)
+		printf 'ok   - %s\n' "1ak apply_change: non-accept never claims a completed revert"
+		;;
+	*)
+		fails=$((fails + 1))
+		printf 'FAIL - %s\n       got [%s]\n' "1ak apply_change: non-accept never claims a completed revert" "$_out"
+		;;
+	esac
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       expected rc=1, got rc=%s\n' "1ak apply_change: non-accept never claims a completed revert" "$_rc"
+fi
+tests=$((tests + 1))
+case "$_out" in
+*"reverted"*)
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       message still claims a completed revert: [%s]\n' "1ak apply_change: non-accept message never says reverted" "$_out"
+	;;
+*) printf 'ok   - %s\n' "1ak apply_change: non-accept message never says reverted" ;;
+esac
+
+# A post-accept delete failure that cannot even be recorded must surface as an
+# operational failure, and the run's OWN summary must never contradict it by
+# still claiming that token as removed (Codex review 2026-09-05, finding 3:
+# the prior code logged the accurate error, then unconditionally logged
+# "reconcile applied ... removed [token]" right after it).
+# Codex review 2026-09-05 (correction re-review, finding 1, HIGH): these accepted-
+# path cases reach the REAL prune_backups via the real apply_change, which prunes
+# whatever BACKUP_DIR points at - the production default is /var/backups/dynavlan.
+# A root run of this suite on the actual appliance would prune REAL audit backups
+# beyond BACKUP_KEEP. Redirect to a throwaway temp dir for the whole accepted-path
+# region below; restored in the cleanup block at the end of this section.
+_brv3_saved=$(declare -f backend_remove_vlan)
+_rpd_saved=$(declare -f record_pending_delete)
+_wl2_saved=$(declare -f wait_leases)
+_rt2_saved=$(declare -f restart_targets)
+_bd_saved="$BACKUP_DIR"
+BACKUP_DIR=$(mktemp -d)
+backend_apply_with_revert() { return 0; }
+backend_remove_vlan() { return 1; }
+record_pending_delete() { return 1; }
+wait_leases() { :; }
+restart_targets() { :; }
+
+_out=$(apply_change "" "" "enp1s0.999" 2>&1)
+_rc=$?
+tests=$((tests + 1))
+if [ "$_rc" -eq 1 ]; then
+	case "$_out" in
+	*"failed to delete interface for enp1s0.999 AND failed to record it"*)
+		printf 'ok   - %s\n' "1ak apply_change: an unrecordable post-accept delete failure is a truthful operational failure"
+		;;
+	*)
+		fails=$((fails + 1))
+		printf 'FAIL - %s\n       got [%s]\n' "1ak apply_change: an unrecordable post-accept delete failure is a truthful operational failure" "$_out"
+		;;
+	esac
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       expected rc=1, got rc=%s\n' "1ak apply_change: an unrecordable post-accept delete failure is a truthful operational failure" "$_rc"
+fi
+
+tests=$((tests + 1))
+case "$_out" in
+*"removed [enp1s0.999]"*)
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       failure output still claims the token was removed: [%s]\n' "1ak apply_change: accept-branch delete failure never claims that token was removed" "$_out"
+	;;
+*) printf 'ok   - %s\n' "1ak apply_change: accept-branch delete failure never claims that token was removed" ;;
+esac
+
+# Contrast: the ORDINARY M5 case (delete fails but the record succeeds) is
+# unchanged - apply_change still returns 0 and still reports the removal,
+# since a retry is safely queued and the token genuinely is gone from our file.
+eval "$_rpd_saved"
+_pd3_saved=$PENDING_DELETE_FILE
+PENDING_DELETE_FILE=$(mktemp)
+rm -f "$PENDING_DELETE_FILE"
+apply_change "" "" "enp1s0.999" >/dev/null 2>&1
+_rc=$?
+tests=$((tests + 1))
+if [ "$_rc" -eq 0 ]; then
+	printf 'ok   - %s\n' "1ak apply_change: an ordinary M5 recorded-retry delete failure still returns 0"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       expected rc=0, got rc=%s\n' "1ak apply_change: an ordinary M5 recorded-retry delete failure still returns 0" "$_rc"
+fi
+rm -f "$PENDING_DELETE_FILE"
+PENDING_DELETE_FILE=$_pd3_saved
+
+rm -rf "$BACKUP_DIR"
+BACKUP_DIR="$_bd_saved"
+eval "$_bc_saved"
+eval "$_bgc_saved"
+eval "$_bv_saved"
+eval "$_sdr3_saved"
+eval "$_bawr_saved"
+eval "$_brv3_saved"
+eval "$_wl2_saved"
+eval "$_rt2_saved"
+NETPLAN_FILE="$_saved_npf3"
+unset _bawr_rc _bc_saved _bgc_saved _bv_saved _sdr3_saved _bawr_saved \
+	_saved_npf3 _out _rc _brv3_saved _rpd_saved _wl2_saved _rt2_saved _pd3_saved _bd_saved
+
+# restore_prior: a failure to remove a first-install candidate (no prior file
+# existed) must be logged, not silently swallowed - a read-only-directory
+# failure is a real, reproducible (non-root) way to trigger it.
+_rp_dir=$(mktemp -d)
+_rp_file="$_rp_dir/90-dynavlan.yaml"
+printf 'candidate\n' >"$_rp_file"
+chmod 555 "$_rp_dir"
+_saved_npf4="$NETPLAN_FILE"
+NETPLAN_FILE="$_rp_file"
+_rp_out=$(restore_prior 0 2>&1)
+chmod 755 "$_rp_dir"
+tests=$((tests + 1))
+case "$_rp_out" in
+*"could not remove the newly-generated $_rp_file candidate"*)
+	printf 'ok   - %s\n' "1ak restore_prior logs a first-install candidate-removal failure"
+	;;
+*)
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       got [%s]\n' "1ak restore_prior logs a first-install candidate-removal failure" "$_rp_out"
+	;;
+esac
+rm -rf "$_rp_dir"
+NETPLAN_FILE="$_saved_npf4"
+unset _rp_dir _rp_file _rp_out _saved_npf4
 
 # ---------------------------------------------------------------------------
 

@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.13"
+ver="0.4.14"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -1063,7 +1063,7 @@ run_detection() { # sets DETECTED_TRUNKS + per-trunk tags via iface_tags; return
 
 # ---------------------------------------------------------------------------
 # Backend seam (§4) - netplan implementation, the only backend today.
-# The core never touches netplan except through these six backend_* functions.
+# The core never touches netplan except through these backend_* functions.
 # ---------------------------------------------------------------------------
 
 backend_owned_vlans() { # iface.id tokens currently in OUR file (the known-set, FR-20)
@@ -1080,20 +1080,36 @@ backend_owned_metrics() { # "iface.id:metric" map persisted in OUR file (FR-37 s
 	' "$NETPLAN_FILE" 2>/dev/null | sort -u | tr '\n' ' ' | sed 's/ $//'
 }
 
-backend_list_managed_vlans() { # IFACE - bare VLAN ids managed elsewhere on THIS iface
-	local iface="$1" all owned_ids
+backend_netplan_vlan_tokens() { # ALL netplan vlan stanzas as iface.id tokens, identity from link:/id: only (never the mapping key); duplicates retained; rc is the underlying QUERY's own status (0, incl. a genuinely empty result; non-zero if the query itself failed - callers that gate on ownership MUST check this)
+	# A netplan VLAN stanza's mapping key can be spelled ANY way ("vlan20",
+	# "en-vpn", ...); its true identity is its own id:/link: fields. A stanza
+	# boundary is any column-0 (non-indented) line - that's how netplan get's
+	# YAML delimits top-level entries, every field of a stanza is indented
+	# under it. id: appears before link: on netplan 0.107, but both orders are
+	# handled. Callers that need a set, not a bag, dedup themselves.
+	local out rc
+	out=$(netplan get network.vlans 2>/dev/null)
+	rc=$?
+	printf '%s\n' "$out" | awk '
+		/^[^[:space:]]/ {
+			if (vid != "" && lnk != "") print lnk "." vid
+			vid = ""; lnk = ""
+			next
+		}
+		/^[[:space:]]+id:/ { vid = $2 }
+		/^[[:space:]]+link:/ { gsub(/"/, "", $2); lnk = $2 }
+		END { if (vid != "" && lnk != "") print lnk "." vid }
+	'
+	return "$rc"
+}
+
+backend_list_managed_vlans() { # IFACE - bare VLAN ids managed elsewhere on THIS iface; rc 1 if the underlying Netplan query itself failed (never silently treated as "nothing else configured" - L1/L7 hazard)
+	local iface="$1" all owned_ids tok netplan_tokens query_rc=0
+	netplan_tokens=$(backend_netplan_vlan_tokens) || query_rc=1
 	all=$({
-		# netplan get emits id: before link: (verified on netplan 0.107); collect
-		# both per stanza and emit at the next header or EOF.
-		netplan get network.vlans 2>/dev/null | awk -v iface="$iface" '
-			/^[a-zA-Z0-9_.-]+\.[0-9]+:/ {
-				if (vid != "" && lnk == iface) print vid
-				vid = ""; lnk = ""
-			}
-			/^[[:space:]]+id:/ { vid = $2 }
-			/^[[:space:]]+link:/ { gsub(/"/, "", $2); lnk = $2 }
-			END { if (vid != "" && lnk == iface) print vid }
-		'
+		for tok in $netplan_tokens; do
+			[ "$(tok_iface "$tok")" = "$iface" ] && printf '%s\n' "$(tok_id "$tok")"
+		done
 		ip -d link show type vlan 2>/dev/null | awk -v p="@${iface}:" '
 			$0 ~ p { getit = 1; next }
 			getit && /id [0-9]/ { for (i=1;i<=NF;i++) if ($i=="id") { print $(i+1); break }; getit = 0 }
@@ -1101,6 +1117,7 @@ backend_list_managed_vlans() { # IFACE - bare VLAN ids managed elsewhere on THIS
 	} | sort -n -u | tr '\n' ' ' | sed 's/ $//')
 	owned_ids=$(untag_tokens "$(tokens_for_iface "$(backend_owned_vlans)" "$iface")")
 	set_minus "$all" "$owned_ids"
+	return "$query_rc"
 }
 
 backend_generate_config() { # TARGET_TOKENS - write our file atomically (FR-13/14/16)
@@ -1205,7 +1222,7 @@ apply_settle_floor() { # PROBE_IFC -> seconds to settle before health sampling b
 	fi
 }
 
-backend_apply_with_revert() { # SNAP_IFACE PROBE_IFC -> 0 accepted, 1 reverted/failed
+backend_apply_with_revert() { # SNAP_IFACE PROBE_IFC -> 0 accepted, 1 not accepted (failed before/during try, or reverted); rc 1 alone never proves a completed revert (L6) - see apply_change's caller-side message
 	local snap_iface="$1" probe="$2" fifo result trypid try_rc
 	local waited=0 consec=0 accepted=0 seen_at=""
 	local settle_floor
@@ -1321,11 +1338,13 @@ backend_remove_vlan() { # TOKEN (iface.id) - tear down live interface (FR-24)
 
 # M5: interfaces whose post-ACCEPT `ip link delete` failed and must be retried.
 # /run is tmpfs, wiped on reboot - the correct lifetime: a VLAN interface never
-# survives a reboot, so a pending-delete record must not either. The record is
-# ownership-safe: only tokens dynavlan itself removed are ever written here, so a
-# drain never touches a genuinely external VLAN (backend_list_managed_vlans still
-# excludes those). Runtime scratch, NOT config: config state lives only in the
-# owned netplan file.
+# survives a reboot, so a pending-delete record must not either. Only tokens
+# dynavlan itself removed are ever written here, but that historical fact alone
+# is NOT sufficient to authorize a later retry: topology or configuration can
+# change between the failed delete and the drain that retries it, so
+# `drain_pending_deletes` also re-checks CURRENT state on every drain (D1/L7)
+# rather than relying on this record's origin alone. Runtime scratch, NOT
+# config: config state lives only in the owned netplan file.
 PENDING_DELETE_FILE="${PENDING_DELETE_FILE:-/run/dynavlan/pending-delete}"
 
 pending_deletes() { # -> sorted-unique iface.id tokens awaiting re-delete
@@ -1348,13 +1367,40 @@ record_pending_delete() { # TOKEN - remember a delete that failed, for next run
 	write_pending_deletes "$(pending_deletes) $1"
 }
 
-drain_pending_deletes() { # retry every recorded delete; keep only those still failing
+drain_pending_deletes() { # retry every recorded delete; keep only those still failing; rc 1 on a query failure (nothing processed - returns before the loop) or on a failure to persist the survivors (deletes ALREADY ran; the record may be truncated/partly rewritten, so a still-failing token can be lost)
 	[ -f "$PENDING_DELETE_FILE" ] || return 0
-	local tok survivors=""
+	local tok survivors="" snap_iface configured
+	# A pending token proves only PAST ownership of a delete that failed. Between
+	# runs, base topology can change (D1) or an operator/another file can define
+	# the same link,id (L7) - a live-link check alone cannot tell the intended
+	# orphan from either, so both are re-checked against CURRENT state on every
+	# drain, not just once when the delete was first recorded.
+	snap_iface=$(snapshot_default_route)
+	if ! configured=$(backend_netplan_vlan_tokens); then
+		# Fail SAFE, not open: if current Netplan ownership cannot be determined at
+		# all, an empty "configured" set would look identical to "nothing else owns
+		# any pending token" and every non-default token would be deleted on
+		# possibly-stale evidence (L7's exact hazard). Touch nothing this run.
+		log err "could not query current Netplan configuration (netplan get failed); preserving the entire pending-delete record this run rather than risk deleting something now owned elsewhere"
+		return 1
+	fi
 	for tok in $(pending_deletes); do
+		if default_iface_in_removals "$snap_iface" "$tok"; then
+			log warning "pending delete $tok is now the box's CURRENT default-route interface; preserving it and retrying next run instead of deleting it (D1 - topology changed since the delete was recorded)"
+			survivors="$survivors $tok"
+			continue
+		fi
+		if in_list "$tok" "$configured"; then
+			log warning "pending delete $tok is now defined in the current Netplan configuration; preserving it and retrying next run instead of deleting config someone else now owns (L7)"
+			survivors="$survivors $tok"
+			continue
+		fi
 		backend_remove_vlan "$tok" || survivors="$survivors $tok"
 	done
-	write_pending_deletes "$survivors"
+	write_pending_deletes "$survivors" || {
+		log err "could not persist the surviving pending-delete record; a still-failing delete may be forgotten until reboot (M5)"
+		return 1
+	}
 }
 
 # ---------------------------------------------------------------------------
@@ -1469,7 +1515,12 @@ restore_prior() { # HAD_PRIOR - converge disk back to the prior file (or none on
 			log err "could not restore prior $NETPLAN_FILE from $LAST_BACKUP (disk full?); on-disk config now DIVERGES from live state - restore it manually from $LAST_BACKUP"
 		fi
 	else
-		rm -f "$NETPLAN_FILE" 2>/dev/null
+		# First run: no prior file existed, so the candidate we just generated is
+		# ours to discard. A failure here (read-only mount, immutable flag) leaves
+		# our own candidate on disk with no backup behind it - log it truthfully
+		# rather than silently treating the candidate as gone (L6).
+		rm -f "$NETPLAN_FILE" 2>/dev/null ||
+			log err "could not remove the newly-generated $NETPLAN_FILE candidate on a first-install revert/failure; it is NOT a confirmed live change, but it will be treated as owned config on the next run unless removed manually"
 	fi
 }
 
@@ -1686,13 +1737,34 @@ apply_change() { # TARGET_TOKENS ADDITION_TOKENS REMOVAL_TOKENS [LEASE_TOKENS]
 		# but deleting them would lose monitoring on VLANs the revert just restored.
 		# M5: a delete that fails here is recorded, not forgotten - the next
 		# reconcile's drain_pending_deletes retries it (ownership-safe).
-		for tok in $removals; do backend_remove_vlan "$tok" || record_pending_delete "$tok"; done
+		local unrecorded_delete_failure=0
+		for tok in $removals; do
+			if ! backend_remove_vlan "$tok"; then
+				if ! record_pending_delete "$tok"; then
+					log err "failed to delete interface for $tok AND failed to record it for a retry (M5 record write failed); this orphan will NOT be automatically retried - the accepted Netplan change is NOT rolled back, only the live delete + its retry record are missing"
+					unrecorded_delete_failure=1
+				fi
+			fi
+		done
 		wait_leases "$lease_set"
 		restart_targets
+		if [ "$unrecorded_delete_failure" -eq 1 ]; then
+			# L7: never follow the error above with a summary that contradicts it - a
+			# token that could not be confirmed removed AND could not be recorded for
+			# retry must never be reported as removed.
+			log err "reconcile only PARTIALLY applied on [${trunks:-none}]: added [${additions:-none}]; one or more removals in [${removals:-none}] could NOT be confirmed removed (see the prior error) - do not treat any token in the removal set as confirmed gone"
+			return 1
+		fi
 		log notice "reconcile applied on [${trunks:-none}]: added [${additions:-none}] removed [${removals:-none}]"
 		return 0
 	fi
-	log err "post-apply health check FAILED; netplan try reverted; uplink preserved, no deletes, no restarts"
+	# L6: a non-accept covers several distinct backend outcomes (fifo setup never
+	# started a try, the child died before accept, or it is still running past the
+	# wall-clock guard) and none of them is positive proof of a COMPLETED revert -
+	# only netplan try's own timer/logic knows that. State a single conservative
+	# result here; the backend's own log lines just above carry the specific
+	# diagnosis (state uncertain / exited before accept / non-zero exit).
+	log err "apply not accepted; live state may be uncertain; no deletes/restarts"
 	restore_prior "$had_prior"
 	return 1
 }
@@ -1708,12 +1780,12 @@ log_exclusions() { # IFACE DETECTED_IDS MANAGED_IDS
 	done
 }
 
-warn_overlap() { # OWNED_TOKENS - FR-11: warn when an owned iface.id is also defined elsewhere
-	local owned="$1" tok n ids
+warn_overlap() { # OWNED_TOKENS - FR-11: warn when an owned (link,id) pair is also defined under a different key elsewhere
+	local owned="$1" tok n toks
 	[ -z "$owned" ] && return 0
-	ids=$(netplan get network.vlans 2>/dev/null | grep -E '^[[:space:]]+[a-zA-Z0-9_.-]+\.[0-9]+:' | sed 's/^[[:space:]]*//' | sed 's/:$//')
+	toks=$(backend_netplan_vlan_tokens)
 	for tok in $owned; do
-		n=$(printf '%s\n' $ids | grep -cx "$tok")
+		n=$(printf '%s\n' $toks | grep -cx "$tok")
 		[ "$n" -ge 2 ] && log warning "dynavlan VLAN $tok also defined in another netplan file (FR-11); keeping dynavlan's entry"
 	done
 	return 0
@@ -1766,7 +1838,15 @@ gate_vlan_count() { # KEPT ADDITIONS - echoes the (possibly reduced) additions; 
 
 do_boot() {
 	log info "run start: dynavlan $(version_string "$ver" "$build") mode=boot detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}] reset_on_boot=$RESET_ON_BOOT remove_on_carrier_loss=$REMOVE_ON_CARRIER_LOSS"
-	drain_pending_deletes # M5: retry any delete a prior run recorded as failed
+	# M5: retry any delete a prior run recorded as failed. A failed drain (the
+	# ownership query itself failed, or the surviving record could not be
+	# rewritten) must not be silently outrun by this run's own detection/apply -
+	# abort now, changing nothing further, rather than reconcile on top of an
+	# unknown pending-delete state.
+	if ! drain_pending_deletes; then
+		log err "boot: pending-delete drain failed (see prior error); aborting this run, changing nothing further"
+		return 1
+	fi
 
 	# Do NOT branch on run_detection's rc. It has exactly one non-zero return and it
 	# fires precisely when DETECTED_TRUNKS is empty; there is no probe-error signal
@@ -1808,7 +1888,10 @@ do_boot() {
 	for trunk in $all_trunks; do
 		local detected_ids managed owned_on_trunk owned_ids additions_ids
 		detected_ids=$(emit_set $(iface_tags "$trunk"))
-		managed=$(backend_list_managed_vlans "$trunk")
+		if ! managed=$(backend_list_managed_vlans "$trunk"); then
+			log err "boot: could not determine externally-managed VLANs on trunk $trunk (Netplan query failed); aborting this run before any change rather than risk recreating a configured-but-not-live VLAN"
+			return 1
+		fi
 		owned_on_trunk=$(tokens_for_iface "$owned" "$trunk")
 		owned_ids=$(untag_tokens "$owned_on_trunk")
 
@@ -1947,7 +2030,10 @@ do_boot() {
 
 do_rescan() {
 	log info "run start: dynavlan $(version_string "$ver" "$build") mode=rescan detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}] remove_on_carrier_loss=$REMOVE_ON_CARRIER_LOSS"
-	drain_pending_deletes # M5: retry any delete a prior run recorded as failed
+	if ! drain_pending_deletes; then
+		log err "rescan: pending-delete drain failed (see prior error); aborting this run, changing nothing further"
+		return 1
+	fi
 	run_detection || : # rc is "saw nothing", not "failed" - see do_boot
 	if [ -z "$DETECTED_TRUNKS" ] && [ "$REMOVE_ON_CARRIER_LOSS" != true ]; then
 		log info "rescan: no trunks detected; nothing to add"
@@ -1962,7 +2048,10 @@ do_rescan() {
 	for trunk in $DETECTED_TRUNKS; do
 		local detected_ids managed owned_on_trunk owned_ids additions_ids
 		detected_ids=$(emit_set $(iface_tags "$trunk"))
-		managed=$(backend_list_managed_vlans "$trunk")
+		if ! managed=$(backend_list_managed_vlans "$trunk"); then
+			log err "rescan: could not determine externally-managed VLANs on trunk $trunk (Netplan query failed); aborting this run before any change rather than risk recreating a configured-but-not-live VLAN"
+			return 1
+		fi
 		owned_on_trunk=$(tokens_for_iface "$owned" "$trunk")
 		owned_ids=$(untag_tokens "$owned_on_trunk")
 
@@ -2032,12 +2121,13 @@ do_rescan() {
 		[ -n "$dropped" ] && log info "rescan: dropping additions on carrier-down trunk(s) [${pruned_ifaces# }]: [$dropped]"
 		all_additions="$kept_additions"
 	fi
+	warn_overlap "$owned"
+
 	if [ -z "$all_additions" ] && [ -z "$all_removals" ]; then
 		log info "rescan: no changes (owned=[${owned:-none}]); zero applies/restarts"
 		return 0
 	fi
 
-	warn_overlap "$owned"
 	all_additions=$(gate_vlan_count "$(set_minus "$owned" "$all_removals")" "$all_additions") || return 1
 	if [ -z "$all_additions" ] && [ -z "$all_removals" ]; then
 		log info "rescan: no changes after VLAN_LIMIT gating; zero applies/restarts"
@@ -2070,11 +2160,12 @@ do_dryrun() {
 
 	local routing_ok=no
 	have_routing && routing_ok=yes
+	local managed_query_failed=0
 
 	for trunk in $all_trunks; do
 		local detected_ids managed owned_on_trunk owned_ids additions_ids removals_ids
 		detected_ids=$(emit_set $(iface_tags "$trunk"))
-		managed=$(backend_list_managed_vlans "$trunk")
+		managed=$(backend_list_managed_vlans "$trunk") || managed_query_failed=1
 		owned_on_trunk=$(tokens_for_iface "$owned" "$trunk")
 		owned_ids=$(untag_tokens "$owned_on_trunk")
 
@@ -2149,6 +2240,12 @@ do_dryrun() {
 	pend=$(pending_deletes)
 	[ -n "$pend" ] && printf '  pending re-delete (prior removal left the live interface up; --boot/--rescan would retry): [%s]\n' "$pend"
 
+	# L1/L7: a failed Netplan query on any trunk means the managed-elsewhere
+	# exclusion above may be incomplete for that trunk - the additions preview is
+	# not fully trustworthy. Report it rather than silently print a complete-looking
+	# diff (M8's "unavailable, not a confident empty" precedent).
+	[ "$managed_query_failed" -eq 1 ] && printf '  managed-elsewhere: UNAVAILABLE for at least one trunk (Netplan query failed); the additions preview above may be incomplete\n'
+
 	if [ "$RESTART_ON_NEW_SUBNET" = true ]; then
 		local cur_sn new_sn
 		cur_sn=$(current_subnets)
@@ -2199,6 +2296,7 @@ do_dryrun() {
 	fi
 	rm -rf "$tree"
 	printf '  (dry-run only: no netplan try, no apply, no restart)\n'
+	[ "$managed_query_failed" -eq 1 ] && vstatus=1
 	return "$vstatus"
 }
 
@@ -2290,7 +2388,13 @@ do_status() { # FR-35 - report all trunks
 			local trunk detected_ids ignored oor
 			for trunk in $DETECTED_TRUNKS; do
 				detected_ids=$(emit_set $(iface_tags "$trunk"))
-				managed=$(backend_list_managed_vlans "$trunk")
+				# L1/L7: a failed Netplan query must read as "unavailable", never as a
+				# confident empty managed-elsewhere set (same M8 precedent as the
+				# detect_deps gate above).
+				if ! managed=$(backend_list_managed_vlans "$trunk"); then
+					managed="unavailable"
+					rc=1
+				fi
 				ignored=$(ids_in_ignore "$detected_ids" "$IGNORE_SET")
 				oor=$(ids_out_of_range "$detected_ids" "$VLAN_MIN" "$VLAN_MAX")
 				printf '    %s: detected=[%s] ignored=[%s] out-of-range=[%s] managed-elsewhere=[%s]\n' \

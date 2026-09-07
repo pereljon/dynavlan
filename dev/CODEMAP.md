@@ -98,14 +98,15 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 |----------|------------------|
 | `backend_owned_vlans` | `iface.id` tokens currently in our file (the known-set), parsed from the stanza headers |
 | `backend_owned_metrics` | Persisted `iface.id:metric` map read back from our file (FR-37 discovery-mode state) |
-| `backend_list_managed_vlans` | IFACE -> bare VLAN ids managed OUTSIDE our namespace on THAT trunk (netplan merge + kernel, minus our own tokens on that iface) |
+| `backend_netplan_vlan_tokens` | Every `netplan get network.vlans` stanza as an `iface.id` token, identity taken from that stanza's own `id:`/`link:` fields (never the mapping key, which can be spelled any way - L1); duplicates retained for callers that need overlap counts. Return code reflects the underlying query's own success/failure (0 = query ran, including a genuinely-empty result; non-zero = the query itself failed) - callers gating an ownership/safety decision on its output MUST check this |
+| `backend_list_managed_vlans` | IFACE -> bare VLAN ids managed OUTSIDE our namespace on THAT trunk (reuses `backend_netplan_vlan_tokens` for the netplan half, plus a kernel `ip -d link` scan, minus our own tokens on that iface) |
 | `backend_generate_config` | Write our file atomically (same-dir mktemp 0600, fsync, rename) from a target token set; isolation stanza (incl. `accept-ra: false` in both modes, FR-14a), or routes+metric per FR-37, keyed per token |
 | `backend_validate` | `netplan generate`; on failure classify VALIDATE_ERRSRC ours-vs-base (base = freeze) |
 | `apply_settle_floor` | C2: returns the settle floor before health sampling - `APPLY_FALLBACK_SETTLE` when a probe iface exists, the larger `APPLY_NOEVIDENCE_SETTLE` for no-addition changes (removal-only/`--reapply`) that have no in-kernel apply signal |
 | `backend_apply_with_revert` | The accept primitive: netplan try + fifo, apply-evidence + liveness + consecutive-health + window-bound accept; per-change settle floor via `apply_settle_floor`; captures netplan try's exit on both paths (audit); FAIL holds fifo open for try's own revert timer |
 | `backend_remove_vlan` | `ip link delete` of a removed VLAN interface (only ever called after ACCEPT). Returns rc 1 on delete failure so the caller can record a retry (M5) |
-| `pending_deletes` / `write_pending_deletes` / `record_pending_delete` | Ownership-safe pending-delete record in `/run` (tmpfs, reboot-scoped). `apply_change` records a token whose post-ACCEPT `ip link delete` failed; only tokens dynavlan itself removed are ever written, so a retry never touches an external VLAN (M5) |
-| `drain_pending_deletes` | Start of do_boot/do_rescan: retries every recorded delete via `backend_remove_vlan`, keeps only those still failing. do_dryrun previews the pending set read-only (M5) |
+| `pending_deletes` / `write_pending_deletes` / `record_pending_delete` | Pending-delete record in `/run` (tmpfs, reboot-scoped). `apply_change` records a token whose post-ACCEPT `ip link delete` failed. Historical "dynavlan itself removed this" ownership alone is no longer treated as sufficient at drain time - see `drain_pending_deletes` (D1/L7) (M5) |
+| `drain_pending_deletes` | Start of do_boot/do_rescan: before retrying each recorded delete via `backend_remove_vlan`, re-checks CURRENT state and preserves-with-warning instead of deleting if the token is now the box's current default-route interface (D1) or is now defined in current Netplan config under any key, via `backend_netplan_vlan_tokens` (L7). Fails safe on a `backend_netplan_vlan_tokens` query failure: preserves the entire pending record untouched (nothing yet attempted) and returns non-zero. A LATER failure to persist the survivors (the direct `>` writer can truncate/partially rewrite the file) does NOT make the same untouched-record claim - it returns non-zero and logs that a still-failing delete may be forgotten until reboot. Either failure makes `do_boot`/`do_rescan` abort the run. do_dryrun previews the pending set read-only (M5) |
 
 ## Health check (FR-18)
 
@@ -142,7 +143,7 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 |----------|------------------|
 | `apply_change` | The §7 safety chain: snapshot → **C1 default-route removal guard (refuse if snap_iface in removals)** → (FR-37 metric assign + conflict refusal) → backup → generate → validate → apply_with_revert → ACCEPT: prune/deletes/leases/restarts, FAIL: converge disk, nothing else |
 | `log_exclusions` | Warn per detected-but-managed-elsewhere VLAN |
-| `warn_overlap` | FR-11: warn when an owned id is also defined in another netplan file |
+| `warn_overlap` | FR-11: warn when an owned `(link,id)` tuple (via `backend_netplan_vlan_tokens`, not key-name matching) is also defined under a different key elsewhere; `do_rescan` now calls it before its no-change early return, matching `do_boot` (L1) |
 | `gate_vlan_count` | Orchestrate warn / refuse / fill per VLAN_LIMIT_MODE; removals-only always passes |
 
 ## Modes + entrypoint
