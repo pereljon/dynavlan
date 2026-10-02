@@ -10,6 +10,13 @@ permissions:
 jobs:
   build-deb:
     runs-on: ubuntu-22.04
+    # Exposed as a JOB output so publish-apt can consume it via `needs`. A
+    # `steps.*` context is job-local: read from another job it silently yields
+    # "", which is how publish-apt ended up testing for `dynavlan__all.deb` and
+    # failing every publish (D3). Binding to this output also guarantees the two
+    # jobs agree on one version - publish-apt cannot re-derive a different one.
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -57,8 +64,16 @@ jobs:
       - name: Fetch every release .deb
         env:
           GH_TOKEN: ${{ github.token }}
-          PKG_VERSION: ${{ steps.version.outputs.version }}
+          # From build-deb's job output, NOT a steps.* context (D3): steps are
+          # job-local and would evaluate empty here.
+          PKG_VERSION: ${{ needs.build-deb.outputs.version }}
         run: |
+          # Fail by NAME if the cross-job handoff ever breaks again. Without
+          # this, an empty PKG_VERSION surfaces only as the confusing
+          # "dynavlan__all.deb missing from rebuild" error at the end of the
+          # step, which is how D3 originally presented.
+          [ -n "$PKG_VERSION" ] \
+            || { echo "::error::PKG_VERSION is empty; the build-deb -> publish-apt version handoff is broken"; exit 1; }
           mkdir -p debs
           # Enumerate ALL releases. gh's default --limit is 30, so without this a
           # rebuild after 30 releases would silently drop the oldest .debs from the

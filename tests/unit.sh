@@ -2033,6 +2033,501 @@ NETPLAN_FILE="$_saved_npf4"
 unset _rp_dir _rp_file _rp_out _saved_npf4
 
 # ---------------------------------------------------------------------------
+# 1al. Release workflow cross-job version handoff (D3).
+#
+#      `publish-apt` is a SEPARATE job from `build-deb`, so a `steps.*` context
+#      from the other job evaluates to the empty string - the just-published
+#      guard then tests for `dynavlan__all.deb`, always misses, and every
+#      publish fails (observed live: the public index stayed at 0.4.2 while
+#      v0.4.11 was released). Static assertions only: the workflow cannot be
+#      executed here, so these pin the expression wiring, not a run result.
+# ---------------------------------------------------------------------------
+
+_wf="${here}/../.github/workflows/release.yml"
+# The publish-apt job is the last job in the file; slice from its header to EOF
+# so "does publish-apt reference X" is asked of that job alone.
+_wf_publish=$(sed -n '/^  publish-apt:/,$p' "$_wf")
+_wf_build=$(sed -n '/^  build-deb:/,/^  publish-apt:/p' "$_wf")
+
+tests=$((tests + 1))
+if printf '%s' "$_wf_publish" | grep -q 'steps\.version\.outputs\.version'; then
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       publish-apt still reads a steps.* context from another job\n' \
+		"1al publish-apt does not read build-deb's steps context"
+else
+	printf 'ok   - %s\n' "1al publish-apt does not read build-deb's steps context"
+fi
+
+tests=$((tests + 1))
+if printf '%s' "$_wf_publish" | grep -q 'needs\.build-deb\.outputs\.version'; then
+	printf 'ok   - %s\n' "1al publish-apt takes the version from build-deb's job output"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       publish-apt does not consume needs.build-deb.outputs.version\n' \
+		"1al publish-apt takes the version from build-deb's job output"
+fi
+
+tests=$((tests + 1))
+if printf '%s' "$_wf_build" | grep -q '^    outputs:' &&
+	printf '%s' "$_wf_build" | grep -qE '^      version: \$\{\{ steps\.version\.outputs\.version \}\}'; then
+	printf 'ok   - %s\n' "1al build-deb publishes version as an explicit job output"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       build-deb declares no version job output\n' \
+		"1al build-deb publishes version as an explicit job output"
+fi
+
+# The M2 hard failure must survive the rewiring: a publish whose own package is
+# absent from the rebuilt repo must still fail loudly rather than ship an index
+# missing the version it announces.
+tests=$((tests + 1))
+if printf '%s' "$_wf_publish" | grep -q 'test -f "debs/dynavlan_\${PKG_VERSION}_all.deb"' &&
+	printf '%s' "$_wf_publish" | grep -q 'just-published dynavlan_\${PKG_VERSION}_all.deb missing from rebuild'; then
+	printf 'ok   - %s\n' "1al just-published-package guard is retained"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       the just-published .deb hard-fail guard is missing or reworded\n' \
+		"1al just-published-package guard is retained"
+fi
+
+unset _wf _wf_publish _wf_build
+
+# ---------------------------------------------------------------------------
+# 1am. build-deb.sh version-extraction diagnostics survive pipefail.
+#
+#      `SCRIPT_VER=$(grep '^ver=' file | head -1 | sed …)` under `set -euo
+#      pipefail` aborts the script silently when grep fails, so the intended
+#      "could not extract ver=" diagnostic never printed in either case it
+#      exists for. The two paths must stay DISTINCT: an unreadable script
+#      (transport/read failure) and a readable script with no ver= line
+#      (empty parsed result).
+# ---------------------------------------------------------------------------
+
+_bd_dir=$(mktemp -d)
+cp "${here}/../build-deb.sh" "$_bd_dir/build-deb.sh"
+
+# (a) read failure: no dynavlan script next to build-deb.sh at all.
+_bd_out=$(bash "$_bd_dir/build-deb.sh" 2>&1); _bd_rc=$?
+tests=$((tests + 1))
+if [ "$_bd_rc" -ne 0 ] && printf '%s' "$_bd_out" | grep -qi "could not read"; then
+	printf 'ok   - %s\n' "1am build-deb reports an unreadable dynavlan script distinctly"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       expected non-zero + a distinct read-failure message, rc=%s out=[%s]\n' \
+		"1am build-deb reports an unreadable dynavlan script distinctly" "$_bd_rc" "$_bd_out"
+fi
+
+# (b) empty parsed result: the script exists and is readable, but carries no ver=.
+printf '#!/usr/bin/env bash\n# no version assignment here\n' >"$_bd_dir/dynavlan"
+_bd_out=$(bash "$_bd_dir/build-deb.sh" 2>&1); _bd_rc=$?
+tests=$((tests + 1))
+if [ "$_bd_rc" -ne 0 ] && printf '%s' "$_bd_out" | grep -q "could not extract ver="; then
+	printf 'ok   - %s\n' "1am build-deb reports an absent ver= line distinctly"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       expected non-zero + "could not extract ver=", rc=%s out=[%s]\n' \
+		"1am build-deb reports an absent ver= line distinctly" "$_bd_rc" "$_bd_out"
+fi
+
+# The two messages must not collapse into one another.
+tests=$((tests + 1))
+if printf '%s' "$_bd_out" | grep -qi "could not read"; then
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       the empty-parse case emitted the read-failure message\n' \
+		"1am the two diagnostics stay distinct"
+else
+	printf 'ok   - %s\n' "1am the two diagnostics stay distinct"
+fi
+
+rm -rf "$_bd_dir"
+unset _bd_dir _bd_out _bd_rc
+
+# ---------------------------------------------------------------------------
+# 1an. get.sh APT bootstrap must never destroy prior repository state (L4).
+#
+#      The installer wrote the final keyring/source paths directly and `rm -f`'d
+#      both on key, update, or install failure, without tracking whether they
+#      pre-existed. On a box that already had a working dynavlan APT source, a
+#      transient apt failure therefore left dynavlan installed but undiscoverable
+#      by future `apt update`/`apt upgrade`. `install_via_apt` also runs as an
+#      `if !` condition, which disables set -e inside it, so every staging write
+#      needs its own check.
+#
+#      get.sh is run as a SUBPROCESS with a stubbed PATH rather than sourced:
+#      the documented production invocation is `curl … | sudo bash`, so its
+#      execution model is left exactly as it ships. The production script has
+#      NO environment-variable override for the keyring/source/repo paths - a
+#      script fetched and run via `curl | sudo bash` should not have the paths
+#      it writes credential material to silently redirectable by whatever the
+#      caller's environment happens to export. To exercise it against
+#      throwaway paths, this test instead runs a byte-identical COPY with only
+#      those three literal constant lines substituted; everything else in the
+#      copy, including its logic and control flow, is untouched.
+# ---------------------------------------------------------------------------
+
+_gs_dir=$(mktemp -d)
+_gs="$_gs_dir/get.sh"
+_gs_stub="$_gs_dir/bin"
+_gs_apt="$_gs_dir/apt"
+_gs_tmp="$_gs_dir/tmp"
+_gs_key="$_gs_apt/keyrings/dynavlan.gpg"
+_gs_src="$_gs_apt/sources.list.d/dynavlan.sources"
+mkdir -p "$_gs_stub"
+
+# Byte-identical copy of the real script with only its three literal path
+# constants substituted; everything else, including the surrounding comment,
+# is untouched. Fails loudly (rather than silently testing nothing) if the
+# production lines ever stop matching this exact literal form.
+sed \
+	-e "s#^APT_REPO_URL=\"https://pereljon.github.io/dynavlan\"\$#APT_REPO_URL=\"http://example.invalid/dynavlan\"#" \
+	-e "s#^APT_KEYRING=\"/etc/apt/keyrings/dynavlan.gpg\"\$#APT_KEYRING=\"$_gs_key\"#" \
+	-e "s#^APT_SOURCE=\"/etc/apt/sources.list.d/dynavlan.sources\"\$#APT_SOURCE=\"$_gs_src\"#" \
+	"${here}/../get.sh" >"$_gs"
+# Each substitution must actually have fired - not just "some line matched
+# some pattern" - or this test would silently exercise the real production
+# paths instead of the throwaway ones.
+if ! grep -qF "APT_REPO_URL=\"http://example.invalid/dynavlan\"" "$_gs" ||
+	! grep -qF "APT_KEYRING=\"$_gs_key\"" "$_gs" ||
+	! grep -qF "APT_SOURCE=\"$_gs_src\"" "$_gs"; then
+	echo "FATAL - 1an: get.sh's APT_* constant lines no longer match the expected literal form; the test copy is not exercising the real substitution" >&2
+	exit 1
+fi
+
+cat >"$_gs_stub/id" <<'STUB'
+#!/bin/sh
+echo 0
+STUB
+
+cat >"$_gs_stub/curl" <<'STUB'
+#!/bin/sh
+# Two independent outcomes: the GitHub releases API and everything else (the
+# APT signing key). Failures are requested with STUB_CURL_*_RC.
+out=""
+url=""
+prev=""
+for a in "$@"; do
+	if [ "$prev" = "-o" ]; then
+		out=$a
+	fi
+	case "$a" in
+	http*) url=$a ;;
+	esac
+	prev=$a
+done
+
+case "$url" in
+*api.github.com*)
+	rc=${STUB_CURL_API_RC:-0}
+	[ "$rc" -eq 0 ] || exit "$rc"
+	printf '%s\n' "${STUB_CURL_API_BODY:-}"
+	exit 0
+	;;
+esac
+
+rc=${STUB_CURL_KEY_RC:-0}
+[ "$rc" -eq 0 ] || exit "$rc"
+if [ -n "$out" ]; then
+	printf 'STUB-KEYRING\n' >"$out"
+else
+	printf 'STUB-KEYRING\n'
+fi
+exit 0
+STUB
+
+cat >"$_gs_stub/apt-get" <<'STUB'
+#!/bin/sh
+for a in "$@"; do
+	case "$a" in
+	update) exit "${STUB_APT_UPDATE_RC:-0}" ;;
+	install) exit "${STUB_APT_INSTALL_RC:-0}" ;;
+	esac
+done
+exit 0
+STUB
+
+cat >"$_gs_stub/dpkg" <<'STUB'
+#!/bin/sh
+# `dpkg -s dynavlan` decides whether an unmanaged tarball fallback is refused.
+exit "${STUB_DPKG_RC:-1}"
+STUB
+
+cat >"$_gs_stub/cp" <<'STUB'
+#!/bin/sh
+# Delegates to the real cp for every call, and fails only the one whose FINAL
+# argument (the destination) equals STUB_CP_FAIL_DEST. `command -p` uses the
+# POSIX default PATH, so it reaches the real cp regardless of this stub
+# directory being ahead of it on PATH. Backup copies land under the mktemp'd
+# staging directory, never matching a live final path, so only a restore copy
+# back onto the live path can ever be selected.
+dest=""
+for a in "$@"; do
+	dest=$a
+done
+if [ -n "${STUB_CP_FAIL_DEST:-}" ] && [ "$dest" = "$STUB_CP_FAIL_DEST" ]; then
+	echo "cp: stub failure for $dest" >&2
+	exit 1
+fi
+command -p cp "$@"
+STUB
+
+chmod 755 "$_gs_stub/id" "$_gs_stub/curl" "$_gs_stub/apt-get" "$_gs_stub/dpkg" "$_gs_stub/cp"
+
+export STUB_CURL_KEY_RC=0 STUB_CURL_API_RC=0 STUB_CURL_API_BODY=""
+export STUB_APT_UPDATE_RC=0 STUB_APT_INSTALL_RC=0 STUB_DPKG_RC=1
+
+_gs_reset() { # "prior" seeds an already-working repo config; anything else starts clean
+	rm -rf "$_gs_apt" "$_gs_tmp"
+	mkdir -p "$_gs_apt/keyrings" "$_gs_apt/sources.list.d" "$_gs_tmp"
+	if [ "${1:-}" = "prior" ]; then
+		printf 'PRIOR-KEYRING\n' >"$_gs_key"
+		printf 'PRIOR-SOURCE\n' >"$_gs_src"
+	fi
+}
+
+_gs_run() { # sets _gs_out / _gs_rc; TMPDIR is redirected so staging leaks are visible
+	_gs_out=$(PATH="$_gs_stub:$PATH" TMPDIR="$_gs_tmp" bash "$_gs" 2>&1)
+	_gs_rc=$?
+	return 0
+}
+
+_gs_is() { # desc expected actual
+	tests=$((tests + 1))
+	if [ "$2" = "$3" ]; then
+		printf 'ok   - %s\n' "$1"
+	else
+		fails=$((fails + 1))
+		printf 'FAIL - %s\n       expected [%s], got [%s]\n' "$1" "$2" "$3"
+	fi
+}
+
+_gs_no_leftovers() { # desc
+	local leftovers
+	leftovers=$(
+		find "$_gs_apt" -name '*dynavlan-new*' 2>/dev/null
+		find "$_gs_tmp" -mindepth 1 2>/dev/null
+	)
+	_gs_is "$1" "" "$leftovers"
+}
+
+# (a) key download fails with a working repo config already in place.
+_gs_reset prior
+STUB_CURL_KEY_RC=22 STUB_DPKG_RC=0
+_gs_run
+_gs_is "1an key-download failure leaves a pre-existing keyring byte-identical" \
+	"PRIOR-KEYRING" "$(cat "$_gs_key" 2>/dev/null)"
+_gs_is "1an key-download failure leaves a pre-existing source byte-identical" \
+	"PRIOR-SOURCE" "$(cat "$_gs_src" 2>/dev/null)"
+_gs_no_leftovers "1an key-download failure leaves no staging files behind"
+
+# (b) apt-get update fails with a working repo config already in place.
+_gs_reset prior
+STUB_CURL_KEY_RC=0 STUB_APT_UPDATE_RC=100 STUB_DPKG_RC=0
+_gs_run
+_gs_is "1an apt-get update failure restores the pre-existing keyring" \
+	"PRIOR-KEYRING" "$(cat "$_gs_key" 2>/dev/null)"
+_gs_is "1an apt-get update failure restores the pre-existing source" \
+	"PRIOR-SOURCE" "$(cat "$_gs_src" 2>/dev/null)"
+_gs_no_leftovers "1an apt-get update failure leaves no staging files behind"
+
+# (c) apt-get install fails with a working repo config already in place.
+_gs_reset prior
+STUB_APT_UPDATE_RC=0 STUB_APT_INSTALL_RC=100 STUB_DPKG_RC=0
+_gs_run
+_gs_is "1an apt-get install failure restores the pre-existing keyring" \
+	"PRIOR-KEYRING" "$(cat "$_gs_key" 2>/dev/null)"
+_gs_is "1an apt-get install failure restores the pre-existing source" \
+	"PRIOR-SOURCE" "$(cat "$_gs_src" 2>/dev/null)"
+_gs_no_leftovers "1an apt-get install failure leaves no staging files behind"
+
+# The approved fallback contract: an existing dpkg-managed install refuses the
+# unmanaged tarball fallback rather than desyncing dpkg's records.
+tests=$((tests + 1))
+case "$_gs_out" in
+*"already installed via apt/dpkg"*)
+	printf 'ok   - %s\n' "1an an existing dpkg install still refuses the tarball fallback"
+	;;
+*)
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       got [%s]\n' \
+		"1an an existing dpkg install still refuses the tarball fallback" "$_gs_out"
+	;;
+esac
+
+# (d) the source-file write itself fails. `chmod` cannot induce this
+#     root-independently - root bypasses directory write permission entirely,
+#     so a permission-only fault would silently pass this test when run as
+#     root and prove nothing. Instead pre-place a dangling symlink at the
+#     EXACT staging path the write targets, pointing through a directory that
+#     does not exist: `open()` then fails with ENOENT regardless of caller
+#     privilege, since it is a path-resolution failure, not a permission
+#     check. Touches nothing else in the tree - the pre-existing source file
+#     itself is untouched and still backed up normally.
+_gs_reset prior
+STUB_APT_INSTALL_RC=0 STUB_DPKG_RC=0
+ln -s "/dynavlan-test-nonexistent-dir-$$/target" "$_gs_src.dynavlan-new"
+_gs_run
+_gs_is "1an source-write failure leaves a pre-existing keyring byte-identical" \
+	"PRIOR-KEYRING" "$(cat "$_gs_key" 2>/dev/null)"
+_gs_is "1an source-write failure leaves a pre-existing source byte-identical" \
+	"PRIOR-SOURCE" "$(cat "$_gs_src" 2>/dev/null)"
+_gs_no_leftovers "1an source-write failure leaves no staging files behind"
+
+# (e) a first install that fails must not leave partial state behind. dpkg
+# reports nothing installed, so the documented tarball fallback is attempted -
+# it dies on the stubbed API, which is what keeps this case out of the network.
+_gs_reset
+STUB_CURL_KEY_RC=0 STUB_APT_UPDATE_RC=100 STUB_DPKG_RC=1 STUB_CURL_API_RC=7
+_gs_run
+_gs_is "1an a failed first install leaves no keyring behind" "" "$(cat "$_gs_key" 2>/dev/null)"
+_gs_is "1an a failed first install leaves no source behind" "" "$(cat "$_gs_src" 2>/dev/null)"
+tests=$((tests + 1))
+if [ ! -e "$_gs_key" ] && [ ! -e "$_gs_src" ]; then
+	printf 'ok   - %s\n' "1an a failed first install removes the files it created"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       key exists=%s source exists=%s\n' \
+		"1an a failed first install removes the files it created" \
+		"$([ -e "$_gs_key" ] && echo yes || echo no)" \
+		"$([ -e "$_gs_src" ] && echo yes || echo no)"
+fi
+_gs_no_leftovers "1an a failed first install leaves no staging files behind"
+
+# (f) tag-lookup diagnostics: a transport failure and a successful fetch that
+# parses to nothing must be DIFFERENT specific messages, and neither may abort
+# silently (the single `curl | grep | head | sed` pipeline under pipefail did).
+tests=$((tests + 1))
+if [ "$_gs_rc" -ne 0 ] && printf '%s' "$_gs_out" | grep -q "could not reach the GitHub releases API"; then
+	printf 'ok   - %s\n' "1an a tag-lookup transport failure reports itself distinctly"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       expected non-zero + a transport-failure message, rc=%s out=[%s]\n' \
+		"1an a tag-lookup transport failure reports itself distinctly" "$_gs_rc" "$_gs_out"
+fi
+
+tests=$((tests + 1))
+case "$_gs_out" in
+*"returned no tag_name"*)
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       the transport failure emitted the empty-parse message\n' \
+		"1an the two tag-lookup diagnostics stay distinct"
+	;;
+*) printf 'ok   - %s\n' "1an the two tag-lookup diagnostics stay distinct" ;;
+esac
+
+_gs_reset
+STUB_CURL_API_RC=0 STUB_CURL_API_BODY='{"name":"no tag here"}'
+_gs_run
+tests=$((tests + 1))
+if [ "$_gs_rc" -ne 0 ] && printf '%s' "$_gs_out" | grep -q "returned no tag_name"; then
+	printf 'ok   - %s\n' "1an an unparseable release payload reports itself distinctly"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       expected non-zero + the no-tag_name message, rc=%s out=[%s]\n' \
+		"1an an unparseable release payload reports itself distinctly" "$_gs_rc" "$_gs_out"
+fi
+
+# (g) happy path: both files written, success reported, nothing staged left over.
+_gs_reset
+STUB_CURL_KEY_RC=0 STUB_APT_UPDATE_RC=0 STUB_APT_INSTALL_RC=0 STUB_DPKG_RC=1
+_gs_run
+_gs_is "1an happy path exits 0" "0" "$_gs_rc"
+_gs_is "1an happy path installs the fetched keyring" "STUB-KEYRING" "$(cat "$_gs_key" 2>/dev/null)"
+_gs_is "1an happy path writes the source file" \
+	"Types: deb
+URIs: http://example.invalid/dynavlan
+Suites: stable
+Components: main
+Signed-By: $_gs_key" "$(cat "$_gs_src" 2>/dev/null)"
+tests=$((tests + 1))
+case "$_gs_out" in
+*"installed via apt"*) printf 'ok   - %s\n' "1an happy path reports the apt install" ;;
+*)
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       got [%s]\n' "1an happy path reports the apt install" "$_gs_out"
+	;;
+esac
+_gs_no_leftovers "1an happy path leaves no staging files behind"
+
+# (h) the documented production invocation is `curl … | sudo bash`, i.e. the
+# script arrives on stdin with no file behind it. Prove that form still runs
+# the top-level logic identically.
+_gs_reset
+_gs_out=$(PATH="$_gs_stub:$PATH" TMPDIR="$_gs_tmp" bash -s <"$_gs" 2>&1)
+_gs_rc=$?
+_gs_is "1an piped-stdin invocation exits 0" "0" "$_gs_rc"
+_gs_is "1an piped-stdin invocation installs the keyring" "STUB-KEYRING" "$(cat "$_gs_key" 2>/dev/null)"
+
+# (i) a cleanup command itself can fail (e.g. a leftover staging file cannot
+#     be removed). This must never invent its own transaction/result model -
+#     the function still reports exactly the real bootstrap/restore outcome,
+#     with cleanup failure only ever a visible warning, never a silent drop
+#     and never a change to the return code. Root-independent by the same
+#     reasoning as (d): `rm` (without -r) refuses ANY directory regardless of
+#     caller privilege, so pre-placing a directory at the exact staging path
+#     forces `rm -f` to fail structurally, not on a permission check.
+_gs_reset prior
+mkdir "$_gs_src.dynavlan-new"
+_gs_run
+_gs_is "1an a cleanup failure does not change the reported return code" "1" "$_gs_rc"
+tests=$((tests + 1))
+if printf '%s' "$_gs_out" | grep -q "WARNING: could not remove leftover staging file"; then
+	printf 'ok   - %s\n' "1an a cleanup failure is reported, not silently dropped"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       got [%s]\n' "1an a cleanup failure is reported, not silently dropped" "$_gs_out"
+fi
+_gs_is "1an a cleanup failure leaves a pre-existing keyring byte-identical" \
+	"PRIOR-KEYRING" "$(cat "$_gs_key" 2>/dev/null)"
+_gs_is "1an a cleanup failure leaves a pre-existing source byte-identical" \
+	"PRIOR-SOURCE" "$(cat "$_gs_src" 2>/dev/null)"
+# The un-removable directory is the EXPECTED leftover here, not a defect -
+# confirm it is still exactly what was pre-placed, not silently miscounted.
+_gs_is "1an the un-removable staging directory is still present, as expected" \
+	"d" "$([ -d "$_gs_src.dynavlan-new" ] && echo d || echo missing)"
+rmdir "$_gs_src.dynavlan-new"
+
+# (j) apt_bootstrap fails only after a pre-existing file has already been
+#     backed up AND replaced, and restoring that one file back then itself
+#     fails. (a)-(c) never exercise apt_restore_prior's own failure branch:
+#     they always leave the underlying restore cp free to succeed, so none of
+#     them proves what happens when it doesn't.
+#
+#     Root-independent: the cp stub above fails only the ONE call whose final
+#     destination is the live keyring path (STUB_CP_FAIL_DEST) - the backup
+#     copy (into the staging directory) and the source's own restore are
+#     untouched, so only the keyring's restore-back is made to fail, and it
+#     fails on every caller identically, not on a permission check. The
+#     assertions below check exactly the file whose restore was made to fail
+#     (keyring.prior), not a different one, so the injection and the evidence
+#     line up directly: this is the retained copy an operator would actually
+#     need for the warning's "restore them manually".
+_gs_reset prior
+STUB_CURL_KEY_RC=0 STUB_APT_UPDATE_RC=100 STUB_DPKG_RC=0
+STUB_CP_FAIL_DEST=$_gs_key
+export STUB_CP_FAIL_DEST
+_gs_run
+unset STUB_CP_FAIL_DEST
+_gs_is "1an a restore failure after a successful backup is reported non-zero" "1" "$_gs_rc"
+# The stage path is recovered from the warning text rather than by searching
+# $_gs_tmp: bare `mktemp -d` is not guaranteed to honor TMPDIR. Native macOS
+# /usr/bin/mktemp uses the Darwin per-user temp dir regardless (observed
+# directly; man mktemp: bare -d acts as `-t tmp`), while some sandboxed
+# environments honor TMPDIR. Parsing the warning works under both, and it
+# also proves the warning names a usable retained location.
+_gs_stage=$(printf '%s\n' "$_gs_out" | sed -n 's/.*saved copies are kept in \([^ ]*\) (keyring\.prior.*/\1/p')
+_gs_is "1an the restore-failure warning names a concrete retained stage path" \
+	"d" "$([ -n "$_gs_stage" ] && [ -d "$_gs_stage" ] && echo d || echo missing)"
+_gs_is "1an the retained keyring.prior still has its original bytes" \
+	"PRIOR-KEYRING" "$(cat "$_gs_stage/keyring.prior" 2>/dev/null)"
+rm -rf "$_gs_stage"
+
+unset -f _gs_reset _gs_run _gs_is _gs_no_leftovers
+unset STUB_CURL_KEY_RC STUB_CURL_API_RC STUB_CURL_API_BODY
+unset STUB_APT_UPDATE_RC STUB_APT_INSTALL_RC STUB_DPKG_RC STUB_CP_FAIL_DEST
+rm -rf "$_gs_dir"
+unset _gs _gs_dir _gs_stub _gs_apt _gs_tmp _gs_key _gs_src _gs_out _gs_rc
+
+# ---------------------------------------------------------------------------
 
 printf '\n%s tests, %s failures\n' "$tests" "$fails"
 [ "$fails" -eq 0 ]

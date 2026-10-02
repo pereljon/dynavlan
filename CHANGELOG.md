@@ -12,6 +12,27 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ### Fixed
 
+- The release workflow could never publish the APT repository: `publish-apt` read the
+  version from a `steps.*` context belonging to the *other* job, which evaluates empty
+  across jobs, so its just-published-package check always looked for `dynavlan__all.deb`
+  and failed. The version now travels as an explicit `build-deb` job output consumed via
+  `needs`, binding both jobs to one value, and an empty version fails by name instead of
+  as a confusing "missing package" error. Observed effect of the bug: the public index
+  stayed at 0.4.2 while later versions were released.
+- `get.sh` no longer destroys a working APT repository configuration when the apt path
+  fails. It previously wrote the keyring and source file directly to their final paths
+  and deleted both on any failure, so a transient `apt-get update` error on an
+  already-configured box left dynavlan installed but undiscoverable by later
+  `apt update`/`apt upgrade`. Key and source are now staged and moved into place only
+  once written, files that pre-existed are restored byte-for-byte on failure, and files
+  this run created are removed. Every staging step is checked explicitly rather than
+  relying on `set -e`, which is disabled while the function runs as an `if !` condition.
+  The fallback contract is unchanged: a first install may still fall back to the tarball
+  path, and an existing dpkg-managed install still refuses an unmanaged fallback.
+- `get.sh` and `build-deb.sh` lost their intended diagnostics to `pipefail`: a failing
+  `curl`/`grep` inside a capture pipeline aborted the script silently, so the messages
+  written for exactly those cases never printed. Retrieval and parsing are now separate,
+  keeping a transport/read failure and an empty parsed result distinct and reported.
 - FR-22 zero-detection boot abort logged at `err` while exiting 0 (an error-severity
   line on an intended no-op). Severity now tracks the owned set: `warning` when owned
   VLANs are preserved behind a now-quiet wire, `info` when nothing is owned. Exit code
