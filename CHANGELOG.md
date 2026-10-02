@@ -12,6 +12,15 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ### Fixed
 
+- Stopping `dynavlan.service` or `dynavlan-rescan.service` (or a start timeout) during a
+  live `netplan try` window no longer leaves an unconfirmed change applied. Both units now
+  use `KillMode=mixed` with `TimeoutStopSec=60`, and the run handles SIGTERM before ACCEPT:
+  it never writes the confirmation, withdraws the confirmation writer so Netplan reverts,
+  waits (bounded) for `netplan try` to exit, and restores the prior owned file. After
+  ACCEPT a stop keeps the committed change and runs the removals but skips the lease wait
+  and agent restart, and the whole new-subnet restart pass is suppressed; a skipped restart
+  is only made up later when a still-unseen subnet exists and `RESTART_ON_NEW_SUBNET=true`.
+  A stopped run exits 1. `ver=` 0.4.14 -> 0.4.15.
 - The release workflow could never publish the APT repository: `publish-apt` read the
   version from a `steps.*` context belonging to the *other* job, which evaluates empty
   across jobs, so its just-published-package check always looked for `dynavlan__all.deb`

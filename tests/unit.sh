@@ -2528,6 +2528,420 @@ rm -rf "$_gs_dir"
 unset _gs _gs_dir _gs_stub _gs_apt _gs_tmp _gs_key _gs_src _gs_out _gs_rc
 
 # ---------------------------------------------------------------------------
+# 1ao. D2 (Group 2a): a service stop before ACCEPT must revert, never confirm.
+#
+#      `systemctl stop` / a start timeout sends SIGTERM; under KillMode=mixed it
+#      reaches only the main Bash process. The TERM trap sets
+#      STOP_REQUESTED and closes the (unaccepted) FIFO writer so netplan try sees
+#      EOF and reverts (the P2-validated path). Bash must stay alive until the
+#      child has exited, restore_prior must run, and no delete/lease-wait/restart
+#      may follow an unaccepted change. Design:
+#      docs/superpowers/plans/2026-10-01-group2a-d2-graceful-stop-design.md
+#
+#      Each scenario runs in a subshell so its function overrides and traps never
+#      leak. TERM is delivered with `kill -TERM $!` (the captured child PID); `$$`
+#      inside a subshell still names the parent. Deterministic mid-function
+#      delivery uses a `stop_requested` shadow that raises TERM at a chosen check:
+#      the trap then runs right after that check returns, i.e. in the exact window
+#      under test.
+# ---------------------------------------------------------------------------
+
+_d2_dir=$(mktemp -d)
+_d2_ev="$_d2_dir/events"
+_d2_log="$_d2_dir/log"
+_d2_res="$_d2_dir/result"
+
+_d2_netplan() { # stub `netplan try`; stdin is the FIFO
+	[ "$1" = try ] || return 0
+	echo np_start >>"$_d2_ev"
+	if IFS= read -r _; then
+		echo np_accept >>"$_d2_ev"
+		sleep "${D2_ACCEPT_LINGER:-0}"
+		echo np_exit >>"$_d2_ev"
+		return 0
+	fi
+	echo np_eof >>"$_d2_ev"
+	if [ "${D2_NP_MODE:-revert}" = stubborn ]; then
+		sleep 9 # ignores EOF and outlives the cleanup deadline
+	else
+		sleep "${D2_REVERT_DELAY:-1}"
+	fi
+	echo np_exit >>"$_d2_ev"
+	return 1
+}
+
+_d2_env() { # call at the top of every scenario subshell
+	POLL_INTERVAL=1
+	TRY_TIMEOUT=4
+	STOP_CHILD_MARGIN=1
+	APPLY_NOEVIDENCE_SETTLE=0
+	APPLY_FALLBACK_SETTLE=0
+	HEALTH_CONSEC=1
+	: >"$_d2_ev"
+	: >"$_d2_log"
+	: >"$_d2_res"
+	rm -f "$_d2_dir"/fifo.* "$_d2_dir/health_pass" "$_d2_dir/fired"
+	netplan() { _d2_netplan "$@"; }
+	mktemp() { printf '%s\n' "$_d2_dir/fifo.$RANDOM"; }
+	log() { printf '[%s] %s\n' "$1" "${*:2}" >>"$_d2_log"; }
+	post_apply_health() {
+		if [ "${D2_HEALTH:-FAIL}" = PASS ]; then
+			: >"$_d2_dir/health_pass"
+		fi
+		echo "${D2_HEALTH:-FAIL}"
+	}
+	sh -c 'echo $PPID' >"$_d2_dir/self"
+	D2_SELF=$(cat "$_d2_dir/self")
+}
+
+# Raises TERM at a chosen stop_requested() call (D2_FIRE_AT_CALL) or at the first
+# call after a health PASS (D2_FIRE_AFTER_HEALTH): both land the signal in a
+# precise window; the trap runs when the call returns.
+_d2_shadow_stop() {
+	d2_calls=0
+	stop_requested() {
+		local r=1
+		d2_calls=$((d2_calls + 1))
+		[ "${STOP_REQUESTED:-0}" = 1 ] && r=0
+		# Result is computed BEFORE the signal: Bash runs a trap after the `kill`
+		# command, so the check below has already answered when the trap fires.
+		if [ ! -e "$_d2_dir/fired" ]; then
+			if { [ -n "${D2_FIRE_AT_CALL:-}" ] && [ "$d2_calls" -eq "$D2_FIRE_AT_CALL" ]; } ||
+				{ [ -n "${D2_FIRE_AFTER_HEALTH:-}" ] && [ -e "$_d2_dir/health_pass" ]; }; then
+				: >"$_d2_dir/fired"
+				builtin kill -TERM "$D2_SELF"
+			fi
+		fi
+		return "$r"
+	}
+}
+
+_d2_wait_start() { # bounded wait for the stub netplan to have started (a fixed sleep can pass vacuously)
+	local i=0
+	while [ "$i" -lt 20 ] && ! grep -q '^np_start$' "$_d2_ev"; do
+		sleep 1
+		i=$((i + 1))
+	done
+}
+_d2_has() { grep -q -- "$1" "${2:-$_d2_ev}"; }
+_d2_absent() { ! grep -q -- "$1" "${2:-$_d2_ev}"; }
+_d2_assert() { # desc cmd...
+	local desc="$1"
+	shift
+	tests=$((tests + 1))
+	if "$@"; then
+		printf 'ok   - %s\n' "$desc"
+	else
+		fails=$((fails + 1))
+		printf 'FAIL - %s\n       events: %s\n       result: %s\n       log: %s\n' "$desc" \
+			"$(tr '\n' ' ' <"$_d2_ev" 2>/dev/null)" "$(tr '\n' ' ' <"$_d2_res" 2>/dev/null)" \
+			"$(tr '\n' ' ' <"$_d2_log" 2>/dev/null)"
+	fi
+}
+_d2_rc_nonzero() { ! grep -q '^rc=0$' "$_d2_res" && grep -q '^rc=' "$_d2_res"; }
+_d2_rc_zero() { grep -q '^rc=0$' "$_d2_res"; }
+_d2_order() { # EVENT_A before EVENT_B in the events file
+	local a b
+	a=$(grep -n -- "^$1\$" "$_d2_ev" | head -1 | cut -d: -f1)
+	b=$(grep -n -- "^$2\$" "$_d2_ev" | head -1 | cut -d: -f1)
+	[ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]
+}
+
+# (1) STOP already set: nothing is launched and no FIFO is left behind.
+(
+	_d2_env
+	STOP_REQUESTED=1
+	backend_apply_with_revert "" ""
+	echo "rc=$?" >"$_d2_res"
+)
+_d2_assert "1ao STOP before launch: returns non-zero" _d2_rc_nonzero
+_d2_assert "1ao STOP before launch: netplan try is never started" _d2_absent np_start
+_d2_assert "1ao STOP before launch: no FIFO left behind" test -z "$(ls "$_d2_dir"/fifo.* 2>/dev/null)"
+
+# (2) TERM mid-loop, never healthy: writer revoked -> EOF -> revert; Bash waits.
+(
+	_d2_env
+	D2_REVERT_DELAY=2
+	(
+		stop_trap_on
+		backend_apply_with_revert "" ""
+		echo "rc=$?" >"$_d2_res"
+		echo returned >>"$_d2_ev"
+	) &
+	pid=$!
+	sleep 2
+	kill -TERM "$pid"
+	wait "$pid"
+)
+_d2_assert "1ao TERM before ACCEPT: returns non-zero" _d2_rc_nonzero
+_d2_assert "1ao TERM before ACCEPT: netplan try saw EOF (revert path)" _d2_has np_eof
+_d2_assert "1ao TERM before ACCEPT: no confirmation was ever written" _d2_absent np_accept
+_d2_assert "1ao TERM before ACCEPT: Bash returned only after the child exited" _d2_order np_exit returned
+
+# (2b) a second TERM during the wait must not abandon the child.
+(
+	_d2_env
+	D2_REVERT_DELAY=3
+	(
+		stop_trap_on
+		backend_apply_with_revert "" ""
+		echo "rc=$?" >"$_d2_res"
+		echo returned >>"$_d2_ev"
+	) &
+	pid=$!
+	sleep 2
+	kill -TERM "$pid"
+	sleep 1
+	kill -TERM "$pid"
+	wait "$pid"
+)
+_d2_assert "1ao a repeated TERM does not end the child wait early" _d2_order np_exit returned
+
+# (3) ACCEPT race: TERM lands between the final STOP check and the confirming
+# write. The trap revokes the writer, so no confirmation can exist.
+(
+	_d2_env
+	D2_HEALTH=PASS D2_FIRE_AFTER_HEALTH=1
+	_d2_shadow_stop
+	stop_trap_on
+	backend_apply_with_revert "" ""
+	echo "rc=$?" >"$_d2_res"
+)
+_d2_assert "1ao ACCEPT race: no confirmation after TERM at the accept instant" _d2_absent np_accept
+_d2_assert "1ao ACCEPT race: not reported as accepted" _d2_rc_nonzero
+_d2_assert "1ao ACCEPT race: netplan try saw EOF" _d2_has np_eof
+
+# (3b) TERM after the confirmation was written: the accept stands, and Bash still
+# waits for the (slow-exiting) child instead of treating an interrupted wait as done.
+(
+	_d2_env
+	D2_HEALTH=PASS D2_ACCEPT_LINGER=2
+	kill() { # fire TERM on the first liveness probe after the accept landed
+		if [ "$1" = -0 ] && _d2_has np_accept && [ ! -e "$_d2_dir/fired" ]; then
+			: >"$_d2_dir/fired"
+			builtin kill -TERM "$D2_SELF"
+		fi
+		builtin kill "$@"
+	}
+	stop_trap_on
+	backend_apply_with_revert "" ""
+	echo "rc=$?" >"$_d2_res"
+	echo returned >>"$_d2_ev"
+)
+_d2_assert "1ao TERM after confirmation: the accept stands" _d2_rc_zero
+_d2_assert "1ao TERM after confirmation: waits for the child to exit" _d2_order np_exit returned
+
+# (4) A1: TERM after the pre-launch check but before the writer opens. The trap
+# closes an unopened fd 9, then `exec 9>"$fifo"` reopens it; STOP must be rechecked
+# after the open and the cleanup must close fd 9 itself. The probe interface is
+# absent and `ip` records every call and fails: with the STOP recheck after the
+# open, the loop never polls for the probe, so a missing loop-top STOP check
+# (cleanup left behind the 90s wall guard, past systemd's 60s bound) shows up as
+# probe polls after STOP was set. Event assertions, no elapsed-time thresholds.
+(
+	_d2_env
+	D2_FIRE_AT_CALL=2
+	ip() { echo ip_probe >>"$_d2_ev"; return 1; }
+	_d2_shadow_stop
+	stop_trap_on
+	backend_apply_with_revert "" "enp1s0.9"
+	echo "rc=$?" >"$_d2_res"
+	echo returned >>"$_d2_ev"
+)
+_d2_assert "1ao TERM before the writer opens: no confirmation" _d2_absent np_accept
+_d2_assert "1ao TERM before the writer opens: reopened writer is closed (EOF seen)" _d2_has np_eof
+_d2_assert "1ao TERM before the writer opens: returns non-zero" _d2_rc_nonzero
+_d2_assert "1ao TERM before the writer opens: no probe polling after STOP was set" _d2_absent ip_probe
+_d2_assert "1ao TERM before the writer opens: child exited before return" _d2_order np_exit returned
+
+# (5) Deadline: a child that ignores EOF is not waited on forever.
+(
+	_d2_env
+	D2_NP_MODE=stubborn
+	SECONDS=0
+	(
+		stop_trap_on
+		backend_apply_with_revert "" ""
+		echo "rc=$?" >"$_d2_res"
+		echo "elapsed=$SECONDS" >>"$_d2_res"
+	) &
+	pid=$!
+	sleep 2
+	kill -TERM "$pid"
+	wait "$pid"
+)
+_d2_assert "1ao wedged child: returns non-zero at the deadline" _d2_rc_nonzero
+_d2_assert "1ao wedged child: the uncertain state is logged" _d2_has "uncertain" "$_d2_log"
+_d2_assert "1ao wedged child: bounded (deadline TRY_TIMEOUT+margin, not the child's 9s)" \
+	bash -c "e=\$(sed -n 's/^elapsed=//p' '$_d2_res'); [ -n \"\$e\" ] && [ \"\$e\" -le 9 ]"
+
+# (6) apply_change: a stop before ACCEPT restores the prior file and runs no
+# delete, lease wait, or restart.
+(
+	_d2_env
+	NETPLAN_FILE="$_d2_dir/90-dynavlan.yaml"
+	BACKUP_DIR="$_d2_dir/backups"
+	mkdir -p "$BACKUP_DIR"
+	printf 'PRIOR\n' >"$NETPLAN_FILE"
+	backend_generate_config() { printf 'CANDIDATE\n' >"$NETPLAN_FILE"; }
+	backend_validate() { return 0; }
+	snapshot_default_route() { :; }
+	backend_remove_vlan() { echo remove >>"$_d2_ev"; return 0; }
+	wait_leases() { echo leases >>"$_d2_ev"; }
+	restart_targets() { echo restart >>"$_d2_ev"; }
+	VLAN_ROUTES=false
+	(
+		apply_change "enp1s0.9" "enp1s0.9" ""
+		echo "rc=$?" >"$_d2_res"
+	) &
+	pid=$!
+	_d2_wait_start
+	kill -TERM "$pid"
+	wait "$pid"
+	cat "$NETPLAN_FILE" >"$_d2_dir/file_after"
+)
+_d2_assert "1ao apply_change stop before ACCEPT: netplan try was running when TERM was sent" _d2_has np_start
+_d2_assert "1ao apply_change stop before ACCEPT: non-zero" _d2_rc_nonzero
+_d2_assert "1ao apply_change stop before ACCEPT: netplan try saw EOF" _d2_has np_eof
+_d2_assert "1ao apply_change stop before ACCEPT: prior owned file restored" \
+	test "$(cat "$_d2_dir/file_after" 2>/dev/null)" = PRIOR
+_d2_assert "1ao apply_change stop before ACCEPT: no delete" _d2_absent remove
+_d2_assert "1ao apply_change stop before ACCEPT: no lease wait" _d2_absent leases
+_d2_assert "1ao apply_change stop before ACCEPT: no restart" _d2_absent restart
+
+# (7) apply_change: a stop after ACCEPT runs the deletes but skips lease wait and restarts.
+(
+	_d2_env
+	D2_HEALTH=PASS D2_ACCEPT_LINGER=2
+	NETPLAN_FILE="$_d2_dir/90-dynavlan.yaml"
+	BACKUP_DIR="$_d2_dir/backups"
+	mkdir -p "$BACKUP_DIR"
+	printf 'PRIOR\n' >"$NETPLAN_FILE"
+	backend_generate_config() { printf 'CANDIDATE\n' >"$NETPLAN_FILE"; }
+	backend_validate() { return 0; }
+	snapshot_default_route() { :; }
+	backend_remove_vlan() { echo remove >>"$_d2_ev"; return 0; }
+	wait_leases() { echo leases >>"$_d2_ev"; }
+	restart_targets() { echo restart >>"$_d2_ev"; }
+	VLAN_ROUTES=false
+	kill() {
+		if [ "$1" = -0 ] && _d2_has np_accept && [ ! -e "$_d2_dir/fired" ]; then
+			: >"$_d2_dir/fired"
+			builtin kill -TERM "$D2_SELF"
+		fi
+		builtin kill "$@"
+	}
+	apply_change "enp1s0.9" "" "enp1s0.8"
+	echo "rc=$?" >"$_d2_res"
+	cat "$NETPLAN_FILE" >"$_d2_dir/file_after"
+)
+_d2_assert "1ao apply_change stop after ACCEPT: the accepted file is kept" \
+	test "$(cat "$_d2_dir/file_after" 2>/dev/null)" = CANDIDATE
+_d2_assert "1ao apply_change stop after ACCEPT: removals still run" _d2_has remove
+_d2_assert "1ao apply_change stop after ACCEPT: no lease wait" _d2_absent leases
+_d2_assert "1ao apply_change stop after ACCEPT: no restart" _d2_absent restart
+_d2_assert "1ao apply_change stop after ACCEPT: reports non-zero (stop requested)" _d2_rc_nonzero
+
+# (8) A2: helpers observe STOP themselves.
+(
+	_d2_env
+	LEASE_SETTLE_SECONDS=8
+	iface_has_lease() { return 1; }
+	SECONDS=0
+	(
+		stop_trap_on
+		wait_leases "enp1s0.9"
+		echo "elapsed=$SECONDS" >"$_d2_res"
+	) &
+	pid=$!
+	sleep 1
+	kill -TERM "$pid"
+	wait "$pid"
+)
+_d2_assert "1ao wait_leases stops waiting once STOP is set" \
+	bash -c "e=\$(sed -n 's/^elapsed=//p' '$_d2_res'); [ -n \"\$e\" ] && [ \"\$e\" -le 4 ]"
+
+(
+	_d2_env
+	RESTART_SNAPS="a b c"
+	RESTART_SERVICES=""
+	snap() { # TERM during the first restart: it finishes, the rest are skipped
+		echo "snap_$2" >>"$_d2_ev"
+		if [ "$2" = a ]; then builtin kill -TERM "$D2_SELF"; fi
+		return 0
+	}
+	stop_trap_on
+	restart_targets
+	echo "rc=$?" >"$_d2_res"
+)
+_d2_assert "1ao restart_targets: the already-started restart finishes" _d2_has snap_a
+_d2_assert "1ao restart_targets: later targets are not started after STOP" _d2_absent "snap_b"
+_d2_assert "1ao restart_targets: reports non-zero when it stopped early" _d2_rc_nonzero
+
+# (9) Composed: real main --rescan, real TERM from outside. Exit 1, owned file
+# restored, no confirmation, and none of FR-40's restart or seen write.
+(
+	_d2_env
+	D2_REVERT_DELAY=1
+	LOCK_FILE="$_d2_dir/lock"
+	NETPLAN_FILE="$_d2_dir/90-dynavlan.yaml"
+	BACKUP_DIR="$_d2_dir/backups"
+	SEEN_FILE="$_d2_dir/seen"
+	mkdir -p "$BACKUP_DIR"
+	printf 'PRIOR\n' >"$NETPLAN_FILE"
+	load_config() { return 0; }
+	check_preconditions() { return 0; }
+	flock() { return 0; } # util-linux flock is absent on macOS; the lock itself is not under test
+	RESTART_ON_NEW_SUBNET=true
+	RESTART_SNAPS="a"
+	RESTART_SERVICES=""
+	drain_pending_deletes() { return 0; }
+	run_detection() { DETECTED_TRUNKS="enp1s0"; }
+	iface_tags() { echo 9; }
+	backend_owned_vlans() { :; }
+	backend_list_managed_vlans() { :; }
+	ifaces_without_carrier() { :; }
+	warn_overlap() { :; }
+	backend_generate_config() { printf 'CANDIDATE\n' >"$NETPLAN_FILE"; }
+	backend_validate() { return 0; }
+	snapshot_default_route() { :; }
+	current_subnets() { echo "enp1s0:10.0.0.0/24"; }
+	snap() { echo snap_restart >>"$_d2_ev"; return 0; }
+	VLAN_ROUTES=false
+	(
+		main --rescan
+		echo "rc=$?" >"$_d2_res"
+		echo returned >>"$_d2_ev"
+	) &
+	pid=$!
+	_d2_wait_start
+	kill -TERM "$pid"
+	wait "$pid"
+	cat "$NETPLAN_FILE" >"$_d2_dir/file_after"
+)
+_d2_assert "1ao main --rescan on TERM: netplan try was actually running when TERM was sent" _d2_has np_start
+_d2_assert "1ao main --rescan on TERM: exits 1" grep -q '^rc=1$' "$_d2_res"
+_d2_assert "1ao main --rescan on TERM: netplan try saw EOF" _d2_has np_eof
+_d2_assert "1ao main --rescan on TERM: child exited before main returned" _d2_order np_exit returned
+_d2_assert "1ao main --rescan on TERM: prior owned file restored" \
+	test "$(cat "$_d2_dir/file_after" 2>/dev/null)" = PRIOR
+_d2_assert "1ao main --rescan on TERM: no confirmation written" _d2_absent np_accept
+_d2_assert "1ao main --rescan on TERM: no agent restart (whole FR-40 pass suppressed)" _d2_absent snap_restart
+_d2_assert "1ao main --rescan on TERM: seen file not written" test ! -e "$_d2_dir/seen"
+
+# (10) Static: both units stop mixed, and the nominal budget fits the stop bound.
+for _d2_u in dynavlan.service dynavlan-rescan.service; do
+	_d2_assert "1ao $_d2_u uses KillMode=mixed" grep -qx 'KillMode=mixed' "${here}/../$_d2_u"
+	_d2_assert "1ao $_d2_u nominal stop budget fits TimeoutStopSec" bash -c "
+		t=\$(sed -n 's/^TimeoutStopSec=//p' '${here}/../$_d2_u')
+		[ -n \"\$t\" ] && [ \$((${POLL_INTERVAL} + ${TRY_TIMEOUT} + ${STOP_CHILD_MARGIN:-15} + 5)) -lt \"\$t\" ]"
+done
+
+rm -rf "$_d2_dir"
+unset -f _d2_netplan _d2_env _d2_shadow_stop _d2_wait_start _d2_has _d2_absent _d2_assert _d2_rc_nonzero _d2_rc_zero _d2_order
+unset _d2_dir _d2_ev _d2_log _d2_res _d2_u
+
+# ---------------------------------------------------------------------------
 
 printf '\n%s tests, %s failures\n' "$tests" "$fails"
 [ "$fails" -eq 0 ]

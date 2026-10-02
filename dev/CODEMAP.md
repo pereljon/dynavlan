@@ -103,6 +103,7 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 | `backend_generate_config` | Write our file atomically (same-dir mktemp 0600, fsync, rename) from a target token set; isolation stanza (incl. `accept-ra: false` in both modes, FR-14a), or routes+metric per FR-37, keyed per token |
 | `backend_validate` | `netplan generate`; on failure classify VALIDATE_ERRSRC ours-vs-base (base = freeze) |
 | `apply_settle_floor` | C2: returns the settle floor before health sampling - `APPLY_FALLBACK_SETTLE` when a probe iface exists, the larger `APPLY_NOEVIDENCE_SETTLE` for no-addition changes (removal-only/`--reapply`) that have no in-kernel apply signal |
+| `stop_requested` / `stop_trap_on` / `stop_trap_off` / `wait_child_gone` / `backend_stop_cleanup` | D2 graceful stop: TERM trap inside `apply_change` (sets the stop flag and closes the unaccepted fifo writer; no other cleanup runs in the trap), bounded `kill -0` child polling, and the stop-path cleanup that withdraws the writer and waits (`TRY_TIMEOUT + STOP_CHILD_MARGIN`) for `netplan try` to revert; tests 1ao |
 | `backend_apply_with_revert` | The accept primitive: netplan try + fifo, apply-evidence + liveness + consecutive-health + window-bound accept; per-change settle floor via `apply_settle_floor`; captures netplan try's exit on both paths (audit); FAIL holds fifo open for try's own revert timer |
 | `backend_remove_vlan` | `ip link delete` of a removed VLAN interface (only ever called after ACCEPT). Returns rc 1 on delete failure so the caller can record a retry (M5) |
 | `pending_deletes` / `write_pending_deletes` / `record_pending_delete` | Pending-delete record in `/run` (tmpfs, reboot-scoped). `apply_change` records a token whose post-ACCEPT `ip link delete` failed. Historical "dynavlan itself removed this" ownership alone is no longer treated as sufficient at drain time - see `drain_pending_deletes` (D1/L7) (M5) |
@@ -141,7 +142,7 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 
 | function | one-line purpose |
 |----------|------------------|
-| `apply_change` | The §7 safety chain: snapshot → **C1 default-route removal guard (refuse if snap_iface in removals)** → (FR-37 metric assign + conflict refusal) → backup → generate → validate → apply_with_revert → ACCEPT: prune/deletes/leases/restarts, FAIL: converge disk, nothing else |
+| `apply_change` | D2 wrapper: installs the TERM trap, calls `apply_change_run`, removes it. `apply_change_run` is the §7 safety chain: snapshot → **C1 default-route removal guard (refuse if snap_iface in removals)** → (FR-37 metric assign + conflict refusal) → backup → generate → validate → apply_with_revert → ACCEPT: prune/deletes/leases/restarts, FAIL: converge disk, nothing else |
 | `log_exclusions` | Warn per detected-but-managed-elsewhere VLAN |
 | `warn_overlap` | FR-11: warn when an owned `(link,id)` tuple (via `backend_netplan_vlan_tokens`, not key-name matching) is also defined under a different key elsewhere; `do_rescan` now calls it before its no-change early return, matching `do_boot` (L1) |
 | `gate_vlan_count` | Orchestrate warn / refuse / fill per VLAN_LIMIT_MODE; removals-only always passes |

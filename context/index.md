@@ -152,9 +152,10 @@ mislabeling two impure functions). Session closed out here to start a separate d
 
 STATE (2026-09-07 UTC, major-review Group 1 approved locally; Group 0 D2 failed on hardware): the
 operator-approved remediation plan is active on `release/1.0.0-review`. Group 1 (D1/L1/L6/L7) is
-implemented at working-tree `ver=0.4.14` and passed two Codex correction/re-review rounds plus the
-312/0 local unit suite. It remains uncommitted, unpushed, and undeployed; `main`/`origin/main` remain at
-`e3f2cef` (`ver=0.4.13`). Group 0 then ran against the clean `0.4.13 (build e3f2cef)` package on the
+implemented at `ver=0.4.14` and passed two Codex correction/re-review rounds plus the 312/0 local unit
+suite. It is now COMMITTED LOCALLY as `bf59ab0` (code/tests/`dev/` behavior docs; the Group 0
+evidence/status commit is `d8d7046`). Both remain unpushed and undeployed; `main`/`origin/main` remain
+at `e3f2cef` (`ver=0.4.13`). Group 0 then ran against the clean `0.4.13 (build e3f2cef)` package on the
 console-backed hardware box. HV-00 passed. HV-01/D2 failed cleanly: once an isolated-mode candidate
 VLAN existed and `netplan try` was alive, `systemctl stop dynavlan-rescan.service` terminated the whole
 cgroup; the child did not revert and the unconfirmed candidate remained live and in the owned file.
@@ -177,15 +178,31 @@ valid platform for validating Group 1 behavior until the reviewed build is deplo
 was restored to the recorded 14-VLAN baseline on 2026-09-07 (owned-file sha256 `c6ce5fb2...f986f8a`,
 both default routes intact, timer enabled+active with a finite next elapse, rescan unit reset).
 
+STATE (2026-09-07, Group 3 implemented): Codex directed Group 3 (APT bootstrap and publication) as the
+next work, with D2/Group 2/hardware/commit/push all still out of scope. D3 and L4 are implemented in
+the tree and COMMITTED LOCALLY as `34bed4e`: the release workflow's cross-job version handoff now travels as an
+explicit `build-deb` job output consumed via `needs` (a `steps.*` context is job-local and evaluated
+empty, which failed every publish), and `get.sh` no longer destroys a working APT repository
+configuration on a transient failure - key/source are staged and moved into place only once written,
+pre-existing files are restored byte-for-byte on failure, and files this run created are removed. Two
+LOW `pipefail` diagnostics in `get.sh`/`build-deb.sh` were split so a transport failure and an empty
+parse stay distinct instead of aborting silently. No `dynavlan` change, so no `ver=` bump. Unit suite
+319 -> 346, 0 failures. HV-31 stays release-gated: only a real authorized release can prove D3 fixed.
+
+STATE (2026-10-01, Group 2a D2 implemented locally): Codex approved the D2 graceful-stop design and a scoped
+local implementation, now COMMITTED LOCALLY on top of `34bed4e`: `ver=0.4.15`, both service units `KillMode=mixed` +
+`TimeoutStopSec=60`, TERM trap in `apply_change` that sets the stop flag and withdraws the unaccepted fifo writer, bounded
+child waits, post-ACCEPT partial finish (operator-accepted catch-up limitation, `context/decisions.md`
+2026-10-01). 403 unit tests pass; Codex approved the production changes and the tests. D2 closes only after
+one benign HV-01 on the corrected artifact (needs operator-authorized hardware). Nothing pushed or deployed.
+
 NEXT ACTION: the hardware baseline restore is DONE (2026-09-07, verified: original owned-file checksum,
 exactly 14 VLAN interfaces, both default routes, healthy `--status`/`--dry-run`, timer restored with a
-finite next elapse). Next is a clean Group 1 commit checkpoint (prepared, awaiting approval), and only
-then design and review the smallest bounded D2 graceful-stop protocol. It must preserve
-the Netplan child long enough to revert, restore the prior owned file, and retain a final whole-cgroup
-kill bound if cleanup wedges; `KillMode=mixed` plus a TERM-aware main cleanup path is the leading option
-to evaluate, not an approved implementation. After the correction is locally reviewed, rerun one benign
-HV-01 stop case and run the deferred HV-02/D6 lifecycle evidence once against the final service units.
-No commit, push, merge, or release is authorized. Per-item status: `context/todo.md`; full sequence:
+finite next elapse), and Groups 1, 3 and 2a are committed locally (`bf59ab0`/`d8d7046`, `34bed4e`, and the Group 2a commit
+after it). Next: one benign HV-01 stop case on a build of the corrected artifact (needs operator-authorized
+hardware) to close D2, then the upgrade-and-systemd-lifecycle group (Group 2), with the deferred HV-02/D6
+lifecycle evidence run once against the final service units.
+No push, merge, or release is authorized, and further commits need explicit approval. Per-item status: `context/todo.md`; full sequence:
 `docs/superpowers/plans/2026-09-05-v1.0-major-review-remediation.md`.
 
 Before coding a change, read in order:

@@ -9,6 +9,10 @@ Wants=systemd-networkd.service
 
 [Service]
 Type=oneshot
+# D2: SIGTERM reaches only the main process so it can let netplan try revert before
+# exiting (a surviving child is SIGKILLed when it does); TimeoutStopSec is the final bound.
+KillMode=mixed
+TimeoutStopSec=60
 ExecStart=/usr/local/sbin/dynavlan --boot
 SyslogIdentifier=dynavlan
 # Boot can take CARRIER_WAIT + 2*SNIFF_SECONDS + BOOT_SETTLE_SECONDS + lease settle.

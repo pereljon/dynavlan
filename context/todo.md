@@ -8,7 +8,8 @@ Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 
 The v1.0 major review is underway on `release/1.0.0-review`. Group 1 (D1/L1/L6/L7) is locally
 code/test approved after two Codex correction rounds (`ver=0.4.14`, 312 unit assertions, 0 failures),
-but remains uncommitted/unpushed and has not been deployed. Group 0 hardware evidence used the clean
+and is now committed locally as `bf59ab0` (with the Group 0 evidence/status commit `d8d7046`); both are
+unpushed and undeployed. Group 0 hardware evidence used the clean
 pre-remediation `0.4.13 (build e3f2cef)`: HV-00 passed, then HV-01 failed cleanly. Stopping the real
 rescan service during an applied-but-unconfirmed addition killed both Bash and `netplan try`; no
 revert occurred and the candidate remained live/on disk. D2 is now a confirmed HIGH defect with
@@ -43,8 +44,13 @@ evidence and Codex disposition:
       rounds (312/0). Group 0: HV-00 PASS; HV-01/D2 FAIL accepted as a confirmed HIGH defect with
       potentially CRITICAL impact because whole-cgroup stop kills the process required to revert and
       leaves the candidate applied/on disk. Release is blocked; no additional destructive D2 variant
-      is required. D2 correction design/implementation, HV-02/D6, and Groups 2-9 remain outstanding.
-      Nothing committed, pushed, merged, or released.
+      is required. Group 2a (D2 graceful service stop) is designed and implemented, Codex-approved (2026-10-01), and
+      committed locally (`ver=0.4.15`, units `KillMode=mixed`/`TimeoutStopSec=60`, 403 tests, 0 failures); it
+      closes only after one benign HV-01 on the corrected artifact. HV-02/D6 and the upgrade-lifecycle, dry-run/
+      status, config-grammar, removal, evidence-hardening, doc-sync and final-verification groups remain outstanding.
+      Group 1 is committed locally as `bf59ab0` (Group 0 evidence/status as `d8d7046`); Group 3
+      (APT bootstrap and publication, D3/L4) is committed locally as `34bed4e`, Codex-approved. Nothing is
+      pushed, merged, or released.
 - [ ] Fix `dev/CODEMAP.md` doc drift found during review-prep 2026-09-04/05 (not yet applied): the
       `tests/unit.sh` row still says "Layer-1 pure-helper asserts (1a-1g)" though the suite now runs
       sections through `1ah` plus `1g-bis`/`1l-bis`/`1x`; `iface_tags` is listed twice (once bundled

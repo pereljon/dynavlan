@@ -889,3 +889,18 @@ until corrected units exist so the package/lifecycle pass runs once against the 
 
 Evidence, canonical watcher reconstruction, and separately authorized cleanup procedure:
 `docs/superpowers/plans/2026-09-07-group0-d2-report-for-codex.md` (local-only, never push).
+
+## 2026-10-01 - D2 graceful stop (Group 2a): design approved, implemented locally
+
+Chosen: `KillMode=mixed` + `TimeoutStopSec=60` on both service units, and a SIGTERM trap (sets a flag and closes the unaccepted writer) in
+`apply_change` that also closes the unaccepted fifo writer, so a stop before ACCEPT reverts via the
+P2-validated EOF path and restores the prior owned file. The trap (not a flag check) is what closes the
+ACCEPT race: Bash runs traps between commands, never inside the confirming write. Under `mixed`, Bash
+exiting SIGKILLs a surviving `netplan try`, so Bash waits (bounded, `TRY_TIMEOUT + STOP_CHILD_MARGIN`) first;
+past that deadline it restores the file and exits, and systemd terminates the leftover (intentional
+uncertain-recovery fallback). After ACCEPT a stop keeps the change, runs removals, skips lease wait/restart/
+FR-40. OPERATOR-ACCEPTED LIMITATION: a skipped restart is only made up later when a still-unseen subnet exists
+and `RESTART_ON_NEW_SUBNET=true`; removal-only, already-seen `--reapply`, and `RESTART_ON_NEW_SUBNET=false`
+changes may never trigger it. Guaranteed catch-up would be a separately scoped feature, not part of D2. Exit
+code on a stop is 1. D2 closes only after the benign HV-01 passes on the corrected artifact. Design:
+`docs/superpowers/plans/2026-10-01-group2a-d2-graceful-stop-design.md`.

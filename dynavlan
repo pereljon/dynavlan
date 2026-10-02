@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.14"
+ver="0.4.15"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -37,6 +37,9 @@ APPLY_NOEVIDENCE_SETTLE=16                     # C2: larger floor for no-additio
                                                # first health sample lands post-apply, must stay <= TRY_TIMEOUT-2*POLL
                                                # - HEALTH_CONSEC*POLL so a no-addition change can still accept (tests §1y)
 HEALTH_CONSEC=2                                # consecutive health PASSes required to accept
+STOP_CHILD_MARGIN=15                           # D2: after a stop request, wait up to TRY_TIMEOUT + this for netplan try to exit
+                                               # (keep POLL_INTERVAL + TRY_TIMEOUT + this + 5 < TimeoutStopSec in both units; tests §1ao)
+STOP_REQUESTED=0                               # D2: set by the TERM trap inside apply_change; never a config key
 REAPPLY_LOCK_WAIT=300                          # FR-39: --reapply waits for an in-flight run (a rescan can legitimately take minutes)
 
 # Default log level so log() works before load_config; overwritten by config.
@@ -1208,12 +1211,56 @@ backend_validate() { # [ROOTDIR] - netplan generate; sets VALIDATE_ERRSRC/MSG on
 #      interfaces and restart the agent for a change that was never applied).
 #   3. HEALTH: post_apply_health PASSes on HEALTH_CONSEC consecutive samples.
 # On FAIL: write nothing AND keep the fifo write-end open until netplan try exits,
-# so it reverts via its own validated timeout path (stdin EOF behavior on early
-# close is NOT hardware-validated; do not exercise it). An independent wall-clock
-# guard bounds the whole interaction regardless of netplan try's own timer.
+# so it reverts via its own timeout path. EOF before confirmation is ALSO hardware-
+# validated (P2, 2026-08-06: the writer killed mid-apply, netplan try reverted ~4.3s
+# later) and is what a stop request deliberately uses (backend_stop_cleanup). An
+# independent wall-clock guard bounds the whole interaction regardless of netplan
+# try's own timer.
 # C2: with a probe iface the apply is observable (the netdev appears); without one
 # (removal-only / --reapply) nothing in the kernel changes during the try window, so
 # the floor must be conservative enough that the first health sample is post-apply.
+# D2: a service stop (SIGTERM, KillMode=mixed: main process only) before ACCEPT must
+# revert, never confirm. The trap only sets a flag and closes the UNACCEPTED fifo
+# writer (no other cleanup runs re-entrantly inside it): Bash runs a trap between commands, never inside the
+# confirming `printf`, so that write either already happened (accepted) or fails on the
+# closed descriptor (netplan try then sees EOF and reverts - the P2-validated path).
+# If TERM lands before the writer is opened it closes an unopened fd 9 and the later
+# `exec 9>` reopens it, so every stop path rechecks the flag and closes fd 9 itself.
+stop_requested() { [ "${STOP_REQUESTED:-0}" = 1 ]; }
+stop_trap_on() { trap 'STOP_REQUESTED=1; exec 9>&-' TERM; }
+stop_trap_off() { trap - TERM; }
+
+# Poll until PID is gone or LIMIT seconds pass -> 0 gone, 1 still alive. Deliberately
+# not `wait`: a trapped signal interrupts `wait` while the child is alive, which reads
+# as completion. Under KillMode=mixed Bash exiting also SIGKILLs a surviving child, so
+# callers must not return early while the child can still revert.
+wait_child_gone() { # PID LIMIT
+	local pid="$1" limit="$2" waited=0
+	while kill -0 "$pid" 2>/dev/null; do
+		[ "$waited" -ge "$limit" ] && return 1
+		sleep "$POLL_INTERVAL"
+		waited=$((waited + POLL_INTERVAL))
+	done
+	return 0
+}
+
+# Stop-requested exit from backend_apply_with_revert: confirmation is never written,
+# the writer is closed (idempotent) so netplan try reverts on EOF, and we stay alive
+# until it exits. Past the deadline the child is wedged: log it, return anyway (the
+# caller restores the prior file) and let systemd terminate the leftover.
+backend_stop_cleanup() { # TRYPID
+	local trypid="$1" try_rc
+	exec 9>&-
+	log notice "stop requested before ACCEPT; withdrew the confirmation writer, waiting for netplan try to revert"
+	if wait_child_gone "$trypid" $((TRY_TIMEOUT + STOP_CHILD_MARGIN)); then
+		wait "$trypid" 2>/dev/null
+		try_rc=$?
+		log notice "netplan try exited $try_rc after the stop request"
+	else
+		log err "netplan try still running $((TRY_TIMEOUT + STOP_CHILD_MARGIN))s after the stop request; live state uncertain - restoring the prior owned file and exiting, systemd will terminate the leftover"
+	fi
+}
+
 apply_settle_floor() { # PROBE_IFC -> seconds to settle before health sampling begins
 	if [ -n "$1" ]; then
 		printf '%s\n' "$APPLY_FALLBACK_SETTLE"
@@ -1236,16 +1283,28 @@ backend_apply_with_revert() { # SNAP_IFACE PROBE_IFC -> 0 accepted, 1 not accept
 	# by the revert itself (health would PASS!), and a buffered newline would land as
 	# a false ACCEPT for a change that was rolled back.
 	local accept_cutoff=$((TRY_TIMEOUT - 2 * POLL_INTERVAL))
+	if stop_requested; then
+		log notice "stop requested before the apply started; not launching netplan try"
+		return 1
+	fi
 	fifo=$(mktemp -u /run/dynavlan.fifo.XXXXXX)
 	mkfifo "$fifo" 2>/dev/null || {
 		log err "cannot create fifo $fifo"
 		return 1
 	}
+	if stop_requested; then # last check before anything is launched
+		rm -f "$fifo"
+		log notice "stop requested before the apply started; not launching netplan try"
+		return 1
+	fi
 	trap '' PIPE # accept-write must tolerate netplan try having already exited
 	netplan try --timeout "$TRY_TIMEOUT" <"$fifo" >/dev/null 2>&1 &
 	trypid=$!
 	exec 9>"$fifo" # open write end (unblocks netplan try's read-open)
 	while [ "$waited" -lt "$wall_guard" ]; do
+		# Checked after the open too: a TERM before it closed an unopened fd 9 and the
+		# open above reopened it. The stop cleanup below closes it again.
+		stop_requested && break
 		if ! kill -0 "$trypid" 2>/dev/null; then
 			log err "netplan try exited before accept (reverted or failed); not accepting"
 			break
@@ -1279,8 +1338,10 @@ backend_apply_with_revert() { # SNAP_IFACE PROBE_IFC -> 0 accepted, 1 not accept
 				consec=0
 			fi
 			if [ "$consec" -ge "$HEALTH_CONSEC" ]; then
-				if kill -0 "$trypid" 2>/dev/null; then # liveness re-check at the accept instant
-					printf '\n' >&9 2>/dev/null && accepted=1
+				# STOP and liveness re-checked at the accept instant; a TERM landing after
+				# these checks closes fd 9 (trap) so the write below fails instead of confirming.
+				if ! stop_requested && kill -0 "$trypid" 2>/dev/null; then
+					{ printf '\n' >&9; } 2>/dev/null && accepted=1
 				fi
 				break
 			fi
@@ -1294,24 +1355,33 @@ backend_apply_with_revert() { # SNAP_IFACE PROBE_IFC -> 0 accepted, 1 not accept
 		# C2 backstop: netplan try exits 0 on an accepted keep. A non-zero exit here
 		# means the apply we just committed reported failure - record it (FR-38 audit);
 		# it does not un-accept (the newline is already sent) but it must not be silent.
-		wait "$trypid" 2>/dev/null
-		try_rc=$?
-		[ "$try_rc" -ne 0 ] && log err "netplan try reported non-zero exit ($try_rc) after ACCEPT; applied state should be verified"
+		if wait_child_gone "$trypid" $((TRY_TIMEOUT + STOP_CHILD_MARGIN)); then
+			wait "$trypid" 2>/dev/null
+			try_rc=$?
+			[ "$try_rc" -ne 0 ] && log err "netplan try reported non-zero exit ($try_rc) after ACCEPT; applied state should be verified"
+		else
+			log err "netplan try still running after ACCEPT; applied state should be verified"
+		fi
 	else
 		# FAIL path: hold the write end OPEN so netplan try sees no EOF and reverts on
 		# its own timer (the hardware-validated path), bounded by an independent clock.
+		# A stop request ends the hold: the stop cleanup withdraws the writer instead.
 		waited=0
-		while kill -0 "$trypid" 2>/dev/null && [ "$waited" -lt "$wall_guard" ]; do
+		while ! stop_requested && kill -0 "$trypid" 2>/dev/null && [ "$waited" -lt "$wall_guard" ]; do
 			sleep "$POLL_INTERVAL"
 			waited=$((waited + POLL_INTERVAL))
 		done
-		exec 9>&-
-		if kill -0 "$trypid" 2>/dev/null; then
-			log err "netplan try still running after ${wall_guard}s post-decision; leaving it to its own revert; state uncertain"
+		if stop_requested; then
+			backend_stop_cleanup "$trypid"
 		else
-			wait "$trypid" 2>/dev/null
-			try_rc=$?
-			log info "netplan try exited $try_rc after revert/no-accept (expected non-zero on a timed revert)"
+			exec 9>&-
+			if kill -0 "$trypid" 2>/dev/null; then
+				log err "netplan try still running after ${wall_guard}s post-decision; leaving it to its own revert; state uncertain"
+			else
+				wait "$trypid" 2>/dev/null
+				try_rc=$?
+				log info "netplan try exited $try_rc after revert/no-accept (expected non-zero on a timed revert)"
+			fi
 		fi
 	fi
 	trap - PIPE
@@ -1553,9 +1623,14 @@ wait_leases() { # TOKENS (iface.id) - bounded, non-fatal wait for new-VLAN lease
 			iface_has_lease "$tok" || pending="$pending $tok"
 		done
 		[ -z "$pending" ] && break
+		stop_requested && break
 		sleep 1
 		waited=$((waited + 1))
 	done
+	if stop_requested; then
+		log notice "stop requested; lease wait cut short"
+		return 0
+	fi
 	for tok in $tokens; do
 		if iface_has_lease "$tok"; then
 			log info "VLAN $(tok_id "$tok") leased on $tok"
@@ -1566,9 +1641,16 @@ wait_leases() { # TOKENS (iface.id) - bounded, non-fatal wait for new-VLAN lease
 }
 
 restart_targets() { # -> rc 0 iff every target restarted (M6); also sets globals
-	local s rc=0 attempted=0 failed=0
+	local s rc=0 attempted=0 failed=0 halted=0
 	RESTARTED_THIS_RUN=1
 	for s in $RESTART_SNAPS; do
+		# D2: a stop request ends the pass between targets; one already started finishes.
+		if [ "$halted" -eq 0 ] && stop_requested; then
+			halted=1
+			rc=1
+			log notice "stop requested; not starting the remaining restarts"
+		fi
+		[ "$halted" -eq 1 ] && break
 		attempted=$((attempted + 1))
 		if snap restart "$s" >/dev/null 2>&1; then
 			log notice "restarted snap $s"
@@ -1579,6 +1661,12 @@ restart_targets() { # -> rc 0 iff every target restarted (M6); also sets globals
 		fi
 	done
 	for s in $RESTART_SERVICES; do
+		if [ "$halted" -eq 0 ] && stop_requested; then
+			halted=1
+			rc=1
+			log notice "stop requested; not starting the remaining restarts"
+		fi
+		[ "$halted" -eq 1 ] && break
 		attempted=$((attempted + 1))
 		if systemctl restart "$s" >/dev/null 2>&1; then
 			log notice "restarted service $s"
@@ -1680,7 +1768,19 @@ maybe_restart_on_new_subnet() {
 # Apply/rollback state machine (design §7) - the safety-critical chain
 # ---------------------------------------------------------------------------
 
+# D2 guarded region: from here until return, SIGTERM only sets STOP_REQUESTED (and revokes
+# the unaccepted confirmation writer); every step below runs to completion and observes
+# the flag at its own checkpoints. Outside this region TERM keeps Bash's default.
 apply_change() { # TARGET_TOKENS ADDITION_TOKENS REMOVAL_TOKENS [LEASE_TOKENS]
+	local rc
+	stop_trap_on
+	apply_change_run "$@"
+	rc=$?
+	stop_trap_off
+	return "$rc"
+}
+
+apply_change_run() { # TARGET_TOKENS ADDITION_TOKENS REMOVAL_TOKENS [LEASE_TOKENS]
 	local target="$1" additions="$2" removals="$3" lease_set="${4-$2}"
 	local snap_iface had_prior=0 tok probe=""
 	for tok in $additions; do
@@ -1707,6 +1807,10 @@ apply_change() { # TARGET_TOKENS ADDITION_TOKENS REMOVAL_TOKENS [LEASE_TOKENS]
 			log err "VLAN_ROUTES metric conflict: uplink default (${snap_iface:-?}) has metric ${snap_metric} but assigned VLAN metrics [${ROUTE_METRICS}] would match or beat it; raise VLAN_ROUTE_METRIC_START above the uplink metric. Refusing to apply, changing nothing"
 			return 1
 		fi
+	fi
+	if stop_requested; then
+		log notice "stop requested before any change; nothing applied"
+		return 1
 	fi
 	[ -f "$NETPLAN_FILE" ] && had_prior=1
 	if ! backup_current; then
@@ -1746,13 +1850,19 @@ apply_change() { # TARGET_TOKENS ADDITION_TOKENS REMOVAL_TOKENS [LEASE_TOKENS]
 				fi
 			fi
 		done
-		wait_leases "$lease_set"
-		restart_targets
+		# D2: after ACCEPT a stop request keeps the committed change and the (cheap,
+		# state-correcting) deletes above; the slow lease wait and agent restart are skipped.
+		stop_requested || wait_leases "$lease_set"
+		stop_requested || restart_targets
 		if [ "$unrecorded_delete_failure" -eq 1 ]; then
 			# L7: never follow the error above with a summary that contradicts it - a
 			# token that could not be confirmed removed AND could not be recorded for
 			# retry must never be reported as removed.
 			log err "reconcile only PARTIALLY applied on [${trunks:-none}]: added [${additions:-none}]; one or more removals in [${removals:-none}] could NOT be confirmed removed (see the prior error) - do not treat any token in the removal set as confirmed gone"
+			return 1
+		fi
+		if stop_requested; then
+			log warning "stop requested after ACCEPT: the change is committed and removals ran, but the lease wait and agent restart may have been skipped or cut short; the next reconcile restarts the agent only if a still-unseen new subnet exists and RESTART_ON_NEW_SUBNET=true"
 			return 1
 		fi
 		log notice "reconcile applied on [${trunks:-none}]: added [${additions:-none}] removed [${removals:-none}]"
@@ -2545,6 +2655,10 @@ main() {
 		fi
 		do_reapply
 		rc=$?
+		if stop_requested; then
+			log warning "run interrupted by a stop request"
+			rc=1
+		fi
 		log info "run end: mode=reapply rc=$rc"
 		return $rc
 		;;
@@ -2560,6 +2674,13 @@ main() {
 		fi
 		if [ "$mode" = --boot ]; then do_boot; else do_rescan; fi
 		rc=$?
+		if stop_requested; then
+			# The whole FR-40 pass is suppressed (it also calls restart_targets and writes
+			# the seen set): a stopped run must not restart agents or consume subnets.
+			log warning "run interrupted by a stop request; skipping the new-subnet restart pass"
+			log info "run end: mode=${mode#--} rc=1 (stop requested)"
+			return 1
+		fi
 		maybe_restart_on_new_subnet
 		log info "run end: mode=${mode#--} rc=$rc"
 		return $rc
