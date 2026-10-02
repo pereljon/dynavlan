@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.15"
+ver="0.4.16"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -27,6 +27,8 @@ build="source"
 CONF_FILE="/etc/dynavlan.conf"
 NETPLAN_FILE="/etc/netplan/90-dynavlan.yaml"   # FR-13: the one file we own
 LOCK_FILE="/run/dynavlan.lock"                 # FR-30: fd-held flock
+TIMER_DROPIN_DIR="/etc/systemd/system/dynavlan.timer.d" # --reconfigure renders the interval drop-in here
+SYSTEMD_RUN_DIR="/run/systemd/system"          # present only while systemd is the running init (sd_booted)
 BACKUP_DIR="/var/backups/dynavlan"             # FR-19: audit/history backups (outside /etc/netplan)
 MIN_NETPLAN="0.106"                            # FR-0: pinned minimum (Ubuntu 22.04 baseline)
 TRY_TIMEOUT=30                                 # FR-18: netplan try confirmation window (starts AFTER its apply)
@@ -2554,7 +2556,7 @@ render_timer_dropin() { # RESCAN_MINUTES -> drop-in file contents
 }
 
 do_reconfigure() { # render the timer interval drop-in from RESCAN_MINUTES
-	local dropdir="/etc/systemd/system/dynavlan.timer.d"
+	local dropdir="$TIMER_DROPIN_DIR"
 	mkdir -p "$dropdir" 2>/dev/null || {
 		log err "cannot create $dropdir"
 		return 1
@@ -2563,7 +2565,17 @@ do_reconfigure() { # render the timer interval drop-in from RESCAN_MINUTES
 		log err "failed to write $dropdir/interval.conf"
 		return 1
 	}
-	systemctl daemon-reload 2>/dev/null
+	# D10: a failed reload means systemd still runs the OLD interval, so it must not be
+	# reported as success. Skipped only where no manager is running (chroot/container),
+	# a failed reload on a running manager is never treated as absence.
+	if [ -d "$SYSTEMD_RUN_DIR" ]; then
+		systemctl daemon-reload || {
+			log err "systemctl daemon-reload failed; the new timer interval is NOT active until it succeeds"
+			return 1
+		}
+	else
+		log info "systemd is not running; skipping daemon-reload"
+	fi
 	log notice "timer interval set to ${RESCAN_MINUTES}min ($dropdir/interval.conf)"
 	return 0
 }

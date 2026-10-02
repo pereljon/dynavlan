@@ -12,6 +12,26 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ### Fixed
 
+- Upgrade and install lifecycle (`ver=` 0.4.15 -> 0.4.16). `install.sh` no longer
+  re-enables a unit you left disabled: it captures the enabled/active state of both
+  units first and restores each independently; only a first-ever install enables by
+  default. It now treats a timer that cannot be stopped *and verified inactive* as
+  fatal before replacing anything, exits non-zero when a previously running timer
+  cannot be restarted (instead of reporting success), keeps the original failure status
+  when its own restoration also fails, and neutralizes the removed `PER_VLAN_MAC` key
+  before the new script loads the config. The package gains a `preinst` (capture,
+  quiesce and run-lock wait before unpack, which also covers the first dpkg install over
+  a manual deployment, where no outgoing `prerm` exists); `prerm` handles
+  `failed-upgrade` instead of silently bypassing quiescence; `postrm` restores the
+  timer on `abort-install`/`abort-upgrade`; and `postinst` keeps the prior-state record
+  when configuration fails, restarts only a previously running timer, and reports that
+  this is not a rollback. The record is validated (exactly three 0/1 fields) before any
+  reuse, and a record is trusted only as a genuine handoff within the same dpkg run
+  (recorded owner), so an unrelated leftover cannot override the current posture;
+  quiescence is always taken from the live timer state, never from the record. A failed
+  restoration keeps the record and is reported. `dynavlan --reconfigure` now returns non-zero when `systemctl daemon-reload`
+  fails instead of logging success, and the package and installer propagate it. Removal
+  and purge behavior is unchanged.
 - Stopping `dynavlan.service` or `dynavlan-rescan.service` (or a start timeout) during a
   live `netplan try` window no longer leaves an unconfirmed change applied. Both units now
   use `KillMode=mixed` with `TimeoutStopSec=60`, and the run handles SIGTERM before ACCEPT:

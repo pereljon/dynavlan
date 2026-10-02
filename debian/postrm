@@ -1,6 +1,24 @@
 #!/bin/bash
 set -e
 
+STATE_FILE="/run/dynavlan/upgrade-state"
+SYSTEMD_RUN="/run/systemd/system"
+
+warn() { printf 'dynavlan postrm: WARNING: %s\n' "$*" >&2; }
+
+systemd_running() { [ -d "$SYSTEMD_RUN" ]; }
+
+# Sourced-style record check: only a record with exactly the three 0/1 fields counts.
+state_valid() { # FILE
+	local k
+	[ -f "$1" ] || return 1
+	for k in svc_enabled tmr_enabled tmr_active; do
+		[ "$(grep -c "^$k=[01]\$" "$1")" = 1 ] || return 1
+	done
+	[ "$(grep -c '^owner=' "$1")" -le 1 ] || return 1
+	! grep -qvE '^(svc_enabled|tmr_enabled|tmr_active)=[01]$|^owner=[0-9]+$' "$1"
+}
+
 case "$1" in
 purge)
     rm -f /etc/dynavlan.conf
@@ -10,6 +28,27 @@ purge)
     ;;
 remove)
     systemctl daemon-reload 2>/dev/null || true
+    ;;
+abort-install|abort-upgrade)
+    # The unpack failed after preinst/prerm stopped the timer. Nothing was
+    # reconfigured, so only the run state needs putting back. The record is discarded
+    # only after a COMPLETED restoration (dpkg will not retry the configure step from
+    # here); if the restart fails it is kept as the only trace of the posture, and this
+    # hook reports the failure instead of succeeding.
+    restored=1
+    if systemd_running && state_valid "$STATE_FILE"; then
+        if [ "$(sed -n 's/^tmr_active=//p' "$STATE_FILE")" = 1 ]; then
+            if ! systemctl start dynavlan.timer; then
+                restored=0
+                warn "could not restart dynavlan.timer after the aborted operation; start it manually. The prior-state record $STATE_FILE is kept."
+            fi
+        fi
+    fi
+    if [ "$restored" = 1 ]; then
+        rm -f "$STATE_FILE"
+    else
+        exit 1
+    fi
     ;;
 esac
 

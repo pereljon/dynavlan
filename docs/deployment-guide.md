@@ -47,12 +47,27 @@ box. A box already installed via `.deb` or `install.sh` needs no reinstall:
 adding the keyring + source is enough, since apt recognizes the existing
 install by package name/version.
 
-An upgrade preserves the timer/service state you left them in: if you had
-`systemctl disable`d or stopped `dynavlan.timer`, the upgrade will not silently
-re-enable or re-start it. (The one exception is the first upgrade onto a build
-carrying this behavior from an older package: the outgoing package cannot record
-the timer's running state, so that first upgrade restarts a timer that was
-stopped-but-still-*enabled*; a *disabled* timer is never re-enabled or started.)
+An upgrade preserves the timer/service state you left them in, for both the
+package and `install.sh`: each of `dynavlan.service` and `dynavlan.timer` keeps
+its own enabled/disabled state, and only a timer that was running is restarted. A
+unit you `systemctl disable`d is not re-enabled, and a timer that was enabled but
+stopped is not started. Only a first-ever install enables both units by default
+(and never starts them). The same holds when the package is first installed over
+a manual `install.sh` deployment: its posture is captured before anything is
+replaced.
+
+Before replacing the script, the upgrade stops the timer, verifies it is inactive,
+and waits (up to 300 s) for any in-flight run to finish; if the timer cannot be
+stopped and verified, or a run still holds the lock, the upgrade stops without
+replacing anything and puts the timer back. If configuration fails after the files
+are unpacked, dpkg leaves the package half-configured (this is not a rollback): a
+previously running timer is restarted, the recorded state is kept, and
+`sudo dpkg --configure dynavlan` retries from it. Two cases cannot restore an
+exact running state, and both say so in the upgrade output: an upgrade from a package
+older than 0.4.1 (which never recorded it) estimates the timer was running if it is
+enabled; and if a recording package left no usable record, the timer's prior run
+state is reported as unknown and the timer is left as found, not restarted.) A manual `dynavlan`
+run started between the lock wait and the file replacement is not prevented.
 
 **Alternatives**, for cases apt doesn't cover:
 

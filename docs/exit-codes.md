@@ -44,7 +44,7 @@ Every terminal exit path, with `dynavlan` line references.
 - non-root → **1**; detection prerequisite missing (M8) → **1** (`detected trunks: unavailable`); otherwise → **0**, including a genuinely quiet wire
 
 ### `--reconfigure` — `do_reconfigure` (…-2344)
-- cannot create drop-dir → **1** (2335-2336); write failure → **1** (2339-2340); success → **0** (2344); non-root → **1** (main)
+- cannot create drop-dir → **1**; write failure → **1**; `systemctl daemon-reload` failure (the new timer interval is not active) → **1**; success → **0** (the reload is skipped, not failed, only where systemd is positively absent); non-root → **1** (main)
 
 ### `--dry-run` — `do_dryrun`
 - validation pass or nothing-to-do → **0**; validation rejection (M3) → **1**; early refusals → **1** (`vstatus` is only ever 0 or 1)

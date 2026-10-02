@@ -1,79 +1,133 @@
 #!/bin/bash
 set -e
 
+STATE_FILE="/run/dynavlan/upgrade-state"
+SYSTEMD_RUN="/run/systemd/system"
+SBIN="/usr/local/sbin/dynavlan"
+CONF="/etc/dynavlan.conf"
+JOURNALD_DIR="/etc/systemd/journald.conf.d"
+JOURNAL_DIR="/var/log/journal"
+UNIT_ETC="/etc/systemd/system"
+UNIT_LIB="/lib/systemd/system"
+
+warn() { printf 'dynavlan postinst: WARNING: %s\n' "$*" >&2; }
+
+systemd_running() { [ -d "$SYSTEMD_RUN" ]; }
+
+# A record is trusted only when it holds exactly the three 0/1 fields (it is read, never sourced).
+state_valid() { # FILE
+	local k
+	[ -f "$1" ] || return 1
+	for k in svc_enabled tmr_enabled tmr_active; do
+		[ "$(grep -c "^$k=[01]\$" "$1")" = 1 ] || return 1
+	done
+	[ "$(grep -c '^owner=' "$1")" -le 1 ] || return 1
+	! grep -qvE '^(svc_enabled|tmr_enabled|tmr_active)=[01]$|^owner=[0-9]+$' "$1"
+}
+
+PRIOR_ACTIVE=0
+CONFIG_DONE=0
+if systemd_running && state_valid "$STATE_FILE"; then
+	PRIOR_ACTIVE=$(sed -n 's/^tmr_active=//p' "$STATE_FILE")
+fi
+
+# dpkg does not unwind a failed configure, and `dpkg --configure` retries without
+# rerunning preinst/prerm. So on failure: keep the record (the retry needs it), put a
+# previously ACTIVE timer back (never start one that was inactive, never on a fresh
+# install), keep the original failure status, and say plainly this is not a rollback.
+on_exit() {
+	local rc=$?
+	if [ "$rc" -ne 0 ] && [ "$CONFIG_DONE" != 1 ]; then
+		warn "configuration failed (exit $rc). This is NOT a rollback: the new package files stay unpacked and dpkg leaves dynavlan half-configured; fix the cause and run 'dpkg --configure dynavlan'."
+		if [ "$PRIOR_ACTIVE" = 1 ] && systemd_running; then
+			systemctl start dynavlan.timer ||
+				warn "could not restart dynavlan.timer; start it manually"
+		fi
+		[ -f "$STATE_FILE" ] && warn "the prior-state record $STATE_FILE is kept for the retry"
+	fi
+	exit "$rc"
+}
+
 case "$1" in
 configure)
-    # Persistent journald (FR-31)
-    mkdir -p /etc/systemd/journald.conf.d
-    cat >/etc/systemd/journald.conf.d/00-dynavlan-persistent.conf <<'JEOF'
+	trap on_exit EXIT
+
+	# Persistent journald (FR-31)
+	mkdir -p "$JOURNALD_DIR"
+	cat >"$JOURNALD_DIR/00-dynavlan-persistent.conf" <<'JEOF'
 # Installed by dynavlan (FR-31): guarantee the journal survives reboot.
 [Journal]
 Storage=persistent
 JEOF
-    mkdir -p /var/log/journal
-    systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
-    systemctl restart systemd-journald 2>/dev/null || true
+	mkdir -p "$JOURNAL_DIR"
+	systemd-tmpfiles --create --prefix "$JOURNAL_DIR" >/dev/null 2>&1 || true
+	systemctl restart systemd-journald 2>/dev/null || true
 
-    # Migration from install.sh: it placed units in /etc/systemd/system/ which
-    # shadows the package copies in /lib/systemd/system/. Remove the old ones.
-    for unit in dynavlan.service dynavlan-rescan.service dynavlan.timer; do
-        if [ -f "/etc/systemd/system/$unit" ] && [ -f "/lib/systemd/system/$unit" ]; then
-            rm -f "/etc/systemd/system/$unit"
-        fi
-    done
+	# Migration from install.sh: it placed units in /etc/systemd/system/ which
+	# shadows the package copies in /lib/systemd/system/. Remove the old ones.
+	for unit in dynavlan.service dynavlan-rescan.service dynavlan.timer; do
+		if [ -f "$UNIT_ETC/$unit" ] && [ -f "$UNIT_LIB/$unit" ]; then
+			rm -f "$UNIT_ETC/$unit"
+		fi
+	done
 
-    # Migration: PER_VLAN_MAC was a reserved, never-implemented key, removed in
-    # 0.4.3. It is no longer allowlisted, so an uncommented PER_VLAN_MAC= line in
-    # an existing conffile would now refuse the whole config load (fail-to-no-op).
-    # Neutralize any such line in place. Idempotent; a stock (commented) template
-    # and a fresh install are unaffected.
-    if [ -f /etc/dynavlan.conf ]; then
-        sed -i -E 's/^([[:space:]]*)(PER_VLAN_MAC[[:space:]]*=)/\1# (removed in 0.4.3) \2/' /etc/dynavlan.conf
-    fi
+	# Migration: PER_VLAN_MAC was a reserved, never-implemented key, removed in
+	# 0.4.3. It is no longer allowlisted, so an uncommented PER_VLAN_MAC= line in
+	# an existing conffile would now refuse the whole config load (fail-to-no-op).
+	# Neutralize any such line in place. Idempotent; a stock (commented) template
+	# and a fresh install are unaffected.
+	if [ -f "$CONF" ]; then
+		sed -i -E 's/^([[:space:]]*)(PER_VLAN_MAC[[:space:]]*=)/\1# (removed in 0.4.3) \2/' "$CONF"
+	fi
 
-    # Reload units and render timer interval
-    systemctl daemon-reload
-    /usr/local/sbin/dynavlan --reconfigure 2>/dev/null || true
+	# Reload units and render timer interval. Failures propagate (D10): reporting
+	# success while systemd still runs the old units or interval is the defect.
+	if systemd_running; then
+		systemctl daemon-reload
+	fi
+	"$SBIN" --reconfigure
 
-    if [ -z "$2" ]; then
-        # First install ($2 empty): enable both for next boot; never start (an
-        # install must not trigger a network change).
-        systemctl enable dynavlan.service 2>/dev/null || true
-        systemctl enable dynavlan.timer 2>/dev/null || true
-    else
-        # Upgrade: restore the operator's EXACT prior enable/active state (captured
-        # by prerm), never re-arm a unit they deliberately disabled. If the state
-        # file is missing (upgrade FROM a pre-H3 package whose prerm did not record
-        # it), fall back to LIVE state: prerm's `systemctl stop` clears neither
-        # unit's enablement, so is-enabled still reflects the operator's choice and
-        # we must not re-enable OR start a disabled unit. The prior RUNNING state is
-        # unrecoverable in that transitional case (the timer is already stopped), so
-        # infer it from enablement: an enabled timer is assumed to have been running
-        # (preserve-running), a disabled timer is never started - tmr_active follows
-        # tmr_enabled. Hardware-validated (L3-37): a disabled+stopped timer stays
-        # disabled AND inactive across the transitional upgrade.
-        systemctl is-enabled --quiet dynavlan.service 2>/dev/null && svc_enabled=1 || svc_enabled=0
-        systemctl is-enabled --quiet dynavlan.timer   2>/dev/null && tmr_enabled=1 || tmr_enabled=0
-        tmr_active="$tmr_enabled"
-        [ -f /run/dynavlan/upgrade-state ] && . /run/dynavlan/upgrade-state
+	if systemd_running; then
+		if state_valid "$STATE_FILE"; then
+			# Upgrade or manual->package migration: restore the operator's EXACT prior
+			# posture, recorded before anything was stopped or replaced.
+			svc_enabled=$(sed -n 's/^svc_enabled=//p' "$STATE_FILE")
+			tmr_enabled=$(sed -n 's/^tmr_enabled=//p' "$STATE_FILE")
+			tmr_active=$(sed -n 's/^tmr_active=//p' "$STATE_FILE")
+			if [ "$svc_enabled" = 1 ]; then
+				systemctl enable dynavlan.service
+			else
+				systemctl disable dynavlan.service
+			fi
+			if [ "$tmr_enabled" = 1 ]; then
+				systemctl enable dynavlan.timer
+			else
+				systemctl disable dynavlan.timer
+			fi
+			if [ "$tmr_active" = 1 ]; then
+				systemctl start dynavlan.timer
+			fi
+		elif [ -z "$2" ]; then
+			# First install: enable both for next boot; never start (an install must
+			# not trigger a network change).
+			systemctl enable dynavlan.service || warn "could not enable dynavlan.service"
+			systemctl enable dynavlan.timer || warn "could not enable dynavlan.timer"
+		else
+			# An upgrade with no record (preinst did not produce one). Do not invent a
+			# posture silently: keep whatever enablement is live, never start or
+			# re-enable anything, and say so.
+			warn "no prior-state record for this upgrade; leaving the services' enablement and run state exactly as found"
+		fi
+	elif [ -z "$2" ]; then
+		systemctl enable dynavlan.service 2>/dev/null || true
+		systemctl enable dynavlan.timer 2>/dev/null || true
+	fi
 
-        if [ "${svc_enabled:-1}" = 1 ]; then
-            systemctl enable dynavlan.service 2>/dev/null || true
-        else
-            systemctl disable dynavlan.service 2>/dev/null || true
-        fi
-        if [ "${tmr_enabled:-1}" = 1 ]; then
-            systemctl enable dynavlan.timer 2>/dev/null || true
-        else
-            systemctl disable dynavlan.timer 2>/dev/null || true
-        fi
-        if [ "${tmr_active:-1}" = 1 ]; then
-            systemctl start dynavlan.timer 2>/dev/null || true
-        fi
-
-        rm -f /run/dynavlan/upgrade-state
-    fi
-    ;;
+	# Success: the posture is restored, so the record has done its job. (A failure
+	# above exits through on_exit and keeps it.)
+	CONFIG_DONE=1
+	rm -f "$STATE_FILE"
+	;;
 esac
 
 #DEBHELPER#

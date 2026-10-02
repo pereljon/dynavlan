@@ -2942,6 +2942,100 @@ unset -f _d2_netplan _d2_env _d2_shadow_stop _d2_wait_start _d2_has _d2_absent _
 unset _d2_dir _d2_ev _d2_log _d2_res _d2_u
 
 # ---------------------------------------------------------------------------
+# 1ap. do_reconfigure must not report success when systemd did not reload (D10).
+# ---------------------------------------------------------------------------
+
+_rc_dir=$(mktemp -d)
+_rc_saved_drop="$TIMER_DROPIN_DIR"
+_rc_saved_run="$SYSTEMD_RUN_DIR"
+_rc_saved_min="${RESCAN_MINUTES:-}"
+TIMER_DROPIN_DIR="$_rc_dir/dropin"
+SYSTEMD_RUN_DIR="$_rc_dir/run"
+RESCAN_MINUTES=5
+mkdir -p "$SYSTEMD_RUN_DIR"
+
+systemctl() { return 5; }
+_rc_out=$(do_reconfigure 2>&1)
+_rc_rc=$?
+tests=$((tests + 1))
+if [ "$_rc_rc" -ne 0 ] && [ -f "$TIMER_DROPIN_DIR/interval.conf" ]; then
+	printf 'ok   - %s\n' "1ap do_reconfigure returns non-zero when daemon-reload fails (drop-in still written)"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       rc=%s out=[%s]\n' "1ap do_reconfigure returns non-zero when daemon-reload fails" "$_rc_rc" "$_rc_out"
+fi
+tests=$((tests + 1))
+case "$_rc_out" in
+*"NOT active until it succeeds"*) printf 'ok   - %s\n' "1ap do_reconfigure names the unreloaded interval" ;;
+*)
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       got [%s]\n' "1ap do_reconfigure names the unreloaded interval" "$_rc_out"
+	;;
+esac
+tests=$((tests + 1))
+case "$_rc_out" in
+*"timer interval set to"*)
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       a failed reload still logged success: [%s]\n' "1ap do_reconfigure never logs success after a failed reload" "$_rc_out"
+	;;
+*) printf 'ok   - %s\n' "1ap do_reconfigure never logs success after a failed reload" ;;
+esac
+
+systemctl() { return 0; }
+_rc_out=$(do_reconfigure 2>&1)
+_rc_rc=$?
+tests=$((tests + 1))
+if [ "$_rc_rc" -eq 0 ]; then
+	printf 'ok   - %s\n' "1ap do_reconfigure succeeds when the reload succeeds"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       rc=%s out=[%s]\n' "1ap do_reconfigure succeeds when the reload succeeds" "$_rc_rc" "$_rc_out"
+fi
+
+# No manager running (chroot/container): the reload is skipped, not treated as a failure.
+rmdir "$SYSTEMD_RUN_DIR"
+systemctl() { return 5; }
+_rc_out=$(do_reconfigure 2>&1)
+_rc_rc=$?
+tests=$((tests + 1))
+if [ "$_rc_rc" -eq 0 ]; then
+	printf 'ok   - %s\n' "1ap do_reconfigure skips the reload only where systemd is positively absent"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       rc=%s out=[%s]\n' "1ap do_reconfigure skips the reload only where systemd is positively absent" "$_rc_rc" "$_rc_out"
+fi
+
+unset -f systemctl
+TIMER_DROPIN_DIR="$_rc_saved_drop"
+SYSTEMD_RUN_DIR="$_rc_saved_run"
+RESCAN_MINUTES="$_rc_saved_min"
+rm -rf "$_rc_dir"
+unset _rc_dir _rc_saved_drop _rc_saved_run _rc_saved_min _rc_out _rc_rc
+
+# ---------------------------------------------------------------------------
+# 1aq. Upgrade/systemd lifecycle (Group 2): the real maintainer scripts and install.sh
+#      run as subprocesses; see tests/lifecycle.sh. Its counts are folded in here so
+#      `bash tests/unit.sh` stays the single gate.
+# ---------------------------------------------------------------------------
+
+_lc_out=$(bash "${here}/lifecycle.sh" 2>&1)
+_lc_rc=$?
+printf '%s\n' "$_lc_out" | grep -v '^[0-9]* tests, [0-9]* failures$' | grep -v '^$'
+_lc_sum=$(printf '%s\n' "$_lc_out" | grep '^[0-9]* tests, [0-9]* failures$' | tail -1)
+_lc_t=${_lc_sum%% tests*}
+_lc_f=${_lc_sum#*, }
+_lc_f=${_lc_f%% failures*}
+if [ -z "$_lc_sum" ]; then
+	tests=$((tests + 1))
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       tests/lifecycle.sh produced no summary (rc=%s)\n' "1aq lifecycle suite ran to completion" "$_lc_rc"
+else
+	tests=$((tests + _lc_t))
+	fails=$((fails + _lc_f))
+fi
+unset _lc_out _lc_rc _lc_sum _lc_t _lc_f
+
+# ---------------------------------------------------------------------------
 
 printf '\n%s tests, %s failures\n' "$tests" "$fails"
 [ "$fails" -eq 0 ]

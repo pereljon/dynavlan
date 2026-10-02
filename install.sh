@@ -18,10 +18,19 @@ SBIN="/usr/local/sbin/dynavlan"
 CONF="/etc/dynavlan.conf"
 UNIT_DIR="/etc/systemd/system"
 JOURNALD_DROPIN="/etc/systemd/journald.conf.d/00-dynavlan-persistent.conf"
+JOURNAL_DIR="/var/log/journal"
 LOCK_FILE="/run/dynavlan.lock"   # FR-30: the same lock dynavlan runs hold
 LOCK_WAIT=300                    # a rescan can legitimately run for minutes (sniff + try window + leases)
+SYSTEMD_RUN="/run/systemd/system"
+UNIT_LIB="/lib/systemd/system"
 
+# Posture captured BEFORE anything is stopped or replaced (D8): a deliberately disabled
+# unit must stay disabled, and only a first-ever install enables by default.
 TIMER_WAS_ACTIVE=0
+TIMER_RESTARTED=0
+PRIOR_SVC_ENABLED=0
+PRIOR_TMR_ENABLED=0
+FRESH_INSTALL=1
 
 say() { printf '[install] %s\n' "$*"; }
 die() {
@@ -37,16 +46,65 @@ die() {
 # timer restore with it - a stopped rescan timer being precisely the failure this
 # exists to prevent. Anything else needing cleanup goes in here, not in a new trap.
 STAMPED=""
-cleanup() {
-	[ -n "$STAMPED" ] && rm -f "$STAMPED"
-	if [ "$TIMER_WAS_ACTIVE" -eq 1 ]; then
-		say "restarting dynavlan.timer"
-		systemctl start dynavlan.timer ||
-			printf '[install] ERROR: could not restart dynavlan.timer; start it manually\n' >&2
+
+# Idempotent: clears TIMER_WAS_ACTIVE only once the timer is actually running again.
+restore_timer() {
+	[ "$TIMER_WAS_ACTIVE" -eq 1 ] || return 0
+	say "restarting dynavlan.timer"
+	if systemctl start dynavlan.timer; then
+		TIMER_WAS_ACTIVE=0
+		TIMER_RESTARTED=1
+		return 0
 	fi
-	return 0
+	printf '[install] ERROR: could not restart dynavlan.timer; start it manually\n' >&2
+	return 1
+}
+
+# The original exit status is kept: a body failure is never replaced by a restore
+# failure. A restore failure only changes the status when the body itself succeeded
+# (L5): a timer that was running and is not running again is not a successful upgrade.
+cleanup() {
+	local rc=$?
+	# A failed temp-file removal must not end this handler (set -e applies here too):
+	# the timer restoration below is the part that matters, and the original status stays.
+	if [ -n "$STAMPED" ] && ! rm -f "$STAMPED"; then
+		printf '[install] WARNING: could not remove the temporary file %s\n' "$STAMPED" >&2
+	fi
+	if ! restore_timer && [ "$rc" -eq 0 ]; then
+		rc=1
+	fi
+	exit "$rc"
 }
 trap cleanup EXIT
+
+# Positively absent manager (chroot/container) is the only reason to skip the posture
+# work; a failed query is never treated as absence.
+systemd_running() { [ -d "$SYSTEMD_RUN" ]; }
+unit_exists() { [ -e "$UNIT_DIR/$1" ] || [ -e "$UNIT_LIB/$1" ]; }
+
+unit_enabled() { # UNIT -> 1/0, or return 1 when it cannot be determined
+	local out
+	unit_exists "$1" || {
+		echo 0
+		return 0
+	}
+	out=$(systemctl is-enabled "$1" 2>/dev/null) || true
+	case "$out" in
+	enabled | enabled-runtime | static | indirect | generated | alias) echo 1 ;;
+	disabled | masked | masked-runtime) echo 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+timer_active() { # -> 1/0, or return 1 when it cannot be determined
+	local out
+	out=$(systemctl is-active dynavlan.timer 2>/dev/null) || true
+	case "$out" in
+	active | activating | reloading) echo 1 ;;
+	inactive | failed) echo 0 ;;
+	*) return 1 ;;
+	esac
+}
 
 [ "$(id -u)" -eq 0 ] || die "must run as root (use sudo)"
 
@@ -79,10 +137,25 @@ fi
 #    Without (b) the script file is rewritten under a live `dynavlan --rescan`; bash
 #    reads a script lazily by file offset, so the running invocation would execute
 #    garbage or stop mid-logic, possibly between `netplan try` and its confirmation.
-if systemctl is-active --quiet dynavlan.timer 2>/dev/null; then
-	TIMER_WAS_ACTIVE=1
-	say "stopping dynavlan.timer for the duration of the install"
-	systemctl stop dynavlan.timer
+if systemd_running; then
+	# Capture the complete posture first; a failure here aborts while nothing has been
+	# touched, so the old state is still intact and recoverable.
+	PRIOR_SVC_ENABLED=$(unit_enabled dynavlan.service) ||
+		die "cannot determine whether dynavlan.service is enabled; refusing to continue"
+	PRIOR_TMR_ENABLED=$(unit_enabled dynavlan.timer) ||
+		die "cannot determine whether dynavlan.timer is enabled; refusing to continue"
+	prior_active=$(timer_active) ||
+		die "cannot determine whether dynavlan.timer is active; refusing to continue"
+	if unit_exists dynavlan.service || unit_exists dynavlan.timer; then
+		FRESH_INSTALL=0
+	fi
+	if [ "$prior_active" = 1 ]; then
+		TIMER_WAS_ACTIVE=1 # set before the stop so every later abort restores it
+		say "stopping dynavlan.timer for the duration of the install"
+		systemctl stop dynavlan.timer || die "could not stop dynavlan.timer; refusing to replace the script"
+		[ "$(timer_active || echo unknown)" = 0 ] ||
+			die "dynavlan.timer is still active, or its state cannot be verified, after stop; refusing to replace the script"
+	fi
 fi
 
 say "waiting for any in-flight dynavlan run to finish (FR-30 lock, up to ${LOCK_WAIT}s)"
@@ -150,6 +223,14 @@ grep -q "^build=\"$build_id\"\$" "$STAMPED" ||
 	die "build stamp did not apply (no build= line matched); refusing to install an unstamped script"
 bash -n "$STAMPED" || die "the stamped script failed a syntax check; refusing to install it"
 
+# L15: PER_VLAN_MAC was a reserved key removed in 0.4.3 and is no longer allowlisted, so an
+# old uncommented line would make the NEW script refuse the config at --reconfigure below
+# and abort this install partway. Neutralize it before the new script ever loads the
+# config (same idempotent edit as the package's postinst; a stock config is unchanged).
+if [ -f "$CONF" ]; then
+	sed -i -E 's/^([[:space:]]*)(PER_VLAN_MAC[[:space:]]*=)/\1# (removed in 0.4.3) \2/' "$CONF"
+fi
+
 install -m 0755 -o root -g root "$STAMPED" "$SBIN"
 
 # 4. Config template (never clobber an existing operator config).
@@ -175,8 +256,8 @@ cat >"$JOURNALD_DROPIN" <<'EOF'
 [Journal]
 Storage=persistent
 EOF
-mkdir -p /var/log/journal
-systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
+mkdir -p "$JOURNAL_DIR"
+systemd-tmpfiles --create --prefix "$JOURNAL_DIR" >/dev/null 2>&1 || true
 systemctl restart systemd-journald
 
 # 7. Render the timer interval from RESCAN_MINUTES and reload.
@@ -191,12 +272,31 @@ systemctl daemon-reload
 #    change. On an upgrade the timer was already running, so cleanup puts it
 #    back exactly as it was found; that is the operator's existing posture, not a new
 #    change, but it does mean the new code rescans within RESCAN_MINUTES.
-say "enabling dynavlan.service (boot) and dynavlan.timer (rescan) for next boot"
-systemctl enable dynavlan.service
-systemctl enable dynavlan.timer
+if [ "$FRESH_INSTALL" -eq 1 ]; then
+	say "first install: enabling dynavlan.service (boot) and dynavlan.timer (rescan) for next boot"
+	systemctl enable dynavlan.service
+	systemctl enable dynavlan.timer
+else
+	# D8: an upgrade restores the prior enablement of each unit independently; a unit the
+	# operator left disabled is not re-armed.
+	if [ "$PRIOR_SVC_ENABLED" = 1 ]; then
+		systemctl enable dynavlan.service
+	else
+		say "dynavlan.service was disabled; leaving it disabled"
+	fi
+	if [ "$PRIOR_TMR_ENABLED" = 1 ]; then
+		systemctl enable dynavlan.timer
+	else
+		say "dynavlan.timer was disabled; leaving it disabled"
+	fi
+fi
 
-# The swap is complete; a queued run may proceed. The timer is restored by the trap.
+# The swap is complete; a queued run may proceed.
 exec 9>&-
+
+# Restore the run state BEFORE announcing success (L5): a timer that was running and
+# cannot be restarted makes the install fail, it is not reported as done.
+restore_timer || die "dynavlan.timer was running before this install and could not be restarted; start it manually"
 
 say "done."
 cat <<EOF
@@ -219,10 +319,10 @@ Next steps:
 
 EOF
 
-if [ "$TIMER_WAS_ACTIVE" -eq 1 ]; then
+if [ "$TIMER_RESTARTED" -eq 1 ]; then
 	cat <<EOF
-This was an upgrade: the rescan timer was running before and is restarted as this
-installer exits, so the NEW code will rescan (add-only) within RESCAN_MINUTES. Run the --dry-run
+This was an upgrade: the rescan timer was running before and has been restarted, so the
+NEW code will rescan (add-only) within RESCAN_MINUTES. Run the --dry-run
 above now if you want to see what it will do before it does it. To hold it off:
      sudo systemctl stop dynavlan.timer
 EOF

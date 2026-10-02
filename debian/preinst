@@ -1,0 +1,205 @@
+#!/bin/bash
+# preinst: runs BEFORE dpkg unpacks the new files.
+#
+# Why this exists: a manual (install.sh) -> package migration has no outgoing prerm,
+# and postinst runs after the unpack has already replaced the executable, so neither
+# can capture the operator's posture or quiesce the timer before the swap. This is
+# the only hook that runs in time for that case.
+#
+# Two separate questions, never conflated:
+#   * RESTORATION posture (what to put back afterwards) comes from the record.
+#   * QUIESCENCE (is the timer stopped NOW) is always established from the live state,
+#     whatever the record says: a record can be stale or wrong, a running timer cannot.
+set -e
+
+LOCK_FILE="/run/dynavlan.lock"
+LOCK_WAIT=300
+STATE_DIR="/run/dynavlan"
+STATE_FILE="/run/dynavlan/upgrade-state"
+SYSTEMD_RUN="/run/systemd/system"
+UNIT_ETC="/etc/systemd/system"
+UNIT_LIB="/lib/systemd/system"
+LEGACY_BEFORE="0.4.1" # first released package whose prerm wrote a record
+OWNER_SINCE="0.4.16"  # first package whose records carry an owner
+
+STOPPED=0
+
+say() { printf 'dynavlan preinst: %s\n' "$*"; }
+warn() { printf 'dynavlan preinst: WARNING: %s\n' "$*" >&2; }
+
+# Positively absent manager (chroot, container) is the only reason to skip systemd
+# work; a degraded/starting manager still counts as running, and a failed query is
+# never treated as absence.
+systemd_running() { [ -d "$SYSTEMD_RUN" ]; }
+
+unit_exists() { [ -e "$UNIT_ETC/$1" ] || [ -e "$UNIT_LIB/$1" ]; }
+
+# Prints 1/0; returns 1 when the state cannot be determined.
+unit_enabled() { # UNIT
+	local out
+	unit_exists "$1" || {
+		echo 0
+		return 0
+	}
+	out=$(systemctl is-enabled "$1" 2>/dev/null) || true
+	case "$out" in
+	enabled | enabled-runtime | static | indirect | generated | alias) echo 1 ;;
+	disabled | masked | masked-runtime) echo 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+timer_active() { # -> 1/0, or return 1 when it cannot be determined
+	local out
+	out=$(systemctl is-active dynavlan.timer 2>/dev/null) || true
+	case "$out" in
+	active | activating | reloading) echo 1 ;;
+	inactive | failed) echo 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+# A record is valid only if it holds each of the three fields exactly once, each 0/1,
+# and nothing else (it is read, never sourced).
+state_valid() { # FILE
+	local k
+	[ -f "$1" ] || return 1
+	for k in svc_enabled tmr_enabled tmr_active; do
+		[ "$(grep -c "^$k=[01]\$" "$1")" = 1 ] || return 1
+	done
+	[ "$(grep -c '^owner=' "$1")" -le 1 ] || return 1
+	! grep -qvE '^(svc_enabled|tmr_enabled|tmr_active)=[01]$|^owner=[0-9]+$' "$1"
+}
+
+recorded_active() { sed -n 's/^tmr_active=//p' "$STATE_FILE"; }
+discard_record() { rm -f "$STATE_FILE"; }
+
+# Is the existing record a genuine handoff from an earlier hook of THIS dpkg run, or an
+# unrelated leftover? A record written by this package's hooks carries its owner, the dpkg
+# parent pid, which the later hooks of the same run share. A record with no owner can only
+# have been written by an OUTGOING hook of an older record-producing package during this
+# very upgrade (OLD_VERSION is that package's version; empty means no outgoing hook can
+# exist, e.g. a first/manual install), so it is accepted only then, and only while it
+# agrees with the live posture: same enablement, timer already stopped by that hook.
+record_is_handoff() { # OLD_VERSION (empty = no outgoing hook possible)
+	local owner old="$1" s t
+	state_valid "$STATE_FILE" || return 1
+	owner=$(sed -n 's/^owner=//p' "$STATE_FILE")
+	if [ -n "$owner" ]; then
+		[ "$owner" = "$PPID" ]
+		return
+	fi
+	[ -n "$old" ] || return 1
+	dpkg --compare-versions "$old" lt "$LEGACY_BEFORE" && return 1
+	dpkg --compare-versions "$old" lt "$OWNER_SINCE" || return 1
+	s=$(unit_enabled dynavlan.service) || return 1
+	t=$(unit_enabled dynavlan.timer) || return 1
+	[ "$s" = "$(sed -n 's/^svc_enabled=//p' "$STATE_FILE")" ] || return 1
+	[ "$t" = "$(sed -n 's/^tmr_enabled=//p' "$STATE_FILE")" ] || return 1
+	[ "$(timer_active || echo unknown)" = 0 ]
+}
+
+# Capture to a scratch file and publish by rename only once all three fields were
+# observed and validate: a partial capture can never become the record. The owner is
+# written first, so a record is never visible without it.
+publish_state() { # ACTIVE_OVERRIDE (empty = observe it)
+	local s t a tmp="$STATE_FILE.new.$$"
+	s=$(unit_enabled dynavlan.service) || return 1
+	t=$(unit_enabled dynavlan.timer) || return 1
+	if [ -n "$1" ]; then
+		a="$1"
+	else
+		a=$(timer_active) || return 1
+	fi
+	mkdir -p "$STATE_DIR" || return 1
+	printf 'svc_enabled=%s\ntmr_enabled=%s\ntmr_active=%s\nowner=%s\n' "$s" "$t" "$a" "$PPID" >"$tmp" || {
+		rm -f "$tmp"
+		return 1
+	}
+	if ! state_valid "$tmp"; then
+		rm -f "$tmp"
+		return 1
+	fi
+	mv -f "$tmp" "$STATE_FILE"
+}
+
+# A pre-unpack abort: nothing was replaced, so put the timer back (as the record says,
+# or because this hook stopped it) and discard the record - but ONLY if the restore
+# worked. A failed restore keeps the record: it is then the only trace of the posture.
+abort_restore() {
+	local restored=1 want=0
+	if systemd_running; then
+		if state_valid "$STATE_FILE" && [ "$(recorded_active)" = 1 ]; then want=1; fi
+		[ "$STOPPED" = 1 ] && want=1
+		if [ "$want" = 1 ] && ! systemctl start dynavlan.timer; then
+			restored=0
+			warn "could not restart dynavlan.timer after the aborted install; start it manually. The prior-state record $STATE_FILE is kept."
+		fi
+	fi
+	if [ "$restored" = 1 ]; then discard_record; fi
+}
+
+fail() {
+	warn "$*"
+	abort_restore
+	exit 1
+}
+
+legacy_outgoing() { # OLD_VERSION: does it predate the package that wrote the record?
+	[ -n "$1" ] && dpkg --compare-versions "$1" lt "$LEGACY_BEFORE"
+}
+
+case "$1" in
+install | upgrade)
+	if systemd_running; then
+		old=""
+		[ "$1" = upgrade ] && old="$2"
+		if record_is_handoff "$old"; then
+			say "reusing the state recorded earlier in this run"
+		else
+			discard_record # absent, partial, or an unrelated leftover
+			if [ "$1" = upgrade ]; then
+				if legacy_outgoing "$2"; then
+					# The outgoing package never produced a record, and its prerm has already
+					# stopped the timer, so the live run state is not evidence. ESTIMATE it from
+					# enablement; this is an estimate, not captured posture, and is said so.
+					warn "outgoing package $2 predates the state record; ESTIMATING that the timer was running iff it is enabled"
+					s=$(unit_enabled dynavlan.timer) || fail "cannot determine dynavlan.timer enablement; refusing to proceed"
+					publish_state "$s" || fail "cannot record the prior state; refusing to proceed"
+				else
+					# The outgoing package normally records. A missing, partial or stale record
+					# is NOT repaired by estimating: capture what is observable now and say the
+					# prior run state is unknown rather than inventing a posture.
+					publish_state "" || fail "cannot record the prior state; refusing to proceed"
+					warn "no usable record from outgoing package $2; the timer's prior run state is UNKNOWN and it will be left as found (it is not restarted)"
+				fi
+			elif unit_exists dynavlan.timer || unit_exists dynavlan.service; then
+				# First dpkg registration over a manual installation: nothing has stopped
+				# anything, so the live state is the operator's posture.
+				say "existing manual installation detected; recording its posture"
+				publish_state "" || fail "cannot record the manual installation's state; refusing to proceed"
+			fi
+			# else: a genuine fresh install; no record, enable-by-default applies later.
+		fi
+
+		# Quiescence from the LIVE state, independent of whatever the record says.
+		live=$(timer_active) || fail "cannot determine whether dynavlan.timer is active; refusing to replace the script"
+		if [ "$live" = 1 ]; then
+			STOPPED=1
+			systemctl stop dynavlan.timer || fail "could not stop dynavlan.timer; refusing to replace the script"
+			[ "$(timer_active || echo unknown)" = 0 ] ||
+				fail "dynavlan.timer is still active or its state cannot be verified after stop; refusing to replace the script"
+		fi
+	fi
+
+	# A manual run can exist without a timer, so the run lock is waited for even when
+	# there is no timer or no systemd.
+	exec 9>"$LOCK_FILE" || fail "cannot open $LOCK_FILE"
+	flock -w "$LOCK_WAIT" 9 ||
+		fail "a dynavlan run still holds $LOCK_FILE after ${LOCK_WAIT}s; refusing to replace the script under a live run (wait for it to finish, or stop dynavlan-rescan.service, then retry)"
+	exec 9>&-
+	;;
+esac
+
+#DEBHELPER#
+exit 0

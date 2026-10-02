@@ -68,7 +68,7 @@ mkdir -p "$PKG/lib/systemd/system"
 sed "s/__VERSION__/$VERSION/" "$SRC_DIR/debian/control" > "$PKG/DEBIAN/control"
 
 # Maintainer scripts
-for f in conffiles postinst prerm postrm; do
+for f in conffiles preinst postinst prerm postrm; do
     if [ -f "$SRC_DIR/debian/$f" ]; then
         cp "$SRC_DIR/debian/$f" "$PKG/DEBIAN/$f"
         chmod 0755 "$PKG/DEBIAN/$f"

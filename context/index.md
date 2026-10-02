@@ -196,6 +196,13 @@ child waits, post-ACCEPT partial finish (operator-accepted catch-up limitation, 
 2026-10-01). 403 unit tests pass; Codex approved the production changes and the tests. D2 closes only after
 one benign HV-01 on the corrected artifact (needs operator-authorized hardware). Nothing pushed or deployed.
 
+STATE (2026-10-02, Group 2 upgrade/systemd lifecycle implemented locally): Codex approved the scope with
+amendments (new `debian/preinst`, `prerm failed-upgrade`, `postrm` abort cases, `postinst` failure cleanup that
+retains the record, validated 3-field record, run-lock wait even with no timer). Working tree, uncommitted:
+`ver=0.4.16`, `install.sh` posture restore (D8/L5/L15), `do_reconfigure` propagates a failed daemon-reload (D10),
+`tests/lifecycle.sh` (folded into `unit.sh`), 541 tests pass. Codex gave local code/test sign-off 2026-10-02 (the operator accepted the unknown-posture preservation exception); COMMITTED LOCALLY after `94ac0a0` (see `git log`); not hardware-validated. Nothing pushed. Real dpkg/systemd
+behavior is exercised only by the hardware lifecycle cases. Nothing pushed or deployed.
+
 NEXT ACTION: the hardware baseline restore is DONE (2026-09-07, verified: original owned-file checksum,
 exactly 14 VLAN interfaces, both default routes, healthy `--status`/`--dry-run`, timer restored with a
 finite next elapse), and Groups 1, 3 and 2a are committed locally (`bf59ab0`/`d8d7046`, `34bed4e`, and the Group 2a commit

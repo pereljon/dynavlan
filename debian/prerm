@@ -3,50 +3,188 @@ set -e
 
 LOCK_FILE="/run/dynavlan.lock"
 LOCK_WAIT=300
-
 STATE_DIR="/run/dynavlan"
-STATE_FILE="$STATE_DIR/upgrade-state"
+STATE_FILE="/run/dynavlan/upgrade-state"
+SYSTEMD_RUN="/run/systemd/system"
+UNIT_ETC="/etc/systemd/system"
+UNIT_LIB="/lib/systemd/system"
+
+LEGACY_BEFORE="0.4.1" # first released package whose prerm wrote a record
+OWNER_SINCE="0.4.16"  # first package whose records carry an owner
+
+STOPPED=0
+
+warn() { printf 'dynavlan prerm: WARNING: %s\n' "$*" >&2; }
+
+systemd_running() { [ -d "$SYSTEMD_RUN" ]; }
+unit_exists() { [ -e "$UNIT_ETC/$1" ] || [ -e "$UNIT_LIB/$1" ]; }
+
+unit_enabled() { # UNIT -> 1/0, or return 1 when it cannot be determined
+	local out
+	unit_exists "$1" || {
+		echo 0
+		return 0
+	}
+	out=$(systemctl is-enabled "$1" 2>/dev/null) || true
+	case "$out" in
+	enabled | enabled-runtime | static | indirect | generated | alias) echo 1 ;;
+	disabled | masked | masked-runtime) echo 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+timer_active() { # -> 1/0, or return 1 when it cannot be determined
+	local out
+	out=$(systemctl is-active dynavlan.timer 2>/dev/null) || true
+	case "$out" in
+	active | activating | reloading) echo 1 ;;
+	inactive | failed) echo 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+state_valid() { # FILE
+	local k
+	[ -f "$1" ] || return 1
+	for k in svc_enabled tmr_enabled tmr_active; do
+		[ "$(grep -c "^$k=[01]\$" "$1")" = 1 ] || return 1
+	done
+	[ "$(grep -c '^owner=' "$1")" -le 1 ] || return 1
+	! grep -qvE '^(svc_enabled|tmr_enabled|tmr_active)=[01]$|^owner=[0-9]+$' "$1"
+}
+
+recorded_active() { sed -n 's/^tmr_active=//p' "$STATE_FILE"; }
+discard_record() { rm -f "$STATE_FILE"; }
+
+# Is the existing record a genuine handoff from an earlier hook of THIS dpkg run, or an
+# unrelated leftover? A record written by this package's hooks carries its owner, the dpkg
+# parent pid, which the later hooks of the same run share. A record with no owner can only
+# have been written by an OUTGOING hook of an older record-producing package during this
+# very upgrade (OLD_VERSION is that package's version; empty means no outgoing hook can
+# exist, e.g. a first/manual install), so it is accepted only then, and only while it
+# agrees with the live posture: same enablement, timer already stopped by that hook.
+record_is_handoff() { # OLD_VERSION (empty = no outgoing hook possible)
+	local owner old="$1" s t
+	state_valid "$STATE_FILE" || return 1
+	owner=$(sed -n 's/^owner=//p' "$STATE_FILE")
+	if [ -n "$owner" ]; then
+		[ "$owner" = "$PPID" ]
+		return
+	fi
+	[ -n "$old" ] || return 1
+	dpkg --compare-versions "$old" lt "$LEGACY_BEFORE" && return 1
+	dpkg --compare-versions "$old" lt "$OWNER_SINCE" || return 1
+	s=$(unit_enabled dynavlan.service) || return 1
+	t=$(unit_enabled dynavlan.timer) || return 1
+	[ "$s" = "$(sed -n 's/^svc_enabled=//p' "$STATE_FILE")" ] || return 1
+	[ "$t" = "$(sed -n 's/^tmr_enabled=//p' "$STATE_FILE")" ] || return 1
+	[ "$(timer_active || echo unknown)" = 0 ]
+}
+
+publish_state() { # -> 0 only when all three fields were observed and validate
+	local s t a tmp="$STATE_FILE.new.$$"
+	s=$(unit_enabled dynavlan.service) || return 1
+	t=$(unit_enabled dynavlan.timer) || return 1
+	a=$(timer_active) || return 1
+	mkdir -p "$STATE_DIR" || return 1
+	printf 'svc_enabled=%s\ntmr_enabled=%s\ntmr_active=%s\nowner=%s\n' "$s" "$t" "$a" "$PPID" >"$tmp" || {
+		rm -f "$tmp"
+		return 1
+	}
+	if ! state_valid "$tmp"; then
+		rm -f "$tmp"
+		return 1
+	fi
+	mv -f "$tmp" "$STATE_FILE"
+}
+
+# Put the timer back if the record says it was running, or this hook stopped it. The
+# record is discarded only when that worked; a failed restart keeps it as the only trace.
+abort_restore() {
+	local restored=1 want=0
+	if systemd_running; then
+		if state_valid "$STATE_FILE" && [ "$(recorded_active)" = 1 ]; then want=1; fi
+		[ "$STOPPED" = 1 ] && want=1
+		if [ "$want" = 1 ] && ! systemctl start dynavlan.timer; then
+			restored=0
+			warn "could not restart dynavlan.timer after the aborted operation; start it manually. The prior-state record $STATE_FILE is kept."
+		fi
+	fi
+	if [ "$restored" = 1 ]; then discard_record; fi
+}
+
+# Wait for any in-flight run (FR-30 lock). A run still holding it past the timeout
+# ABORTS the operation (H4): dpkg would otherwise overwrite/remove the script under a
+# live run, and bash reads a script lazily by file offset, so the running invocation
+# could execute garbage mid-apply (e.g. between `netplan try` and its confirmation).
+wait_lock() {
+	exec 9>"$LOCK_FILE" || return 1
+	flock -w "$LOCK_WAIT" 9 || return 1
+	exec 9>&-
+}
 
 case "$1" in
-remove|upgrade)
-    # Was the rescan timer running before we touch it? Captured BEFORE the stop
-    # below, for two uses: restoring it if we must abort (below), and (on upgrade)
-    # handing postinst the exact prior state so it never re-arms a unit the operator
-    # deliberately disabled. dpkg runs prerm then the new postinst in one transaction
-    # with no reboot between, so /run (tmpfs) persists across the swap and self-cleans
-    # on the next boot.
-    tmr_active=0
-    systemctl is-active --quiet dynavlan.timer 2>/dev/null && tmr_active=1
-
-    if [ "$1" = upgrade ]; then
-        mkdir -p "$STATE_DIR" || true
-        {
-            printf 'svc_enabled=%s\n' "$(systemctl is-enabled --quiet dynavlan.service 2>/dev/null && echo 1 || echo 0)"
-            printf 'tmr_enabled=%s\n' "$(systemctl is-enabled --quiet dynavlan.timer 2>/dev/null && echo 1 || echo 0)"
-            printf 'tmr_active=%s\n'  "$tmr_active"
-        } > "$STATE_FILE" || true
-    fi
-
-    # Stop the timer so no new runs start during the swap
-    systemctl stop dynavlan.timer 2>/dev/null || true
-
-    # Wait for any in-flight run to finish (FR-30 lock). Always create+open the lock
-    # (no `-e` check/use race), and match install.sh: a run still holding it past the
-    # timeout ABORTS the operation rather than proceeding (H4). dpkg would otherwise
-    # overwrite/remove the script under a live run, and bash reads a script lazily by
-    # file offset, so the running invocation could execute garbage mid-apply - e.g.
-    # between `netplan try` and its confirmation - and strand the box. Failing here
-    # leaves the currently-installed version in place, running and reachable. On abort
-    # we restart the timer if it was running, so a refused upgrade leaves the box
-    # exactly as it was rather than with rescan silently disabled until the next boot.
-    exec 9>"$LOCK_FILE"
-    if ! flock -w "$LOCK_WAIT" 9; then
-        echo "ERROR: a dynavlan run still holds $LOCK_FILE after ${LOCK_WAIT}s; refusing to replace the script under a live run (wait for it to finish, or stop dynavlan-rescan.service, then retry)" >&2
-        [ "$tmr_active" = 1 ] && systemctl start dynavlan.timer 2>/dev/null || true
-        exit 1
-    fi
-    exec 9>&-
-    ;;
+remove)
+	# Removal behavior is unchanged: stop the timer, wait for an in-flight run, and
+	# restore the timer if the wait aborts.
+	tmr_active=0
+	if systemd_running; then
+		systemctl is-active --quiet dynavlan.timer 2>/dev/null && tmr_active=1
+		systemctl stop dynavlan.timer 2>/dev/null || true
+	fi
+	if ! wait_lock; then
+		echo "ERROR: a dynavlan run still holds $LOCK_FILE after ${LOCK_WAIT}s; refusing to remove the script under a live run (wait for it to finish, or stop dynavlan-rescan.service, then retry)" >&2
+		if [ "$tmr_active" = 1 ]; then
+			systemctl start dynavlan.timer 2>/dev/null ||
+				warn "could not restart dynavlan.timer after the aborted removal; start it manually"
+		fi
+		exit 1
+	fi
+	;;
+upgrade | failed-upgrade)
+	# failed-upgrade is dpkg running THIS (incoming) prerm because the outgoing one
+	# failed; dpkg can continue the upgrade if this succeeds, so it must enforce the
+	# same quiescence rather than silently bypass it.
+	if systemd_running; then
+		old=""
+		[ "$1" = failed-upgrade ] && old="$2" # for upgrade, $2 is the NEW version: no outgoing hook ran
+		if record_is_handoff "$old"; then
+			:
+		else
+			# Absent, partial, or an unrelated leftover: replace it by a complete capture
+			# of what is observable now. Published only after all three were observed.
+			discard_record
+			if ! publish_state; then
+				echo "ERROR: cannot determine the dynavlan service/timer state; refusing to replace the script" >&2
+				exit 1
+			fi
+		fi
+		# Quiescence from the LIVE state, independent of what the record says.
+		live=$(timer_active) || {
+			echo "ERROR: cannot determine whether dynavlan.timer is active; refusing to replace the script" >&2
+			abort_restore
+			exit 1
+		}
+		if [ "$live" = 1 ]; then
+			STOPPED=1
+			if ! systemctl stop dynavlan.timer; then
+				echo "ERROR: could not stop dynavlan.timer; refusing to replace the script (it could start a run mid-swap)" >&2
+				abort_restore
+				exit 1
+			fi
+			if [ "$(timer_active || echo unknown)" != 0 ]; then
+				echo "ERROR: dynavlan.timer is still active or its state cannot be verified after stop; refusing to replace the script" >&2
+				abort_restore
+				exit 1
+			fi
+		fi
+	fi
+	if ! wait_lock; then
+		echo "ERROR: a dynavlan run still holds $LOCK_FILE after ${LOCK_WAIT}s; refusing to replace the script under a live run (wait for it to finish, or stop dynavlan-rescan.service, then retry)" >&2
+		abort_restore
+		exit 1
+	fi
+	;;
 esac
 
 #DEBHELPER#
