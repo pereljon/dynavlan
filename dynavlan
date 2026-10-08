@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.16"
+ver="0.4.17"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -1020,8 +1020,9 @@ store_detection() {
 
 iface_tags() { eval "printf '%s' \"\${$(tags_var "$1"):-}\""; }
 
-run_detection() { # sets DETECTED_TRUNKS + per-trunk tags via iface_tags; returns 1 if no trunks
+run_detection() { # sets DETECTED_TRUNKS, DETECT_INVALID (sampled ifaces whose detector failed) + per-trunk tags via iface_tags; returns 1 if no trunks
 	local ifaces i tags n
+	DETECT_INVALID=""
 	ifaces=$(discover_phys_ifaces)
 	for i in $ifaces; do prep_iface "$i"; done
 	local elapsed=0 allup up=""
@@ -1050,6 +1051,14 @@ run_detection() { # sets DETECTED_TRUNKS + per-trunk tags via iface_tags; return
 	else
 		for i in $up; do store_detection "$i" "$(detect_iface "$i")"; done
 	fi
+	# Aggregate the removal-trust verdict over EVERY sampled interface, not only those with
+	# tags: a failed detector on an interface outside the owned/detected union must still
+	# make a status/dry-run report incomplete rather than a confident "none" (D5).
+	DETECT_INVALID=""
+	for i in $(printf '%s\n' $up | sort -u); do
+		[ "$(iface_valid "$i")" = valid ] || DETECT_INVALID="$DETECT_INVALID $i"
+	done
+	DETECT_INVALID=$(printf '%s\n' $DETECT_INVALID | sort -u | tr '\n' ' ' | sed 's/^ //' | sed 's/ $//')
 	DETECTED_TRUNKS=""
 	for i in $(printf '%s\n' $up | sort -u); do
 		tags=$(iface_tags "$i")
@@ -1644,7 +1653,9 @@ wait_leases() { # TOKENS (iface.id) - bounded, non-fatal wait for new-VLAN lease
 
 restart_targets() { # -> rc 0 iff every target restarted (M6); also sets globals
 	local s rc=0 attempted=0 failed=0 halted=0
-	RESTARTED_THIS_RUN=1
+	# L10: with no targets nothing was restarted, so this must not claim an agent was
+	# refreshed this run (that would let the subnet pass mark the subnet seen).
+	[ -n "$RESTART_SNAPS$RESTART_SERVICES" ] && RESTARTED_THIS_RUN=1
 	for s in $RESTART_SNAPS; do
 		# D2: a stop request ends the pass between targets; one already started finishes.
 		if [ "$halted" -eq 0 ] && stop_requested; then
@@ -1738,7 +1749,7 @@ write_seen() { # SET
 # RESTARTED_THIS_RUN flag dedups against any VLAN restart apply_change already did.
 maybe_restart_on_new_subnet() {
 	[ "$RESTART_ON_NEW_SUBNET" = true ] || return 0
-	local current seen new
+	local current seen new hold=0
 	current=$(current_subnets)
 	seen=$(read_seen)
 	new=$(set_minus "$current" "$seen")
@@ -1746,7 +1757,10 @@ maybe_restart_on_new_subnet() {
 		if [ "${RESTARTED_THIS_RUN:-0}" = 1 ]; then
 			log info "new IPv4 subnet(s) [$new]; agent already restarted this run"
 		elif [ -z "$RESTART_SNAPS" ] && [ -z "$RESTART_SERVICES" ]; then
-			log info "new IPv4 subnet(s) [$new]; no restart targets configured"
+			# L10: nothing informed any agent, so the subnet stays unseen and a target
+			# configured later gets its one catch-up restart.
+			hold=1
+			log info "new IPv4 subnet(s) [$new]; no restart targets configured (left unseen for a later catch-up restart)"
 		else
 			log notice "new IPv4 subnet(s) [$new]; restarting monitoring targets"
 			restart_targets
@@ -1759,7 +1773,7 @@ maybe_restart_on_new_subnet() {
 	# failure): a partial success consumes, since one broken target must not force a
 	# perpetual re-restart of the working ones. Covers a failed apply_change restart
 	# too, via the same flag.
-	if [ "${RESTART_NONE_SUCCEEDED_THIS_RUN:-0}" = 1 ]; then
+	if [ "${RESTART_NONE_SUCCEEDED_THIS_RUN:-0}" = 1 ] || [ "$hold" = 1 ]; then
 		write_seen "$(set_minus "$(set_union "$seen" "$current")" "$new")"
 	else
 		write_seen "$(set_union "$seen" "$current")"
@@ -2256,12 +2270,19 @@ do_rescan() {
 # ---------------------------------------------------------------------------
 
 do_dryrun() {
-	log info "dry-run: detecting (no changes will be made)..."
+	log info "dry-run: detecting (no configuration, apply, deletion or restart changes will be made)..."
+	# The real drain runs BEFORE detection and takes its default-route snapshot then. Detection
+	# brings physical interfaces up and can change routing, so the pending-delete preview uses
+	# this pre-detection snapshot (read-only mirror of the drain), while the apply/C1 preview
+	# below keeps the later snapshot the real apply would take.
+	local pend_snap
+	pend_snap=$(snapshot_default_route)
 	run_detection || : # rc is "saw nothing", not "failed" - see do_boot
-	if [ -z "$DETECTED_TRUNKS" ] && [ "$REMOVE_ON_CARRIER_LOSS" != true ]; then
-		printf 'dry-run: no trunks detected; would change nothing\n'
-		return 0
-	fi
+	# L9: a quiet wire (nothing detected) is NOT an early "would change nothing": boot and
+	# rescan still retry guarded pending deletes and still run the new-subnet restart pass
+	# afterward, so the preview must report those and still validate. With no detected
+	# trunk there are simply no additions and no detection-diff removals below.
+	[ -z "$DETECTED_TRUNKS" ] && printf 'dry-run: no trunks detected; no VLAN additions or detection-diff removals\n'
 
 	local owned trunk all_additions="" all_removals=""
 	owned=$(backend_owned_vlans)
@@ -2290,9 +2311,14 @@ do_dryrun() {
 		# non-empty detection in both passes; a down or tagless trunk sniffs nothing,
 		# so an unguarded set_minus against an empty set dumps its whole owned set
 		# into removals.
-		if [ "$RESET_ON_BOOT" = true ] && has_carrier "$trunk" && [ -n "$detected_ids" ]; then
+		# S2/H1: and only from a TRUSTED sample - a failed sniff/LLDP yields a partial set
+		# indistinguishable from real absence, which boot refuses to act on; so must the preview.
+		if [ "$RESET_ON_BOOT" = true ] && has_carrier "$trunk" && [ -n "$detected_ids" ] \
+			&& [ "$(iface_valid "$trunk")" = valid ]; then
 			removals_ids=$(set_minus "$owned_ids" "$detected_ids")
 			all_removals="$all_removals $(tag_tokens "$trunk" "$removals_ids")"
+		elif [ "$RESET_ON_BOOT" = true ] && [ "$(iface_valid "$trunk")" = invalid ]; then
+			printf '  trunk %s: detection incomplete (a capture method failed); preserving all owned VLANs (H1)\n' "$trunk"
 		fi
 
 		if [ "$REMOVE_ON_CARRIER_LOSS" = true ] && [ "$routing_ok" = yes ] \
@@ -2309,7 +2335,18 @@ do_dryrun() {
 	local pruned_ifaces
 	pruned_ifaces=$(ifaces_without_carrier "$all_additions")
 	[ -n "$pruned_ifaces" ] && all_additions=$(drop_iface_tokens "$all_additions" "$pruned_ifaces")
-	local target
+	local target gate_refused=0 gate_adds
+	if [ -n "$all_additions" ] || [ -n "$all_removals" ]; then
+		if gate_adds=$(gate_vlan_count "$(set_minus "$owned" "$all_removals")" "$all_additions"); then
+			all_additions="$gate_adds"
+		else
+			# A refusal changes nothing: additions AND removals are cancelled and the
+			# unchanged owned set is the target, exactly as the real run would leave it.
+			gate_refused=1
+			all_additions=""
+			all_removals=""
+		fi
+	fi
 	target=$(set_union "$(set_minus "$owned" "$all_removals")" "$all_additions")
 
 	printf 'dry-run diff (boot mode, single detection pass):\n'
@@ -2321,6 +2358,7 @@ do_dryrun() {
 	printf '  count gate: %s (%s VLANs; VLAN_WARN=%s VLAN_LIMIT=%s mode=%s)\n' \
 		"$(vlan_guard "$(count_ids "$target")" "$VLAN_WARN" "$VLAN_LIMIT")" \
 		"$(count_ids "$target")" "$VLAN_WARN" "$VLAN_LIMIT" "$VLAN_LIMIT_MODE"
+	[ "$gate_refused" = 1 ] && printf '  count gate REFUSED: --boot/--rescan would change nothing (additions and removals cancelled; target is the unchanged owned set)\n'
 
 	for trunk in $all_trunks; do
 		local detected_ids t_owned t_adds t_rems cstate
@@ -2348,9 +2386,26 @@ do_dryrun() {
 
 	# M5 preview: a prior run may have failed to delete an already-removed interface
 	# and recorded it; --boot/--rescan would retry the delete. Read-only here.
-	local pend
+	# Mirrors drain_pending_deletes' guards (D1 current default, L7 now configured elsewhere)
+	# but only REPORTS: no link is deleted and the pending record is not rewritten.
+	local pend pend_retry="" pend_held="" pend_tok pend_cfg pend_query_failed=0
 	pend=$(pending_deletes)
-	[ -n "$pend" ] && printf '  pending re-delete (prior removal left the live interface up; --boot/--rescan would retry): [%s]\n' "$pend"
+	if [ -n "$pend" ]; then
+		if pend_cfg=$(backend_netplan_vlan_tokens); then
+			for pend_tok in $pend; do
+				if default_iface_in_removals "$pend_snap" "$pend_tok" || in_list "$pend_tok" "$pend_cfg"; then
+					pend_held="$pend_held $pend_tok"
+				else
+					pend_retry="$pend_retry $pend_tok"
+				fi
+			done
+			[ -n "$pend_retry" ] && printf '  pending re-delete (prior removal left the live interface up; --boot/--rescan would retry): [%s]\n' "$(emit_tokens $pend_retry)"
+			[ -n "$pend_held" ] && printf '  pending re-delete PRESERVED (now the current default route or configured elsewhere; guarded, would not be deleted): [%s]\n' "$(emit_tokens $pend_held)"
+		else
+			pend_query_failed=1
+			printf '  pending re-delete: UNAVAILABLE (netplan query failed; --boot/--rescan would preserve the whole record [%s] and abort the run)\n' "$pend"
+		fi
+	fi
 
 	# L1/L7: a failed Netplan query on any trunk means the managed-elsewhere
 	# exclusion above may be incomplete for that trunk - the additions preview is
@@ -2362,7 +2417,11 @@ do_dryrun() {
 		local cur_sn new_sn
 		cur_sn=$(current_subnets)
 		new_sn=$(set_minus "$cur_sn" "$(read_seen)")
-		printf '  new IPv4 subnets since last seen (would restart): [%s]\n' "${new_sn:-none}"
+		if [ -z "$RESTART_SNAPS" ] && [ -z "$RESTART_SERVICES" ]; then
+			printf '  new IPv4 subnets since last seen: [%s]  (no restart targets configured; they stay unseen for a later catch-up restart)\n' "${new_sn:-none}"
+		else
+			printf '  new IPv4 subnets since last seen (would restart): [%s]\n' "${new_sn:-none}"
+		fi
 	fi
 
 	ROUTE_METRICS=""
@@ -2382,8 +2441,20 @@ do_dryrun() {
 		printf '  validate:  SKIPPED - cannot create scratch tree in /run\n'
 		return 1
 	fi
+	if [ "$gate_refused" = 1 ]; then
+		rm -rf "$tree"
+		printf '  validate:  SKIPPED - the count gate refused this change; nothing would be generated or applied\n'
+		printf '  (dry-run only: no netplan try, no apply, no restart)\n'
+		return 1
+	fi
 	mkdir -p "$tree/etc/netplan"
-	cp -a /etc/netplan/. "$tree/etc/netplan/" 2>/dev/null
+	# L8: a partial base tree must never validate as OK - the real apply would validate
+	# against files this preview omitted. A failed copy is a failed pre-flight.
+	if ! cp -a /etc/netplan/. "$tree/etc/netplan/" 2>/dev/null; then
+		rm -rf "$tree"
+		printf '  validate:  SKIPPED - could not copy the complete base netplan tree; not validating a partial tree\n'
+		return 1
+	fi
 	saved="$NETPLAN_FILE"
 	NETPLAN_FILE="$tree/etc/netplan/90-dynavlan.yaml"
 	if ! backend_generate_config "$target"; then
@@ -2409,6 +2480,7 @@ do_dryrun() {
 	rm -rf "$tree"
 	printf '  (dry-run only: no netplan try, no apply, no restart)\n'
 	[ "$managed_query_failed" -eq 1 ] && vstatus=1
+	[ "$pend_query_failed" -eq 1 ] && vstatus=1
 	return "$vstatus"
 }
 
@@ -2475,19 +2547,11 @@ do_reapply() {
 }
 
 do_status() { # FR-35 - report all trunks
-	local owned trunks managed rc=0
+	local owned owned_ifaces all_trunks="" managed rc=0 det_state=ok
 	owned=$(backend_owned_vlans)
-	trunks=$(distinct_ifaces "$owned")
+	owned_ifaces=$(distinct_ifaces "$owned")
 	printf 'dynavlan %s\n' "$(version_string "$ver" "$build")"
 	printf '  configured (owned): [%s]\n' "${owned:-none}"
-	printf '  owned trunks: [%s]\n' "${trunks:-none}"
-	if [ -n "$trunks" ]; then
-		local t cstate
-		for t in $trunks; do
-			if has_carrier "$t"; then cstate=up; else cstate=down; fi
-			printf '    %s: carrier=%s\n' "$t" "$cstate"
-		done
-	fi
 	printf '  detect_method: %s   range: %s-%s   ignore: [%s]\n' "$DETECT_METHOD" "$VLAN_MIN" "$VLAN_MAX" "${IGNORE_SET:-none}"
 	# M8: gate the detection pass on its dependencies. A suppressed missing-tool
 	# failure would otherwise print "detected trunks: [none]" and exit 0 - a
@@ -2495,36 +2559,59 @@ do_status() { # FR-35 - report all trunks
 	# unavailable and fail non-zero instead (the specific tool is logged by the gate).
 	if check_detect_deps; then
 		log info "status: running a ${SNIFF_SECONDS}s detection pass..."
-		if run_detection && [ -n "$DETECTED_TRUNKS" ]; then
-			printf '  detected trunks: [%s]\n' "$DETECTED_TRUNKS"
-			local trunk detected_ids ignored oor
-			for trunk in $DETECTED_TRUNKS; do
-				detected_ids=$(emit_set $(iface_tags "$trunk"))
-				# L1/L7: a failed Netplan query must read as "unavailable", never as a
-				# confident empty managed-elsewhere set (same M8 precedent as the
-				# detect_deps gate above).
-				if ! managed=$(backend_list_managed_vlans "$trunk"); then
-					managed="unavailable"
-					rc=1
-				fi
-				ignored=$(ids_in_ignore "$detected_ids" "$IGNORE_SET")
-				oor=$(ids_out_of_range "$detected_ids" "$VLAN_MIN" "$VLAN_MAX")
-				printf '    %s: detected=[%s] ignored=[%s] out-of-range=[%s] managed-elsewhere=[%s]\n' \
-					"$trunk" "$detected_ids" "${ignored:-none}" "${oor:-none}" "${managed:-none}"
-			done
+		run_detection || :
+		# D5: a runtime detector failure on ANY sampled interface (including one outside
+		# the owned/detected union) makes detection incomplete, not a confident answer.
+		# An empty-but-valid result is a genuine quiet wire and stays successful.
+		if [ -n "$DETECT_INVALID" ]; then
+			det_state=invalid
+			rc=1
+			printf '  detected trunks: %s (detector failed on [%s]; results may be incomplete)\n' \
+				"$([ -n "$DETECTED_TRUNKS" ] && printf '[%s]' "$DETECTED_TRUNKS" || printf 'unavailable')" "$DETECT_INVALID"
 		else
-			printf '  detected trunks: [none]\n'
+			printf '  detected trunks: [%s]\n' "${DETECTED_TRUNKS:-none}"
 		fi
 	else
+		det_state=unavailable
+		DETECTED_TRUNKS=""
 		printf '  detected trunks: unavailable (detection prerequisite missing; see log)\n'
 		rc=1
+	fi
+	# L13: one row for every owned-or-detected trunk: configured, detected, carrier, and
+	# the ignored / out-of-range / managed-elsewhere breakdown of what was detected.
+	all_trunks=$(printf '%s\n' $owned_ifaces $DETECTED_TRUNKS | sort -u | tr '\n' ' ' | sed 's/ $//')
+	if [ -n "$all_trunks" ]; then
+		local t cstate configured detected_ids ignored oor
+		for t in $all_trunks; do
+			if has_carrier "$t"; then cstate=up; else cstate=down; fi
+			configured=$(tokens_for_iface "$owned" "$t")
+			if [ "$det_state" = unavailable ]; then
+				printf '    %s: carrier=%s configured=[%s] detected=[unavailable]\n' "$t" "$cstate" "${configured:-none}"
+				continue
+			fi
+			detected_ids=$(emit_set $(iface_tags "$t"))
+			# L1/L7: a failed Netplan query must read as "unavailable", never as a
+			# confident empty managed-elsewhere set (same M8 precedent as above).
+			if ! managed=$(backend_list_managed_vlans "$t"); then
+				managed="unavailable"
+				rc=1
+			fi
+			ignored=$(ids_in_ignore "$detected_ids" "$IGNORE_SET")
+			oor=$(ids_out_of_range "$detected_ids" "$VLAN_MIN" "$VLAN_MAX")
+			printf '    %s: carrier=%s configured=[%s] detected=[%s] ignored=[%s] out-of-range=[%s] managed-elsewhere=[%s]\n' \
+				"$t" "$cstate" "${configured:-none}" "${detected_ids:-none}" "${ignored:-none}" "${oor:-none}" "${managed:-none}"
+		done
 	fi
 	printf '  run history: journalctl -t dynavlan\n'
 	if [ "$RESTART_ON_NEW_SUBNET" = true ]; then
 		local cur_sn new_sn
 		cur_sn=$(current_subnets)
 		new_sn=$(set_minus "$cur_sn" "$(read_seen)")
-		printf '  new IPv4 subnets since last seen (would restart): [%s]\n' "${new_sn:-none}"
+		if [ -z "$RESTART_SNAPS" ] && [ -z "$RESTART_SERVICES" ]; then
+			printf '  new IPv4 subnets since last seen: [%s]  (no restart targets configured)\n' "${new_sn:-none}"
+		else
+			printf '  new IPv4 subnets since last seen (would restart): [%s]\n' "${new_sn:-none}"
+		fi
 	fi
 	return $rc
 }

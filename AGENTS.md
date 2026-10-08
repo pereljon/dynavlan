@@ -19,10 +19,13 @@ Single bash script, no build step. Dev loop:
 ```bash
 bash tests/unit.sh          # Layer-1 unit suite; run before every commit (enforces the FR-38 version/build identity contract, §1k/1l)
 bash -n dynavlan            # syntax-check the script
+shellcheck -s bash <file>  # ShellCheck 0.11.0 is installed (Homebrew) and in use: run it on every shell file a change touches
 ./dynavlan --version        # print ver + build id; works with no root and no valid config
 sudo ./dynavlan --dry-run   # preview detection + planned adds/removes, validate, NO apply
 sudo ./dynavlan --status    # report owned vs detected-now trunks
 ```
+
+ShellCheck is run by hand, not by the unit suite. Only findings introduced by the current diff are correction candidates (compare against `git show HEAD:<file>`); do not clean historical warnings. The known false positives are SC2329 (test stubs invoked indirectly), SC2034 (variables used across a `source` boundary), SC2016 (deliberately literal `${...}` text), and SC2086 on the deliberate token-list word splitting. Never distort code to silence one, and use no blanket suppressions.
 
 Install/first-run/removal live in `docs/deployment-guide.md`. Hardware testing is console-backed on the real appliance, never SSH-only (a bad apply drops the link).
 

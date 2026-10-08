@@ -203,6 +203,12 @@ retains the record, validated 3-field record, run-lock wait even with no timer).
 `tests/lifecycle.sh` (folded into `unit.sh`), 541 tests pass. Codex gave local code/test sign-off 2026-10-02 (the operator accepted the unknown-posture preservation exception); COMMITTED LOCALLY after `94ac0a0` (see `git log`); not hardware-validated. Nothing pushed. Real dpkg/systemd
 behavior is exercised only by the hardware lifecycle cases. Nothing pushed or deployed.
 
+STATE (2026-10-07, Group 4 dry-run/status/subnet reporting implemented locally): within Codex's approved scope and
+clarifications. Working tree, uncommitted: `ver=0.4.17`, dry-run follows the real boot decisions (S2 invalid-sample guard,
+S3 count gate, L8 copy failure, L9 quiet wire + guarded pending preview), `--status` aggregates detector validity over all
+sampled interfaces and prints per-trunk rows (D5/L13), no-target subnets stay unseen (L10, both branches). 583 unit tests
+pass; Codex approved it locally 2026-10-07; COMMITTED LOCALLY after `025502d`; not hardware-validated (HV-40..45 on the final build). Nothing pushed.
+
 NEXT ACTION: the hardware baseline restore is DONE (2026-09-07, verified: original owned-file checksum,
 exactly 14 VLAN interfaces, both default routes, healthy `--status`/`--dry-run`, timer restored with a
 finite next elapse), and Groups 1, 3 and 2a are committed locally (`bf59ab0`/`d8d7046`, `34bed4e`, and the Group 2a commit

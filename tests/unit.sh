@@ -3013,6 +3013,319 @@ rm -rf "$_rc_dir"
 unset _rc_dir _rc_saved_drop _rc_saved_run _rc_saved_min _rc_out _rc_rc
 
 # ---------------------------------------------------------------------------
+# 1ar. Dry-run, status and subnet reporting (Group 4: S2 S3 L8 L9 D5 L13 L10).
+#      The real do_dryrun / do_status / restart_targets / maybe_restart_on_new_subnet
+#      run with narrow stubs at the detection, netplan and systemd boundaries. Each case
+#      is a subshell so overrides never leak.
+# ---------------------------------------------------------------------------
+
+_g4_dir=$(mktemp -d)
+
+_g4_is() { # desc expected actual
+	tests=$((tests + 1))
+	if [ "$2" = "$3" ]; then
+		printf 'ok   - %s\n' "$1"
+	else
+		fails=$((fails + 1))
+		printf 'FAIL - %s\n       expected [%s], got [%s]\n' "$1" "$2" "$3"
+	fi
+}
+_g4_has() { # desc needle haystack
+	tests=$((tests + 1))
+	if printf '%s' "$3" | grep -qF -- "$2"; then
+		printf 'ok   - %s\n' "$1"
+	else
+		fails=$((fails + 1))
+		printf 'FAIL - %s\n       missing [%s] in [%s]\n' "$1" "$2" "$3"
+	fi
+}
+_g4_lacks() { # desc needle haystack
+	tests=$((tests + 1))
+	if printf '%s' "$3" | grep -qF -- "$2"; then
+		fails=$((fails + 1))
+		printf 'FAIL - %s\n       unexpected [%s] in [%s]\n' "$1" "$2" "$3"
+	else
+		printf 'ok   - %s\n' "$1"
+	fi
+}
+
+_g4_dry_env() { # defaults + stubs for one do_dryrun scenario
+	RESET_ON_BOOT=true REMOVE_ON_CARRIER_LOSS=false RESTART_ON_NEW_SUBNET=true
+	RESTART_SNAPS="" RESTART_SERVICES=""
+	VLAN_MIN=2 VLAN_MAX=4094 IGNORE_SET="" VLAN_WARN=100 VLAN_LIMIT=0 VLAN_LIMIT_MODE=refuse VLAN_ROUTES=false
+	PENDING_DELETE_FILE="$_g4_dir/pending" SEEN_FILE="$_g4_dir/seen"
+	rm -f "$PENDING_DELETE_FILE" "$SEEN_FILE" "$_g4_dir/calls" "$_g4_dir/gen"
+	DETECTED_TRUNKS="enp1s0"
+	G4_TAGS="100" G4_VALID=valid G4_OWNED="enp1s0.100"
+	run_detection() { return 0; }
+	iface_tags() { printf '%s' "$G4_TAGS"; }
+	iface_valid() { printf '%s' "$G4_VALID"; }
+	backend_owned_vlans() { printf '%s' "$G4_OWNED"; }
+	have_routing() { return 0; }
+	backend_list_managed_vlans() { return 0; }
+	has_carrier() { return 0; }
+	snapshot_default_route() { printf '%s' "enp9s0"; }
+	backend_netplan_vlan_tokens() { printf '%s' ""; }
+	current_subnets() { printf '%s' "enp1s0:10.0.0.0/24"; }
+	mktemp() { command mktemp -d "$_g4_dir/tree.XXXXXX"; }
+	cp() { return 0; }
+	backend_generate_config() { printf '%s' "$1" >"$_g4_dir/gen"; return 0; }
+	backend_validate() { echo validate >>"$_g4_dir/calls"; return 0; }
+	backend_remove_vlan() { echo remove >>"$_g4_dir/calls"; return 0; }
+}
+_g4_printed_target() { printf '%s\n' "$1" | sed -n 's/^  target:    \[\(.*\)\]$/\1/p'; }
+_g4_removals() { printf '%s\n' "$1" | sed -n 's/^  removals:  \[\([^]]*\)\].*/\1/p'; }
+
+# S2: an invalid sample must not authorize a detection-diff removal - including a
+# NONEMPTY partial one (owned {100,200}, the failed sniff only saw 100).
+_g4_out=$(
+	_g4_dry_env
+	G4_OWNED="enp1s0.100 enp1s0.200" G4_TAGS="100" G4_VALID=invalid
+	do_dryrun 2>&1
+)
+_g4_is "1ar dry-run: a nonempty partial invalid sample removes nothing" "none" "$(_g4_removals "$_g4_out")"
+_g4_has "1ar dry-run: the incomplete detection is reported" "detection incomplete" "$_g4_out"
+_g4_is "1ar dry-run: both owned VLANs are in the preserved target" "enp1s0.100 enp1s0.200" "$(_g4_printed_target "$_g4_out")"
+_g4_out=$(
+	_g4_dry_env
+	G4_OWNED="enp1s0.100 enp1s0.200" G4_TAGS="100" G4_VALID=valid
+	do_dryrun 2>&1
+)
+_g4_is "1ar dry-run: the same sample, trusted, does remove the absent VLAN (control)" "enp1s0.200" "$(_g4_removals "$_g4_out")"
+
+# S3: the real count gate. Refuse: additions AND removals cancelled, owned target, rc 1, no validation.
+_g4_out=$(
+	_g4_dry_env
+	G4_OWNED="enp1s0.100" G4_TAGS="200 300" G4_VALID=valid VLAN_LIMIT=1 VLAN_LIMIT_MODE=refuse
+	do_dryrun 2>&1
+	echo "rc=$?"
+	[ -e "$_g4_dir/calls" ] && echo "CALLS:$(cat "$_g4_dir/calls")"
+	[ -e "$_g4_dir/gen" ] && echo "GEN:$(cat "$_g4_dir/gen")"
+)
+_g4_has "1ar dry-run count-gate refusal returns 1" "rc=1" "$_g4_out"
+_g4_has "1ar dry-run count-gate refusal says so" "count gate REFUSED" "$_g4_out"
+_g4_is "1ar dry-run count-gate refusal reports the unchanged owned target" "enp1s0.100" "$(_g4_printed_target "$_g4_out")"
+_g4_is "1ar dry-run count-gate refusal cancels removals" "none" "$(_g4_removals "$_g4_out")"
+_g4_lacks "1ar dry-run count-gate refusal never validates the rejected candidate" "CALLS:validate" "$_g4_out"
+_g4_lacks "1ar dry-run count-gate refusal never generates a candidate" "GEN:" "$_g4_out"
+# Fill: the filled target is printed AND generated.
+_g4_out=$(
+	_g4_dry_env
+	G4_OWNED="enp1s0.100" G4_TAGS="100 200 300" G4_VALID=valid VLAN_LIMIT=2 VLAN_LIMIT_MODE=fill
+	do_dryrun 2>&1
+	echo "GEN:$(cat "$_g4_dir/gen" 2>/dev/null)"
+)
+_g4_is "1ar dry-run fill previews the filled target (lowest ids that fit)" "enp1s0.100 enp1s0.200" "$(_g4_printed_target "$_g4_out")"
+_g4_is "1ar dry-run fill: the generated target equals the printed one" \
+	"$(_g4_printed_target "$_g4_out")" "$(printf '%s\n' "$_g4_out" | sed -n 's/^GEN://p')"
+
+# L8: a failed copy of the base tree is non-zero and never validates.
+_g4_out=$(
+	_g4_dry_env
+	cp() { return 1; }
+	do_dryrun 2>&1
+	echo "rc=$?"
+	[ -e "$_g4_dir/calls" ] && echo "CALLS:$(cat "$_g4_dir/calls")"
+)
+_g4_has "1ar dry-run base-tree copy failure returns non-zero" "rc=1" "$_g4_out"
+_g4_has "1ar dry-run base-tree copy failure says it did not validate a partial tree" "not validating a partial tree" "$_g4_out"
+_g4_lacks "1ar dry-run base-tree copy failure never calls validation" "CALLS:validate" "$_g4_out"
+
+# L9 + L10: a quiet wire still previews guarded pending retries and the no-target subnet state,
+# validates, and changes nothing (no delete, no pending/seen write).
+_g4_out=$(
+	_g4_dry_env
+	DETECTED_TRUNKS="" G4_OWNED="" G4_TAGS=""
+	printf '%s\n' enp1s0.100 enp1s0.101 enp1s0.102 >"$PENDING_DELETE_FILE"
+	snapshot_default_route() { printf '%s' "enp1s0.101"; }          # D1: 101 is now the default route
+	backend_netplan_vlan_tokens() { printf '%s' "enp1s0.102"; }      # L7: 102 is configured elsewhere
+	command cp -f "$PENDING_DELETE_FILE" "$_g4_dir/pending.before"
+	do_dryrun 2>&1
+	echo "rc=$?"
+	cmp -s "$PENDING_DELETE_FILE" "$_g4_dir/pending.before" && echo "PENDING:unchanged"
+	[ -e "$SEEN_FILE" ] && echo "SEEN:written"
+	[ -e "$_g4_dir/calls" ] && echo "CALLS:$(tr '\n' ',' <"$_g4_dir/calls")"
+)
+_g4_has "1ar quiet wire: dry-run still completes and validates" "validate:  OK" "$_g4_out"
+_g4_has "1ar quiet wire: dry-run returns 0" "rc=0" "$_g4_out"
+_g4_has "1ar quiet wire: the retryable pending delete is previewed" "would retry): [enp1s0.100]" "$_g4_out"
+_g4_has "1ar quiet wire: guarded pending deletes are previewed as preserved" "PRESERVED" "$_g4_out"
+_g4_has "1ar quiet wire: the default-route-guarded token is named" "enp1s0.101" "$_g4_out"
+_g4_has "1ar quiet wire: the configured-elsewhere token is named" "enp1s0.102" "$_g4_out"
+_g4_has "1ar quiet wire: the pending record is untouched" "PENDING:unchanged" "$_g4_out"
+_g4_lacks "1ar quiet wire: the seen record is not written" "SEEN:written" "$_g4_out"
+_g4_lacks "1ar quiet wire: no link is deleted" "remove" "$(printf '%s' "$_g4_out" | grep '^CALLS:')"
+_g4_has "1ar quiet wire: no restart targets is reported, not 'would restart'" "no restart targets configured" "$_g4_out"
+_g4_lacks "1ar quiet wire: never claims it would restart without targets" "(would restart)" "$_g4_out"
+_g4_out=$(
+	_g4_dry_env
+	RESTART_SNAPS="a"
+	do_dryrun 2>&1
+)
+_g4_has "1ar dry-run with a target still says it would restart" "(would restart)" "$_g4_out"
+
+# Pending preview follows the snapshot the real drain takes BEFORE detection; the apply/C1
+# preview keeps the later one. Detection changes the default route here (enp1s0.101 -> enp1s0.200).
+_g4_out=$(
+	_g4_dry_env
+	G4_OWNED="enp1s0.100 enp1s0.200" G4_TAGS="100" G4_VALID=valid
+	printf '%s\n' enp1s0.101 >"$PENDING_DELETE_FILE"
+	run_detection() { : >"$_g4_dir/detected"; return 0; }
+	snapshot_default_route() { if [ -e "$_g4_dir/detected" ]; then printf '%s' enp1s0.200; else printf '%s' enp1s0.101; fi; }
+	rm -f "$_g4_dir/detected"
+	do_dryrun 2>&1
+)
+_g4_has "1ar pending preview follows the pre-detection snapshot (101 was the default then)" "PRESERVED" "$_g4_out"
+_g4_has "1ar the C1 apply preview keeps the later snapshot (200 is the default now and is being removed)" "current default iface (enp1s0.200) is in removals" "$_g4_out"
+_g4_lacks "1ar the pending token is not retried under the later snapshot" "would retry): [enp1s0.101]" "$_g4_out"
+
+# Pending preview: a failed netplan query is UNAVAILABLE, non-zero, and touches nothing.
+_g4_out=$(
+	_g4_dry_env
+	printf '%s\n' enp1s0.100 >"$PENDING_DELETE_FILE"
+	command cp -f "$PENDING_DELETE_FILE" "$_g4_dir/pending.before"
+	backend_netplan_vlan_tokens() { return 1; }
+	do_dryrun 2>&1
+	echo "rc=$?"
+	cmp -s "$PENDING_DELETE_FILE" "$_g4_dir/pending.before" && echo "PENDING:unchanged"
+	[ -e "$_g4_dir/calls" ] && echo "CALLS:$(tr '\n' ',' <"$_g4_dir/calls")"
+)
+_g4_has "1ar pending preview query failure is reported UNAVAILABLE" "pending re-delete: UNAVAILABLE" "$_g4_out"
+_g4_has "1ar pending preview query failure returns 1" "rc=1" "$_g4_out"
+_g4_has "1ar pending preview query failure leaves the pending record unchanged" "PENDING:unchanged" "$_g4_out"
+_g4_lacks "1ar pending preview query failure deletes no link" "remove" "$(printf '%s' "$_g4_out" | grep '^CALLS:')"
+
+# D5: status aggregates detector validity across ALL sampled interfaces.
+_g4_status_env() {
+	RESTART_ON_NEW_SUBNET=false DETECT_METHOD=both VLAN_MIN=2 VLAN_MAX=4094 IGNORE_SET=""
+	SEEN_FILE="$_g4_dir/seen"
+	G4_OWNED="" G4_TAGS="" DETECTED_TRUNKS="" DETECT_INVALID=""
+	check_detect_deps() { return 0; }
+	run_detection() { return 0; }
+	backend_owned_vlans() { printf '%s' "$G4_OWNED"; }
+	iface_tags() { eval "printf '%s' \"\${G4_TAGS_$1:-}\""; }
+	backend_list_managed_vlans() { return 0; }
+	has_carrier() { return 0; }
+	current_subnets() { printf '%s' ""; }
+}
+_g4_out=$(
+	_g4_status_env
+	DETECT_INVALID="enp9s0" # failed interface OUTSIDE the owned/detected union, nothing detected
+	do_status 2>&1
+	echo "rc=$?"
+)
+_g4_has "1ar status: invalid-empty detection (failed iface outside the union) returns 1" "rc=1" "$_g4_out"
+_g4_has "1ar status: invalid-empty detection says unavailable" "detected trunks: unavailable" "$_g4_out"
+_g4_out=$(
+	_g4_status_env
+	DETECTED_TRUNKS="enp1s0" G4_TAGS_enp1s0="100" DETECT_INVALID="enp1s0"
+	do_status 2>&1
+	echo "rc=$?"
+)
+_g4_has "1ar status: invalid-partial detection returns 1" "rc=1" "$_g4_out"
+_g4_has "1ar status: invalid-partial detection is marked incomplete" "may be incomplete" "$_g4_out"
+_g4_has "1ar status: invalid-partial detection still prints the partial trunk list" "detected trunks: [enp1s0]" "$_g4_out"
+_g4_has "1ar status: invalid-partial detection still prints the detected=[100] row" "enp1s0: carrier=up configured=[none] detected=[100]" "$_g4_out"
+_g4_out=$(
+	_g4_status_env
+	do_status 2>&1
+	echo "rc=$?"
+)
+_g4_has "1ar status: a quiet valid wire is still successful" "rc=0" "$_g4_out"
+_g4_has "1ar status: a quiet valid wire still reads none" "detected trunks: [none]" "$_g4_out"
+
+# D5 (real aggregation): the `both` policy is preserved - a failed LLDP beside a successful
+# sniff is valid; a failed sniff is not, even on an interface that has no tags and no ownership.
+_g4_out=$(
+	DETECT_METHOD=both CARRIER_WAIT_SECONDS=0
+	discover_phys_ifaces() { printf '%s\n' enp1s0 enp2s0; }
+	prep_iface() { :; }
+	has_carrier() { return 0; }
+	mktemp() { return 1; }
+	detect_iface() { if [ "$1" = enp1s0 ]; then printf 'ok fail 100'; else printf 'fail ok '; fi; }
+	run_detection >/dev/null 2>&1
+	echo "INVALID=[$DETECT_INVALID] TRUNKS=[$DETECTED_TRUNKS]"
+)
+_g4_is "1ar run_detection: supplementary LLDP failure alone stays valid; only the failed sniff is invalid" \
+	"INVALID=[enp2s0] TRUNKS=[enp1s0]" "$_g4_out"
+
+# L13: one row per owned-or-detected trunk.
+_g4_out=$(
+	_g4_status_env
+	G4_OWNED="enp1s0.100 enp2s0.200"
+	DETECTED_TRUNKS="enp1s0 enp3s0" G4_TAGS_enp1s0="100 300" G4_TAGS_enp3s0="400"
+	has_carrier() { [ "$1" != enp2s0 ]; }
+	do_status 2>&1
+)
+_g4_has "1ar status: a shared trunk gets configured and detected on one row" "enp1s0: carrier=up configured=[enp1s0.100] detected=[100 300]" "$_g4_out"
+_g4_has "1ar status: an owned-only trunk gets a row (carrier down, nothing detected)" "enp2s0: carrier=down configured=[enp2s0.200] detected=[none]" "$_g4_out"
+_g4_has "1ar status: a detected-only trunk gets a row with nothing configured" "enp3s0: carrier=up configured=[none] detected=[400]" "$_g4_out"
+
+# Status: a failed managed-elsewhere query for an OWNED-ONLY trunk is unavailable and non-zero.
+_g4_out=$(
+	_g4_status_env
+	G4_OWNED="enp2s0.200"
+	backend_list_managed_vlans() { return 1; }
+	do_status 2>&1
+	echo "rc=$?"
+)
+_g4_has "1ar status: an owned-only trunk's failed managed query reads managed-elsewhere=[unavailable]" "managed-elsewhere=[unavailable]" "$_g4_out"
+_g4_has "1ar status: an owned-only trunk's failed managed query returns 1" "rc=1" "$_g4_out"
+
+# L10 (core, composed): the real restart_targets with no targets, then the real subnet pass -
+# the sequence reached after an accepted apply.
+_g4_out=$(
+	SEEN_FILE="$_g4_dir/seen2"; rm -f "$SEEN_FILE"
+	RESTART_ON_NEW_SUBNET=true RESTART_SNAPS="" RESTART_SERVICES=""
+	RESTARTED_THIS_RUN=0 RESTART_NONE_SUCCEEDED_THIS_RUN=0
+	current_subnets() { printf '%s' "enp1s0:10.0.0.0/24"; }
+	snap() { echo snap_$2 >>"$_g4_dir/snaps"; return 0; }
+	rm -f "$_g4_dir/snaps"
+	restart_targets >/dev/null 2>&1
+	maybe_restart_on_new_subnet >/dev/null 2>&1
+	echo "A:$(cat "$SEEN_FILE" 2>/dev/null)"
+	# a target is configured later and the next run succeeds: consumed exactly once
+	RESTART_SNAPS="a" RESTARTED_THIS_RUN=0 RESTART_NONE_SUCCEEDED_THIS_RUN=0
+	maybe_restart_on_new_subnet >/dev/null 2>&1
+	echo "B:$(cat "$SEEN_FILE" 2>/dev/null)"
+	RESTARTED_THIS_RUN=0
+	maybe_restart_on_new_subnet >/dev/null 2>&1
+	echo "RESTARTS:$(grep -c snap_ "$_g4_dir/snaps")"
+)
+_g4_is "1ar no targets (apply path then subnet pass): the new subnet stays unseen" "A:" "$(printf '%s\n' "$_g4_out" | grep '^A:')"
+_g4_is "1ar a later configured target consumes the subnet" "B:enp1s0:10.0.0.0/24" "$(printf '%s\n' "$_g4_out" | grep '^B:')"
+_g4_is "1ar the catch-up restart happens exactly once" "RESTARTS:1" "$(printf '%s\n' "$_g4_out" | grep '^RESTARTS:')"
+_g4_out=$(
+	SEEN_FILE="$_g4_dir/seen3"; rm -f "$SEEN_FILE"; rm -f "$_g4_dir/snaps"
+	RESTART_ON_NEW_SUBNET=true RESTART_SNAPS="a" RESTART_SERVICES=""
+	current_subnets() { printf '%s' "enp1s0:10.0.0.0/24"; }
+	snap() { echo snap_$2 >>"$_g4_dir/snaps"; return 1; }
+	for _ in 1 2; do
+		RESTARTED_THIS_RUN=0 RESTART_NONE_SUCCEEDED_THIS_RUN=0
+		maybe_restart_on_new_subnet >/dev/null 2>&1
+	done
+	echo "SEEN:[$(cat "$SEEN_FILE" 2>/dev/null)] TRIES:$(grep -c snap_ "$_g4_dir/snaps")"
+)
+_g4_is "1ar an attempted total failure leaves the subnet unseen and retries" "SEEN:[] TRIES:2" "$_g4_out"
+_g4_out=$(
+	SEEN_FILE="$_g4_dir/seen4"; rm -f "$SEEN_FILE"; rm -f "$_g4_dir/snaps"
+	RESTART_ON_NEW_SUBNET=true RESTART_SNAPS="a b" RESTART_SERVICES=""
+	current_subnets() { printf '%s' "enp1s0:10.0.0.0/24"; }
+	snap() { echo snap_$2 >>"$_g4_dir/snaps"; [ "$2" = a ]; }
+	for _ in 1 2; do
+		RESTARTED_THIS_RUN=0 RESTART_NONE_SUCCEEDED_THIS_RUN=0
+		maybe_restart_on_new_subnet >/dev/null 2>&1
+	done
+	echo "SEEN:[$(cat "$SEEN_FILE" 2>/dev/null)] RESTARTS:$(grep -c snap_ "$_g4_dir/snaps")"
+)
+_g4_is "1ar a partial success consumes the subnet with no restart storm (a and b once, not again)" \
+	"SEEN:[enp1s0:10.0.0.0/24] RESTARTS:2" "$_g4_out"
+
+rm -rf "$_g4_dir"
+unset -f _g4_is _g4_has _g4_lacks _g4_dry_env _g4_printed_target _g4_removals _g4_status_env
+unset _g4_dir _g4_out
+
+# ---------------------------------------------------------------------------
 # 1aq. Upgrade/systemd lifecycle (Group 2): the real maintainer scripts and install.sh
 #      run as subprocesses; see tests/lifecycle.sh. Its counts are folded in here so
 #      `bash tests/unit.sh` stays the single gate.

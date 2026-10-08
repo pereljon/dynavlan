@@ -41,13 +41,13 @@ Every terminal exit path, with `dynavlan` line references.
 - lock-file open failure (reapply/boot/rescan) → **1** (2419/2433)
 
 ### `--status` — `do_status`
-- non-root → **1**; detection prerequisite missing (M8) → **1** (`detected trunks: unavailable`); otherwise → **0**, including a genuinely quiet wire
+- non-root → **1**; detection prerequisite missing (M8) → **1** (`detected trunks: unavailable`); a runtime detector failure on ANY sampled interface (D5) → **1** (incomplete or unavailable, whether the partial result is empty or not); a managed-elsewhere query failure → **1**; otherwise → **0**, including a genuinely quiet valid wire
 
 ### `--reconfigure` — `do_reconfigure` (…-2344)
 - cannot create drop-dir → **1**; write failure → **1**; `systemctl daemon-reload` failure (the new timer interval is not active) → **1**; success → **0** (the reload is skipped, not failed, only where systemd is positively absent); non-root → **1** (main)
 
 ### `--dry-run` — `do_dryrun`
-- validation pass or nothing-to-do → **0**; validation rejection (M3) → **1**; early refusals → **1** (`vstatus` is only ever 0 or 1)
+- validation pass or nothing-to-do → **0** (a quiet wire still validates); validation rejection (M3) → **1**; count-gate refusal (S3) → **1** with nothing validated; base-tree copy failure (L8) → **1** with nothing validated; a failed pending-delete or managed-elsewhere query → **1**; other early refusals → **1** (`vstatus` is only ever 0 or 1)
 
 ### `--reapply` — `do_reapply` (2205-2248)
 - nothing owned → **0** (2208); body identical to on-disk → **0**; applied + accepted → **0** (2248)

@@ -12,6 +12,20 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ### Fixed
 
+- Dry-run, status and subnet reporting (`ver=` 0.4.16 -> 0.4.17). `--dry-run` now follows
+  the real boot decisions: an invalid detection sample (even a partial one) no longer
+  previews a removal, the real VLAN count gate applies (a refusal cancels additions and
+  removals, prints the unchanged owned target, validates nothing, exits 1; `fill`
+  previews the filled target), a quiet wire still previews guarded pending-delete retries
+  and the new-subnet state and still validates, and a failed copy of the base netplan tree
+  is a failed pre-flight instead of validating a partial tree. `--status` reports
+  detection as unavailable/incomplete (non-zero) when any sampled interface's detector
+  failed, and prints one row per owned-or-detected trunk (carrier, configured, detected,
+  ignored, out-of-range, managed-elsewhere); the layout changed. With no restart targets
+  configured, new subnets are left unseen so a target configured later gets one catch-up
+  restart, and dry-run/status say `no restart targets configured` instead of `would
+  restart`. The docs now state that detection (and so `--status` and `--dry-run`) brings
+  physical NICs administratively up and leaves promiscuous mode on; it is not restored.
 - Upgrade and install lifecycle (`ver=` 0.4.15 -> 0.4.16). `install.sh` no longer
   re-enables a unit you left disabled: it captures the enabled/active state of both
   units first and restores each independently; only a first-ever install enables by

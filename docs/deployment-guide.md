@@ -2,7 +2,7 @@
 
 How to deploy dynavlan on a netplan/systemd-networkd Ubuntu box. This covers installation, configuration, the first (attended) run, and ongoing operation. What dynavlan is and how it works: `README.md`, `docs/dynavlan-PRD.md`.
 
-> A bad apply can drop an SSH session, so if possible, run the first `--boot` with an out-of-band fallback (serial console, IPMI, or physical access). If that is not available, `--dry-run` previews the change without applying it.
+> A bad apply can drop an SSH session, so if possible, run the first `--boot` with an out-of-band fallback (serial console, IPMI, or physical access). If that is not available, `--dry-run` previews the change without applying it (it does run detection, which brings physical NICs administratively up and leaves promiscuous mode on).
 
 ## 1. Prerequisites
 
@@ -153,7 +153,7 @@ Caveat: routed mode makes the interfaces routable, but the box still has one act
 
    Prints `dynavlan <version> (build <commit>)`. A `-dirty` suffix means the source tree had uncommitted changes and the build matches NO commit; `unknown` means it was installed from something other than a git checkout. Worth ten seconds: a deploy that lands mid-edit is indistinguishable from a failed fix unless you can name the running build. The same identity appears on every `run start:` line in the journal, so it is also recoverable after the fact.
 
-1. **Preview** - detection plus the intended diff, zero changes:
+1. **Preview** - detection plus the intended diff, with no configuration, apply, deletion, or restart changes (detection still brings NICs up and leaves promiscuous mode on):
 
    ```
    sudo dynavlan --dry-run
