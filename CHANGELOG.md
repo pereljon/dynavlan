@@ -12,6 +12,20 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ### Fixed
 
+- Removal lifecycle (`ver=` 0.4.18 -> 0.4.19). New `dynavlan --teardown`: the attended,
+  console-backed way to remove every owned VLAN. It takes the run lock (bounded wait), runs
+  on built-in defaults if the config is invalid, needs root/`ip`/netplan but not the
+  detection tools, refuses unless `dynavlan.timer` and `dynavlan.service` are both disabled
+  and inactive, retries pending deletes, then applies an empty candidate through the same
+  health-gated `netplan try` as a normal change and deletes the links only after it is
+  accepted. A residual link after an accepted teardown is reported with its exact
+  `ip link delete` and exit 1; a reverted or uncertain apply exits 1 with no delete advice.
+  `--dry-run` does not preview it. Package `remove` now stops and verifies the timer, waits
+  for any in-flight run, then disables the timer and boot service (it previously left them
+  enabled), and `purge` also removes the generated timer interval drop-in (the directory
+  only if empty). Maintainer scripts still never touch netplan or live links. The
+  deployment guide's removal section is rewritten: the old claim that deleting the YAML and
+  running `netplan apply` drops the VLANs was wrong (netplan does not delete interfaces).
 - Configuration grammar (`ver=` 0.4.17 -> 0.4.18). Numbers must now be canonical decimals:
   a leading zero (`05`, `018`) is refused instead of being read as octal. `VLAN_IGNORE`
   refuses an empty element at the start, middle or end (`"1,"`, `",1"`, `"1,,3"`) and

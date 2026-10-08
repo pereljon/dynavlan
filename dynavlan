@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.18"
+ver="0.4.19"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -28,6 +28,8 @@ CONF_FILE="/etc/dynavlan.conf"
 NETPLAN_FILE="/etc/netplan/90-dynavlan.yaml"   # FR-13: the one file we own
 LOCK_FILE="/run/dynavlan.lock"                 # FR-30: fd-held flock
 TIMER_DROPIN_DIR="/etc/systemd/system/dynavlan.timer.d" # --reconfigure renders the interval drop-in here
+SYSTEMD_UNIT_ETC="/etc/systemd/system"            # unit file locations (teardown posture check)
+SYSTEMD_UNIT_LIB="/lib/systemd/system"
 SYSTEMD_RUN_DIR="/run/systemd/system"          # present only while systemd is the running init (sd_booted)
 BACKUP_DIR="/var/backups/dynavlan"             # FR-19: audit/history backups (outside /etc/netplan)
 MIN_NETPLAN="0.106"                            # FR-0: pinned minimum (Ubuntu 22.04 baseline)
@@ -524,7 +526,7 @@ log() {
 }
 
 usage() {
-	printf 'usage: dynavlan --boot|--rescan|--reapply|--dry-run|--status|--reconfigure|--version (-V)\n' >&2
+	printf 'usage: dynavlan --boot|--rescan|--reapply|--dry-run|--status|--reconfigure|--teardown|--version (-V)\n' >&2
 }
 
 # Pure: the full build identity, e.g. "0.1.0 (build 18a6ea2-dirty)". An empty
@@ -611,7 +613,7 @@ config_load_file() { # FILE -> 0 on a clean parse, 1 (refuse) on a bad key or no
 	return 0
 }
 
-load_config() {
+config_defaults() { # the complete built-in default state (also the clean fallback for --teardown)
 	DETECT_METHOD="both"
 	VLAN_MIN=1
 	VLAN_MAX=1000
@@ -633,6 +635,12 @@ load_config() {
 	LOG_LEVEL=info
 	BACKUP_KEEP=10
 	RESTART_ON_NEW_SUBNET=true
+	IGNORE_SET=""
+	CARRIER_DEBOUNCE_SECONDS="$BOOT_SETTLE_SECONDS"
+}
+
+load_config() {
+	config_defaults
 
 	if [ -f "$CONF_FILE" ]; then
 		# Read as root on every run: refuse if the file is not root-owned or is
@@ -786,7 +794,7 @@ tcpdump_supports_inbound() { tcpdump -Q in -d vlan >/dev/null 2>&1; }
 # makes detection untrustworthy, so `--status` reports "unavailable" + non-zero
 # rather than a confident, wrong "detected: [none]". Deliberately checks neither
 # root nor `netplan try` - those gate the apply, not detection/reporting.
-check_detect_deps() {
+check_netplan_version() { # shared by the detection gate and the teardown prerequisites
 	have_cmd netplan || {
 		log err "netplan not found"
 		return 1
@@ -801,6 +809,11 @@ check_detect_deps() {
 		log err "netplan >= $MIN_NETPLAN required (found $v)"
 		return 1
 	fi
+	return 0
+}
+
+check_detect_deps() {
+	check_netplan_version || return 1
 	if [ "$DETECT_METHOD" = sniff ] || [ "$DETECT_METHOD" = both ]; then
 		have_cmd tcpdump || {
 			log err "DETECT_METHOD=$DETECT_METHOD requires tcpdump (not installed)"
@@ -829,6 +842,26 @@ check_preconditions() {
 	# `netplan try` gates the APPLY path only (status/detection never apply); a box
 	# that can detect but lacks a working `netplan try` must still fail a reconcile,
 	# with no silent fallback to bare `netplan apply`. Non-mutating capability probe.
+	netplan try --help >/dev/null 2>&1 || {
+		log err "'netplan try' unavailable; refusing (no silent fallback to bare 'netplan apply')"
+		return 1
+	}
+	return 0
+}
+
+# What --teardown needs: root, ip, a supported netplan and a working `netplan try`. It does
+# NOT need the detection tools (tcpdump/lldpctl): a recovery command must not refuse on a
+# box that cannot detect.
+check_apply_prereqs() {
+	if [ "$(id -u)" -ne 0 ]; then
+		log err "must run as root"
+		return 1
+	fi
+	have_cmd ip || {
+		log err "ip not found"
+		return 1
+	}
+	check_netplan_version || return 1
 	netplan try --help >/dev/null 2>&1 || {
 		log err "'netplan try' unavailable; refusing (no silent fallback to bare 'netplan apply')"
 		return 1
@@ -2572,6 +2605,96 @@ do_reapply() {
 	return $rc
 }
 
+# --teardown helpers. A unit file that does not exist counts as disabled and inactive.
+teardown_unit_file() { [ -e "$SYSTEMD_UNIT_ETC/$1" ] || [ -e "$SYSTEMD_UNIT_LIB/$1" ]; }
+
+# Both durable units must be disabled (or masked) and not running, else a reboot or the
+# timer would re-detect and re-add what this removes. An indeterminate answer refuses.
+teardown_check_posture() {
+	local u out
+	[ -d "$SYSTEMD_RUN_DIR" ] || {
+		log info "systemd is not running; skipping the unit posture check"
+		return 0
+	}
+	for u in dynavlan.timer dynavlan.service; do
+		teardown_unit_file "$u" || continue
+		out=$(systemctl is-enabled "$u" 2>/dev/null) || true
+		case "$out" in
+		disabled | masked | masked-runtime) ;;
+		enabled | enabled-runtime | static | indirect | generated | alias)
+			log err "teardown refused: $u is enabled (a reboot or the timer would undo it). Run: systemctl disable dynavlan.service dynavlan.timer"
+			return 1
+			;;
+		*)
+			log err "teardown refused: cannot determine whether $u is enabled"
+			return 1
+			;;
+		esac
+		out=$(systemctl is-active "$u" 2>/dev/null) || true
+		case "$out" in
+		inactive | failed) ;;
+		active | activating | reloading)
+			log err "teardown refused: $u is $out. Run: systemctl stop dynavlan.timer dynavlan.service, then verify with systemctl is-active"
+			return 1
+			;;
+		*)
+			log err "teardown refused: cannot determine whether $u is active"
+			return 1
+			;;
+		esac
+	done
+	return 0
+}
+
+# Attended, console-backed removal of the owned network state. The caller holds the run lock
+# (flock -w, taken in main) until the process exits, i.e. through the apply AND the deletes.
+# The empty candidate goes through apply_change: C1 default-route guard, backup, validation,
+# the health-gated netplan try, restore_prior on any non-accept, post-accept deletes.
+do_teardown() {
+	local owned tok residual="" drain_failed=0
+	log info "run start: dynavlan $(version_string "$ver" "$build") mode=teardown (attended; the console must be available)"
+	teardown_check_posture || return 1
+	if ! drain_pending_deletes; then
+		log err "teardown: pending-delete drain failed (see prior error); aborting, changing nothing further"
+		return 1
+	fi
+	if ! owned=$(backend_owned_vlans); then
+		log err "teardown refused: could not read the owned VLAN state from $NETPLAN_FILE"
+		return 1
+	fi
+	if [ -z "$owned" ]; then
+		if [ -f "$NETPLAN_FILE" ] && grep -q '^[[:space:]]*vlans:' "$NETPLAN_FILE"; then
+			log err "teardown refused: $NETPLAN_FILE has a vlans: section but no recognizable owned VLAN; refusing rather than calling it empty"
+			return 1
+		fi
+		log notice "teardown: nothing owned; nothing to remove"
+		return 0
+	fi
+	log notice "teardown: removing every owned VLAN [$owned] through a health-gated netplan try"
+	# Anything other than an accepted apply leaves the prior owned file restored (or the
+	# state uncertain), so no manual-delete advice is ever given for it.
+	if ! apply_change "" "" "$owned" ""; then
+		log err "teardown not completed (the apply was not accepted or ended uncertain); the previous owned configuration was restored where possible. Do NOT delete links by hand."
+		return 1
+	fi
+	drain_pending_deletes || drain_failed=1
+	for tok in $owned; do
+		ip link show "$tok" >/dev/null 2>&1 && residual="$residual $tok"
+	done
+	if [ -n "$residual" ]; then
+		for tok in $residual; do
+			log err "teardown accepted, but link $tok is still present. Delete it at the console: ip link delete $tok"
+		done
+		return 1
+	fi
+	if [ "$drain_failed" -eq 1 ]; then
+		log err "teardown accepted, but the pending-delete retry failed; the retry record may be incomplete"
+		return 1
+	fi
+	log notice "teardown complete: $NETPLAN_FILE now defines no VLANs (it may be deleted; no netplan apply is needed)"
+	return 0
+}
+
 do_status() { # FR-35 - report all trunks
 	local owned owned_ifaces all_trunks="" managed rc=0 det_state=ok
 	owned=$(backend_owned_vlans)
@@ -2707,7 +2830,7 @@ do_reconfigure() { # render the timer interval drop-in from RESCAN_MINUTES
 main() {
 	local mode="${1:-}" rc
 	case "$mode" in
-	--boot | --rescan | --reapply | --dry-run | --status | --reconfigure) ;;
+	--boot | --rescan | --reapply | --dry-run | --status | --reconfigure | --teardown) ;;
 	--version | -V)
 		# Answered before the config load and the root check on purpose: "what is
 		# installed here" must stay answerable when the config is invalid or the
@@ -2733,10 +2856,19 @@ main() {
 		;;
 	esac
 
-	load_config || {
-		log err "invalid configuration; refusing to run"
-		return 1
-	}
+	if [ "$mode" = --teardown ]; then
+		# A recovery command must not be blocked by a bad config, but a PARTIALLY parsed one
+		# would mix file values with defaults: discard it and run on the complete defaults.
+		if ! load_config; then
+			config_defaults
+			log warning "teardown: ignoring the invalid configuration and using built-in defaults"
+		fi
+	else
+		load_config || {
+			log err "invalid configuration; refusing to run"
+			return 1
+		}
+	fi
 
 	case "$mode" in
 	--status)
@@ -2758,6 +2890,28 @@ main() {
 		return $?
 		;;
 	esac
+
+	# --teardown needs the apply prerequisites but NOT the detection tools, so it branches off
+	# before check_preconditions (which requires them).
+	if [ "$mode" = --teardown ]; then
+		check_apply_prereqs || return 1
+		exec 8>"$LOCK_FILE" || {
+			log err "cannot open lock $LOCK_FILE"
+			return 1
+		}
+		if ! flock -w "$REAPPLY_LOCK_WAIT" 8; then
+			log err "another dynavlan run still holds $LOCK_FILE after ${REAPPLY_LOCK_WAIT}s; nothing changed. Stop dynavlan.timer, wait for the run to finish, and re-run"
+			return 1
+		fi
+		do_teardown
+		rc=$?
+		if stop_requested; then
+			log warning "run interrupted by a stop request"
+			rc=1
+		fi
+		log info "run end: mode=teardown rc=$rc"
+		return $rc
+	fi
 
 	check_preconditions || return 1
 

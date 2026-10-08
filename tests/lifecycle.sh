@@ -59,7 +59,12 @@ start)
 enable)
 	[ -n "$STUB_ENABLE_FAIL" ] && exit 1
 	echo 1 >"$sc/en.$2" ;;
-disable) echo 0 >"$sc/en.$2" ;;
+disable)
+	[ -n "$STUB_DISABLE_FAIL" ] && exit 1
+	# Unit-specific failure AFTER partial work: the unit ends up disabled but the command reports failure.
+	if [ -n "$STUB_DISABLE_FAIL_UNIT" ] && [ "$STUB_DISABLE_FAIL_UNIT" = "$2" ]; then echo 0 >"$sc/en.$2"; exit 1; fi
+	[ -n "$STUB_DISABLE_NOOP" ] && exit 0
+	echo 0 >"$sc/en.$2" ;;
 daemon-reload) exit "${STUB_RELOAD_RC:-0}" ;;
 esac
 exit 0
@@ -98,6 +103,11 @@ fi
 exec /bin/rm "$@"
 STUB
 printf '#!/bin/sh\nexit 0\n' >"$root/bin/systemd-tmpfiles"
+# Tripwires: the maintainer scripts must NEVER change the network. Any call is recorded and asserted empty at the end.
+for _t in netplan ip; do
+	printf '#!/bin/sh\necho "%s $*" >>"%s"\nexit 0\n' "$_t" "$root/forbidden_all" >"$root/bin/$_t"
+done
+: >"$root/forbidden_all"
 cat >"$root/bin/install" <<'STUB'
 #!/bin/sh
 # install.sh passes -o root -g root; a non-root test run cannot chown, so drop them.
@@ -135,7 +145,7 @@ _new() {
 	: >"$R/sc/calls"
 	: >"$R/sc/apt_calls"
 	unset STUB_ENABLED_FAIL STUB_ACTIVE_FAIL STUB_STOP_FAIL STUB_STOP_NOOP STUB_START_FAIL STUB_START_RC \
-		STUB_ENABLE_FAIL STUB_RELOAD_RC STUB_FLOCK_FAIL STUB_RECONFIGURE_RC STUB_RM_FAIL
+		STUB_ENABLE_FAIL STUB_RELOAD_RC STUB_FLOCK_FAIL STUB_RECONFIGURE_RC STUB_RM_FAIL STUB_DISABLE_FAIL STUB_DISABLE_NOOP STUB_DISABLE_FAIL_UNIT
 	rc="" out=""
 }
 
@@ -170,7 +180,8 @@ _maint() { # preinst|prerm|postinst|postrm -> substituted path
 			"JOURNALD_DIR=$R/etc/systemd/journald.conf.d" "JOURNAL_DIR=$R/var/log/journal" \
 			"UNIT_ETC=$R/etc/systemd/system" "UNIT_LIB=$R/lib/systemd/system" "${common[@]}" ;;
 	postrm)
-		_sub "debian/postrm" "${common[@]}" ;;
+		_sub "debian/postrm" "CONF=$R/etc/dynavlan.conf" "JOURNALD_DROPIN=$R/etc/systemd/journald.conf.d/00-dynavlan-persistent.conf" \
+			"JOURNALD_DIR=$R/etc/systemd/journald.conf.d" "TIMER_DROPIN_DIR=$R/etc/systemd/system/dynavlan.timer.d" "${common[@]}" ;;
 	esac
 }
 
@@ -526,6 +537,148 @@ _run "$p" upgrade 0.4.16
 check "prerm abort with a failed timer restore keeps the record" _has_record
 check "prerm abort with a failed timer restore reports the failure" _rcnz
 check "prerm abort with a failed timer restore tells the operator" _out_has "start it manually"
+
+
+# ---- Group 6 (D7): remove / purge
+_new # remove, enabled + active: quiesce, then disable both enableable units; the static rescan service is never "disabled"
+_units lib
+_state 1 1 1
+p=$(_maint prerm)
+_run "$p" remove
+check "prerm remove (enabled+active) succeeds" _rc0
+check "prerm remove leaves the timer inactive" _timer_is 0
+check "prerm remove leaves dynavlan.timer disabled" _en_is dynavlan.timer 0
+check "prerm remove leaves dynavlan.service disabled" _en_is dynavlan.service 0
+check "prerm remove never uses disable --now" _not_called "disable --now"
+check "prerm remove never touches the static rescan service" _not_called "dynavlan-rescan"
+check "prerm remove stops the timer BEFORE disabling it" bash -c "s=\$(grep -n '^stop' '$R/sc/calls' | head -1 | cut -d: -f1); d=\$(grep -n '^disable' '$R/sc/calls' | head -1 | cut -d: -f1); [ -n \"\$s\" ] && [ -n \"\$d\" ] && [ \"\$s\" -lt \"\$d\" ]"
+
+_new # remove, already disabled + inactive
+_units lib
+_state 0 0 0
+p=$(_maint prerm)
+_run "$p" remove
+check "prerm remove (already disabled+inactive) succeeds" _rc0
+check "prerm remove (already disabled+inactive) stays disabled" _en_is dynavlan.timer 0
+check "prerm remove (already disabled+inactive) never starts anything" _not_called "^start"
+
+_new # timer stop fails: abort before any disable
+_units lib
+_state 1 1 1
+export STUB_STOP_FAIL=1
+p=$(_maint prerm)
+_run "$p" remove
+check "prerm remove aborts when the timer cannot be stopped" _rcnz
+check "prerm remove does not disable anything after a failed stop" _not_called "^disable"
+
+_new # stop reports success but the timer stays active: abort, restore
+_units lib
+_state 1 1 1
+export STUB_STOP_NOOP=1
+p=$(_maint prerm)
+_run "$p" remove
+check "prerm remove aborts when the timer is still active after stop" _rcnz
+check "prerm remove does not disable after a failed verification" _not_called "^disable"
+
+_new # is-active indeterminate: refuse before touching anything
+_units lib
+_state 1 1 1
+export STUB_ACTIVE_FAIL=1
+p=$(_maint prerm)
+_run "$p" remove
+check "prerm remove aborts when the timer state cannot be determined" _rcnz
+check "prerm remove stops/disables nothing when the state is unknown" bash -c "! grep -q '^stop\\|^disable' '$R/sc/calls'"
+
+_new # disable fails after quiescence: fail loudly, put the timer back, re-enable what was disabled
+_units lib
+_state 1 1 1
+export STUB_DISABLE_FAIL=1
+p=$(_maint prerm)
+_run "$p" remove
+check "prerm remove fails when disable fails" _rcnz
+check "prerm remove restarts the previously active timer after a failed disable" _timer_is 1
+
+_new # disable silently does nothing: the verification must catch the stale enablement
+_units lib
+_state 1 1 1
+export STUB_DISABLE_NOOP=1
+p=$(_maint prerm)
+_run "$p" remove
+check "prerm remove does not report success with a stale enabled unit" _rcnz
+check "prerm remove restores the timer when the post-disable verification fails" _timer_is 1
+
+_new # indeterminate initial enablement refuses before anything is stopped or disabled
+_units lib
+_state 1 1 1
+export STUB_ENABLED_FAIL=1
+p=$(_maint prerm)
+_run "$p" remove
+check "prerm remove refuses when a unit's enablement cannot be determined" _rcnz
+check "prerm remove stops and disables nothing when enablement is unknown" bash -c "! grep -q '^stop\\|^disable' '$R/sc/calls'"
+
+_new # timer was disabled, service enabled; the SERVICE disable fails: rollback must restore the captured posture, not the command results
+_units lib
+_state 1 0 0
+export STUB_DISABLE_FAIL_UNIT=dynavlan.service
+p=$(_maint prerm)
+_run "$p" remove
+check "prerm remove fails when the service disable fails" _rcnz
+check "prerm remove rollback never enables the timer that was disabled before" _en_is dynavlan.timer 0
+check "prerm remove rollback re-enables the service whose disable failed" _en_is dynavlan.service 1
+
+_new # both enabled and active; the second disable fails after partial work: both end enabled and the timer is restarted
+_units lib
+_state 1 1 1
+export STUB_DISABLE_FAIL_UNIT=dynavlan.service
+p=$(_maint prerm)
+_run "$p" remove
+check "prerm remove rollback leaves the timer enabled" _en_is dynavlan.timer 1
+check "prerm remove rollback leaves the service enabled" _en_is dynavlan.service 1
+check "prerm remove rollback restarts the previously active timer" _timer_is 1
+
+_new # held lock plus failing restart: exact original status (1), reported
+_units lib
+_state 1 1 1
+export STUB_FLOCK_FAIL=1 STUB_START_FAIL=1
+p=$(_maint prerm)
+_run "$p" remove
+check "prerm remove with a held lock and a failed restart still fails with status 1" test "$rc" -eq 1
+check "prerm remove tells the operator the timer could not be restarted" _out_has "start it manually"
+
+_new # no systemd (chroot/container): nothing systemd-specific is attempted, the lock is still waited for
+rmdir "$R/run/systemd/system"
+_units lib
+p=$(_maint prerm)
+_run "$p" remove
+check "prerm remove without systemd succeeds" _rc0
+check "prerm remove without systemd makes no systemctl calls" _not_called "is-"
+check "prerm remove without systemd still waits for the run lock" _called "flock -w"
+
+_new # postrm remove keeps the configuration-like state; purge removes it, rmdir only when empty
+mkdir -p "$R/etc/systemd/system/dynavlan.timer.d"
+: >"$R/etc/dynavlan.conf"; : >"$R/etc/systemd/journald.conf.d/00-dynavlan-persistent.conf"
+: >"$R/etc/systemd/system/dynavlan.timer.d/interval.conf"
+p=$(_maint postrm)
+_run "$p" remove
+check "postrm remove keeps /etc/dynavlan.conf" test -e "$R/etc/dynavlan.conf"
+check "postrm remove keeps the generated timer drop-in" test -e "$R/etc/systemd/system/dynavlan.timer.d/interval.conf"
+_run "$p" purge
+check "postrm purge removes the conffile" test ! -e "$R/etc/dynavlan.conf"
+check "postrm purge removes the journald drop-in" test ! -e "$R/etc/systemd/journald.conf.d/00-dynavlan-persistent.conf"
+check "postrm purge removes the generated timer drop-in" test ! -e "$R/etc/systemd/system/dynavlan.timer.d/interval.conf"
+check "postrm purge removes the now-empty timer.d directory" test ! -d "$R/etc/systemd/system/dynavlan.timer.d"
+
+_new # purge must not recursively delete a directory that holds something else
+mkdir -p "$R/etc/systemd/system/dynavlan.timer.d"
+: >"$R/etc/systemd/system/dynavlan.timer.d/interval.conf"; echo keep >"$R/etc/systemd/system/dynavlan.timer.d/operator.conf"
+p=$(_maint postrm)
+_run "$p" purge
+check "postrm purge succeeds with a foreign file in timer.d" _rc0
+check "postrm purge preserves a foreign file in timer.d" test -e "$R/etc/systemd/system/dynavlan.timer.d/operator.conf"
+check "postrm purge still removes interval.conf" test ! -e "$R/etc/systemd/system/dynavlan.timer.d/interval.conf"
+
+# Tripwire: no maintainer script above (or in this file) ever invoked netplan or ip.
+check "no maintainer script called netplan or ip (never changes the network)" bash -c "[ ! -s '$root/forbidden_all' ]"
 
 # ======================= postinst =======================
 

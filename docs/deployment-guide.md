@@ -233,13 +233,45 @@ Removals depend on *why* a VLAN went away:
 
 ## 7. Removal
 
-```
-sudo systemctl disable --now dynavlan.timer dynavlan.service
-sudo rm /etc/systemd/system/dynavlan.service /etc/systemd/system/dynavlan-rescan.service /etc/systemd/system/dynavlan.timer
-sudo rm -rf /etc/systemd/system/dynavlan.timer.d
-sudo systemctl daemon-reload
-sudo rm /etc/netplan/90-dynavlan.yaml && sudo netplan apply   # drops dynavlan's VLANs
-sudo rm /usr/local/sbin/dynavlan /etc/dynavlan.conf
-```
+Removal is two separate things: taking down the network state dynavlan owns (attended), and removing the software. Do them in that order; removing the software alone leaves the VLANs in place.
+
+### A. Tear down the owned VLANs (attended, at the console)
+
+`dynavlan --teardown` is attended: run it at the console, not over SSH. A management VLAN that is not the default route can still carry your session, and the default-route guard cannot see that. `--dry-run` does **not** preview it (dry-run previews a normal reconcile, not an empty target).
+
+1. Take both units out of service and verify, so neither the timer nor a reboot can re-add the VLANs:
+   ```
+   sudo systemctl disable dynavlan.service dynavlan.timer
+   sudo systemctl stop dynavlan.timer dynavlan.service
+   systemctl is-enabled dynavlan.timer dynavlan.service     # both: disabled
+   systemctl is-active  dynavlan.timer dynavlan.service     # neither: active
+   ```
+2. Run `sudo dynavlan --teardown`. It waits for the run lock, refuses unless both units are disabled and inactive, retries any pending deletes, then applies an empty configuration through the same health-gated `netplan try` as a normal change. Only after that is accepted does it delete the VLAN links.
+   - Success: it says the owned file now defines no VLANs.
+   - It exits 1 and prints `ip link delete <name>` for any link still present after an **accepted** teardown: run those at the console.
+   - It exits 1 with **no** delete advice when the apply was not accepted or ended uncertain: the previous owned file was restored, so do not delete links by hand.
+   - The monitoring agent is restarted as for any accepted change; a failed restart only warns.
+3. Optional: `sudo rm /etc/netplan/90-dynavlan.yaml`. It now defines no VLANs, so no `netplan apply` is needed.
+
+### B. Remove the software
+
+- **Package:** `sudo apt remove dynavlan` stops the timer, waits for any run, and disables the service and timer; it keeps `/etc/dynavlan.conf` and the generated timer drop-in. `sudo apt purge dynavlan` also removes the config, the journald drop-in and the generated interval drop-in. Neither touches `/etc/netplan` or any live interface.
+- **Source install** (`install.sh`), in this order (after step A; never `rm -rf` the drop-in directories):
+  ```
+  sudo systemctl stop dynavlan.timer && systemctl is-active dynavlan.timer       # must NOT print active
+  sudo flock -w 300 /run/dynavlan.lock true                                      # waits out any in-flight run
+  sudo systemctl disable dynavlan.timer dynavlan.service                         # the two enableable units only
+  sudo rm /etc/systemd/system/dynavlan.service /etc/systemd/system/dynavlan-rescan.service /etc/systemd/system/dynavlan.timer
+  sudo rm -f /etc/systemd/system/dynavlan.timer.d/interval.conf
+  sudo rmdir /etc/systemd/system/dynavlan.timer.d                                # only if empty
+  sudo rm -f /etc/systemd/journald.conf.d/00-dynavlan-persistent.conf
+  sudo rmdir /etc/systemd/journald.conf.d                                        # only if empty (may fail harmlessly)
+  sudo systemctl daemon-reload
+  sudo rm /usr/local/sbin/dynavlan /etc/dynavlan.conf
+  ```
+
+### C. If you remove the software without tearing down
+
+Nothing is removed from the network: `/etc/netplan/90-dynavlan.yaml` and the VLAN links stay, and netplan re-creates them at boot, with nothing managing them. Removing the YAML and running `netplan apply` does **not** drop the links (netplan does not delete interfaces). To clear that state later: reinstall and run step A; or, at the console, delete the owned file and reboot; or delete the file and each link by hand with `ip link delete`.
 
 Base networking is untouched throughout - dynavlan never modified it.

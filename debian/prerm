@@ -113,6 +113,25 @@ abort_restore() {
 	if [ "$restored" = 1 ]; then discard_record; fi
 }
 
+# Undo a partly completed `remove`: once the disable phase began, re-enable every unit that
+# was enabled BEFORE this attempt (including one whose disable failed part-way), never one
+# that was already disabled or masked, and put a previously running timer back. Failures are
+# reported, never silent; the caller still exits 1.
+remove_abort() { # WAS_ACTIVE
+	if [ "${DISABLE_STARTED:-0}" = 1 ]; then
+		if [ "${PRIOR_TMR_EN:-0}" = 1 ]; then
+			systemctl enable dynavlan.timer 2>/dev/null || warn "could not re-enable dynavlan.timer after the aborted removal; enable it manually"
+		fi
+		if [ "${PRIOR_SVC_EN:-0}" = 1 ]; then
+			systemctl enable dynavlan.service 2>/dev/null || warn "could not re-enable dynavlan.service after the aborted removal; enable it manually"
+		fi
+	fi
+	if [ "$1" = 1 ]; then
+		systemctl start dynavlan.timer 2>/dev/null ||
+			warn "could not restart dynavlan.timer after the aborted removal; start it manually"
+	fi
+}
+
 # Wait for any in-flight run (FR-30 lock). A run still holding it past the timeout
 # ABORTS the operation (H4): dpkg would otherwise overwrite/remove the script under a
 # live run, and bash reads a script lazily by file offset, so the running invocation
@@ -125,20 +144,68 @@ wait_lock() {
 
 case "$1" in
 remove)
-	# Removal behavior is unchanged: stop the timer, wait for an in-flight run, and
-	# restore the timer if the wait aborts.
+	# Quiesce first, then take the units out of service. Order matters: stop the timer
+	# (verified), wait for any in-flight run (the lock), and only then disable the two
+	# enableable units. `disable --now` is deliberately not used, and wants links are never
+	# removed by hand. dynavlan-rescan.service is static (no [Install]); the lock is the
+	# evidence that no oneshot is still executing.
 	tmr_active=0
+	PRIOR_TMR_EN=0
+	PRIOR_SVC_EN=0
+	DISABLE_STARTED=0
 	if systemd_running; then
-		systemctl is-active --quiet dynavlan.timer 2>/dev/null && tmr_active=1
-		systemctl stop dynavlan.timer 2>/dev/null || true
+		# Capture the enablement of both units BEFORE stopping or disabling anything, so a
+		# rollback restores what was there rather than what the commands reported.
+		PRIOR_TMR_EN=$(unit_enabled dynavlan.timer) || {
+			echo "ERROR: cannot determine whether dynavlan.timer is enabled; refusing to remove the script" >&2
+			exit 1
+		}
+		PRIOR_SVC_EN=$(unit_enabled dynavlan.service) || {
+			echo "ERROR: cannot determine whether dynavlan.service is enabled; refusing to remove the script" >&2
+			exit 1
+		}
+		live=$(timer_active) || {
+			echo "ERROR: cannot determine whether dynavlan.timer is active; refusing to remove the script" >&2
+			exit 1
+		}
+		if [ "$live" = 1 ]; then
+			tmr_active=1
+			if ! systemctl stop dynavlan.timer; then
+				echo "ERROR: could not stop dynavlan.timer; refusing to remove the script" >&2
+				exit 1
+			fi
+			if [ "$(timer_active || echo unknown)" != 0 ]; then
+				echo "ERROR: dynavlan.timer is still active or its state cannot be verified after stop; refusing to remove the script" >&2
+				remove_abort "$tmr_active"
+				exit 1
+			fi
+		fi
 	fi
 	if ! wait_lock; then
 		echo "ERROR: a dynavlan run still holds $LOCK_FILE after ${LOCK_WAIT}s; refusing to remove the script under a live run (wait for it to finish, or stop dynavlan-rescan.service, then retry)" >&2
-		if [ "$tmr_active" = 1 ]; then
-			systemctl start dynavlan.timer 2>/dev/null ||
-				warn "could not restart dynavlan.timer after the aborted removal; start it manually"
-		fi
+		remove_abort "$tmr_active"
 		exit 1
+	fi
+	if systemd_running; then
+		DISABLE_STARTED=1 # from here an abort restores the captured enablement
+		for u in dynavlan.timer dynavlan.service; do
+			unit_exists "$u" || continue
+			if [ "$u" = dynavlan.timer ]; then en=$PRIOR_TMR_EN; else en=$PRIOR_SVC_EN; fi
+			[ "$en" = 1 ] || continue # already disabled or masked: nothing to do
+			if ! systemctl disable "$u"; then
+				echo "ERROR: could not disable $u; refusing to remove the script" >&2
+				remove_abort "$tmr_active"
+				exit 1
+			fi
+		done
+		# A successful removal must leave both units disabled and the timer inactive.
+		if [ "$(unit_enabled dynavlan.timer || echo unknown)" != 0 ] ||
+			[ "$(unit_enabled dynavlan.service || echo unknown)" != 0 ] ||
+			[ "$(timer_active || echo unknown)" != 0 ]; then
+			echo "ERROR: could not establish disabled units and an inactive timer after disable; refusing to remove the script" >&2
+			remove_abort "$tmr_active"
+			exit 1
+		fi
 	fi
 	;;
 upgrade | failed-upgrade)

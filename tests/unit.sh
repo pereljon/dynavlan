@@ -3321,6 +3321,256 @@ _g4_out=$(
 _g4_is "1ar a partial success consumes the subnet with no restart storm (a and b once, not again)" \
 	"SEEN:[enp1s0:10.0.0.0/24] RESTARTS:2" "$_g4_out"
 
+# ---------------------------------------------------------------------------
+# 1at. dynavlan --teardown (Group 6, D7): attended removal of owned network state.
+#      Reuses apply_change "" "" "$owned" "" (empty candidate through the health-gated
+#      netplan try path). Stubs sit at the systemd / ip / netplan boundary; one composed
+#      case runs the REAL apply_change, backend_generate_config and backend_remove_vlan.
+# ---------------------------------------------------------------------------
+
+_g6_dir=$(mktemp -d)
+# Real definitions, kept so the composed case can restore them after _g6_env stubs them.
+_g6_real_apply=$(declare -f apply_change)
+_g6_real_drain=$(declare -f drain_pending_deletes)
+_g6_real_owned=$(declare -f backend_owned_vlans)
+
+_g6_env() { # defaults + stubs for one do_teardown/main --teardown scenario
+	LOCK_FILE="$_g6_dir/lock" CONF_FILE="$_g6_dir/none.conf" SEEN_FILE="$_g6_dir/seen"
+	PENDING_DELETE_FILE="$_g6_dir/pending" NETPLAN_FILE="$_g6_dir/90-dynavlan.yaml"
+	SYSTEMD_RUN_DIR="$_g6_dir/run"; mkdir -p "$SYSTEMD_RUN_DIR"
+	SYSTEMD_UNIT_ETC="$_g6_dir/uetc"; SYSTEMD_UNIT_LIB="$_g6_dir/ulib"; mkdir -p "$SYSTEMD_UNIT_ETC" "$SYSTEMD_UNIT_LIB"
+	: >"$SYSTEMD_UNIT_LIB/dynavlan.timer"; : >"$SYSTEMD_UNIT_LIB/dynavlan.service"
+	rm -f "$_g6_dir/calls" "$_g6_dir/args" "$_g6_dir/pending"
+	G6_OWNED="enp1s0.100 enp1s0.200" G6_TMR_EN=disabled G6_SVC_EN=disabled G6_TMR_ACT=inactive G6_SVC_ACT=inactive
+	G6_APPLY_RC=0 G6_DRAIN_RC=0 G6_LIVE=""
+	printf '%s\n' '# Managed by dynavlan' 'network:' '  version: 2' >"$NETPLAN_FILE"
+	check_apply_prereqs() { return 0; }
+	flock() { return 0; }
+	systemctl() {
+		if [ "$1:$2" = is-enabled:dynavlan.timer ]; then printf '%s' "$G6_TMR_EN"
+		elif [ "$1:$2" = is-enabled:dynavlan.service ]; then printf '%s' "$G6_SVC_EN"
+		elif [ "$1:$2" = is-active:dynavlan.timer ]; then printf '%s' "$G6_TMR_ACT"
+		elif [ "$1:$2" = is-active:dynavlan.service ]; then printf '%s' "$G6_SVC_ACT"
+		fi
+		return 0
+	}
+	drain_pending_deletes() { echo drain >>"$_g6_dir/calls"; return "$G6_DRAIN_RC"; }
+	backend_owned_vlans() { printf '%s' "$G6_OWNED"; }
+	apply_change() { echo apply >>"$_g6_dir/calls"; printf '[%s]|[%s]|[%s]|[%s]' "$1" "$2" "$3" "$4" >"$_g6_dir/args"; return "$G6_APPLY_RC"; }
+	ip() { if [ "$1 $2" = "link show" ]; then [[ " $G6_LIVE " == *" $3 "* ]]; return; fi; echo "ip $*" >>"$_g6_dir/calls"; return 0; }
+}
+_g6_n() { local c; c=$(grep -c "^$1\$" "$_g6_dir/calls" 2>/dev/null) || c=0; printf '%s' "${c:-0}"; }
+
+# --- check_apply_prereqs: root, ip, netplan version, `netplan try --help`; NO detection tools
+_g6_out=$(
+	have_cmd() { [ "$1" = netplan ] || [ "$1" = ip ]; } # no tcpdump, no lldpctl
+	netplan_version() { echo 1.0; }
+	netplan() { return 0; }
+	id() { echo 0; }
+	DETECT_METHOD=both MIN_NETPLAN=0.106
+	check_apply_prereqs 2>&1 && echo OK
+)
+_g4_is "1at prerequisites do not require tcpdump or lldpctl" "OK" "$_g6_out"
+_g6_out=$(
+	have_cmd() { [ "$1" = netplan ]; }
+	netplan_version() { echo 1.0; }; netplan() { return 0; }; id() { echo 0; }; MIN_NETPLAN=0.106
+	check_apply_prereqs 2>&1 || echo REFUSED
+)
+_g4_has "1at prerequisites refuse when ip is missing" "REFUSED" "$_g6_out"
+_g6_out=$(
+	have_cmd() { return 0; }; netplan_version() { echo 0.100; }; netplan() { return 0; }; id() { echo 0; }; MIN_NETPLAN=0.106
+	check_apply_prereqs 2>&1 || echo REFUSED
+)
+_g4_has "1at prerequisites refuse an old netplan" "REFUSED" "$_g6_out"
+_g6_out=$(
+	have_cmd() { return 0; }; netplan_version() { echo 1.0; }; netplan() { return 1; }; id() { echo 0; }; MIN_NETPLAN=0.106
+	check_apply_prereqs 2>&1 || echo REFUSED
+)
+_g4_has "1at prerequisites refuse when netplan try is unavailable" "REFUSED" "$_g6_out"
+_g6_out=$(
+	have_cmd() { return 0; }; netplan_version() { echo 1.0; }; netplan() { return 0; }; id() { echo 1000; }; MIN_NETPLAN=0.106
+	check_apply_prereqs 2>&1 || echo REFUSED
+)
+_g4_has "1at prerequisites refuse a non-root caller" "REFUSED" "$_g6_out"
+
+# --- clean default reset: a config that partly parses must not leak values into a teardown
+printf '%s\n' 'VLAN_MIN=5' 'VLAN_WARN=notanumber' >"$_g6_dir/bad.conf"
+_g6_out=$(
+	_g6_env
+	CONF_FILE="$_g6_dir/bad.conf"
+	apply_change() { echo "MIN=$VLAN_MIN WARN=$VLAN_WARN" >"$_g6_dir/args"; return 0; }
+	main --teardown 2>&1
+	echo "rc=$?"; cat "$_g6_dir/args"
+)
+_g4_has "1at an invalid config is ignored with a warning" "ignoring" "$_g6_out"
+_g4_has "1at teardown runs on a COMPLETE default state, not a partial parse" "MIN=1 WARN=32" "$_g6_out"
+_g4_has "1at teardown still proceeds and succeeds after the config fallback" "rc=0" "$_g6_out"
+_g6_out=$(
+	_g6_env
+	CONF_FILE="$_g6_dir/bad.conf"
+	main --boot 2>&1
+	echo "rc=$?"
+)
+_g4_has "1at the config fallback is NOT broadened: --boot still refuses an invalid config" "rc=1" "$_g6_out"
+
+# --- lock: bounded wait, refusal before anything is done
+_g6_out=$(
+	_g6_env
+	flock() { return 1; }
+	main --teardown 2>&1
+	echo "rc=$?"; echo "APPLY:$(_g6_n apply) DRAIN:$(_g6_n drain)"
+)
+_g4_has "1at a held run lock refuses" "rc=1" "$_g6_out"
+_g4_has "1at a held run lock does nothing else" "APPLY:0 DRAIN:0" "$_g6_out"
+
+# --- posture refusals (while holding the lock), each BEFORE any mutation
+while IFS='|' read -r _g6_name _g6_te _g6_se _g6_ta _g6_sa; do
+	_g6_out=$(
+		_g6_env
+		G6_TMR_EN=$_g6_te G6_SVC_EN=$_g6_se G6_TMR_ACT=$_g6_ta G6_SVC_ACT=$_g6_sa
+		main --teardown 2>&1
+		echo "rc=$?"; echo "APPLY:$(_g6_n apply) DRAIN:$(_g6_n drain)"
+	)
+	_g4_has "1at posture refusal: $_g6_name" "rc=1" "$_g6_out"
+	_g4_has "1at posture refusal changes nothing: $_g6_name" "APPLY:0 DRAIN:0" "$_g6_out"
+done <<'TABLE'
+the timer is enabled|enabled|disabled|inactive|inactive
+the boot service is enabled|disabled|enabled|inactive|inactive
+the timer is active|disabled|disabled|active|inactive
+the timer is activating|disabled|disabled|activating|inactive
+the boot service is active|disabled|disabled|inactive|active
+is-enabled is indeterminate|unknown-state||inactive|inactive
+is-active is indeterminate|disabled|disabled||inactive
+TABLE
+_g6_out=$(
+	_g6_env
+	G6_TMR_EN=masked G6_SVC_EN=disabled G6_TMR_ACT=failed G6_SVC_ACT=inactive
+	main --teardown 2>&1
+	echo "rc=$?"; echo "APPLY:$(_g6_n apply)"
+)
+_g4_has "1at masked and failed units are an acceptable posture" "APPLY:1" "$_g6_out"
+_g6_out=$(
+	_g6_env
+	G6_SVC_EN=enabled
+	main --teardown 2>&1
+)
+_g4_has "1at an enabled boot service is named and the fix is given" "dynavlan.service is enabled" "$_g6_out"
+_g4_has "1at the refusal gives the exact disable command" "systemctl disable dynavlan.service dynavlan.timer" "$_g6_out"
+
+# --- drain, owned-state queries
+_g6_out=$(
+	_g6_env
+	G6_DRAIN_RC=1
+	main --teardown 2>&1
+	echo "rc=$?"; echo "APPLY:$(_g6_n apply)"
+)
+_g4_has "1at a failed pending-delete drain aborts before the apply" "rc=1" "$_g6_out"
+_g4_has "1at a failed pending-delete drain applies nothing" "APPLY:0" "$_g6_out"
+_g6_out=$(
+	_g6_env
+	G6_OWNED=""
+	printf '%s\n' 'network:' '  version: 2' '  vlans:' '    weird-name:' '      id: 5' >"$NETPLAN_FILE"
+	main --teardown 2>&1
+	echo "rc=$?"; echo "APPLY:$(_g6_n apply)"
+)
+_g4_has "1at a vlans: section with no canonical owned token is refused" "rc=1" "$_g6_out"
+_g4_has "1at an unrecognized owned file applies nothing" "APPLY:0" "$_g6_out"
+_g6_out=$(
+	_g6_env
+	backend_owned_vlans() { return 1; }
+	main --teardown 2>&1
+	echo "rc=$?"; echo "APPLY:$(_g6_n apply)"
+)
+_g4_has "1at a failed owned-state query is refused, not read as nothing owned" "rc=1" "$_g6_out"
+_g6_out=$(
+	_g6_env
+	G6_OWNED=""
+	main --teardown 2>&1
+	echo "rc=$?"; echo "APPLY:$(_g6_n apply) DRAIN:$(_g6_n drain)"
+)
+_g4_has "1at nothing owned (inert file) is a successful no-op" "rc=0" "$_g6_out"
+_g4_has "1at nothing owned still retries pending orphans first, applying nothing" "APPLY:0 DRAIN:1" "$_g6_out"
+_g6_out=$(
+	_g6_env
+	G6_OWNED=""; rm -f "$NETPLAN_FILE"
+	main --teardown 2>&1
+	echo "rc=$?"
+)
+_g4_has "1at an absent owned file is also a valid nothing-owned state" "rc=0" "$_g6_out"
+
+# --- the exact empty-target apply, and what happens after it
+_g6_out=$(
+	_g6_env
+	main --teardown 2>&1
+	echo "rc=$?"; cat "$_g6_dir/args"
+)
+_g4_has "1at apply_change gets an empty target, no additions, the owned set as removals, no lease set" "[]|[]|[enp1s0.100 enp1s0.200]|[]" "$_g6_out"
+_g4_has "1at a clean accepted teardown succeeds" "rc=0" "$_g6_out"
+_g6_out=$(
+	_g6_env
+	G6_APPLY_RC=1 G6_LIVE="enp1s0.100 enp1s0.200"
+	main --teardown 2>&1
+	echo "rc=$?"; echo "DRAIN:$(_g6_n drain)"
+)
+_g4_has "1at a non-accepted apply propagates failure" "rc=1" "$_g6_out"
+_g4_lacks "1at a non-accepted apply NEVER offers manual link deletes (the prior YAML was restored)" "ip link delete" "$_g6_out"
+_g4_has "1at a non-accepted apply does not run the post-accept drain" "DRAIN:1" "$_g6_out"
+_g6_out=$(
+	_g6_env
+	G6_LIVE="enp1s0.200"
+	main --teardown 2>&1
+	echo "rc=$?"; echo "DRAIN:$(_g6_n drain)"
+)
+_g4_has "1at an accepted teardown with a residual link prints the exact delete command" "ip link delete enp1s0.200" "$_g6_out"
+_g4_lacks "1at only the residual token is named" "ip link delete enp1s0.100" "$_g6_out"
+_g4_has "1at an accepted teardown with a residual link fails" "rc=1" "$_g6_out"
+_g4_has "1at an accepted teardown retries pending deletes once more (drain ran twice)" "DRAIN:2" "$_g6_out"
+_g6_out=$(
+	_g6_env
+	drain_pending_deletes() { echo drain >>"$_g6_dir/calls"; [ "$(grep -c '^drain$' "$_g6_dir/calls")" -lt 2 ]; }
+	main --teardown 2>&1
+	echo "rc=$?"
+)
+_g4_has "1at a failed post-accept drain fails even with no visible residual" "rc=1" "$_g6_out"
+
+# --- composed: the REAL apply_change / backend_generate_config / backend_remove_vlan
+_g6_out=$(
+	_g6_env
+	unset -f ip
+	eval "$_g6_real_apply"; eval "$_g6_real_drain"; eval "$_g6_real_owned"
+	POLL_INTERVAL=1 TRY_TIMEOUT=6 APPLY_NOEVIDENCE_SETTLE=0 APPLY_FALLBACK_SETTLE=0 HEALTH_CONSEC=1 STOP_CHILD_MARGIN=1
+	BACKUP_DIR="$_g6_dir/backups"; mkdir -p "$BACKUP_DIR"
+	RESTART_SNAPS="" RESTART_SERVICES="" VLAN_ROUTES=false RESTART_ON_NEW_SUBNET=false
+	printf '%s\n' '# Managed by dynavlan' 'network:' '  version: 2' '  vlans:' '    enp1s0.100:' '      id: 100' '      link: enp1s0' \
+		'    enp1s0.200:' '      id: 200' '      link: enp1s0' >"$NETPLAN_FILE"
+	G6_LIVE="enp1s0.100 enp1s0.200"
+	ip() {
+		if [ "$1 $2" = "link show" ]; then [[ " $G6_LIVE " == *" $3 "* ]]; return; fi
+		if [ "$1 $2" = "link delete" ]; then echo "deleted $3" >>"$_g6_dir/calls"; G6_LIVE=$(printf '%s' " $G6_LIVE " | sed "s/ $3 / /"); return 0; fi
+		return 0
+	}
+	netplan() { if [ "$1" = try ]; then IFS= read -r _ && return 0; return 1; fi; return 0; }
+	mktemp() { printf '%s\n' "$_g6_dir/fifo.$RANDOM"; }
+	snapshot_default_route() { printf '%s' enp9s0; }
+	post_apply_health() { echo PASS; }
+	backend_validate() { return 0; }
+	main --teardown 2>&1
+	echo "rc=$?"
+	echo "FILE:$(tr '\n' '~' <"$NETPLAN_FILE")"
+	echo "DELETES:$(grep -c '^deleted ' "$_g6_dir/calls")"
+	echo "BACKUPS:$(find "$BACKUP_DIR" -type f | wc -l | tr -d ' ')"
+)
+_g4_has "1at composed: the real teardown succeeds" "rc=0" "$_g6_out"
+_g4_has "1at composed: the owned file becomes an empty, inert config" "FILE:# Managed by dynavlan" "$_g6_out"
+_g4_lacks "1at composed: the owned file defines no vlans afterwards" "vlans:" "$(printf '%s\n' "$_g6_out" | grep '^FILE:')"
+_g4_has "1at composed: both owned links are deleted after acceptance" "DELETES:2" "$_g6_out"
+_g4_has "1at composed: the prior owned file was backed up first" "BACKUPS:1" "$_g6_out"
+
+rm -rf "$_g6_dir"
+unset -f _g6_env _g6_n
+unset _g6_real_apply _g6_real_drain _g6_real_owned
+unset _g6_dir _g6_out _g6_name _g6_te _g6_se _g6_ta _g6_sa
+
 rm -rf "$_g4_dir"
 unset -f _g4_is _g4_has _g4_lacks _g4_dry_env _g4_printed_target _g4_removals _g4_status_env
 unset _g4_dir _g4_out

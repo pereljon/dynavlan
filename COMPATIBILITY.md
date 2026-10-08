@@ -129,6 +129,7 @@ One mode per invocation. `-V` is the only short alias.
 | `--dry-run` | preview, no apply |
 | `--status` | owned vs detected-now report |
 | `--reconfigure` | rewrite the systemd timer interval from config |
+| `--teardown` | attended removal of every owned VLAN (empty target through the health-gated apply); refuses unless both units are disabled and inactive |
 | `--version` / `-V` | print `dynavlan <ver> (build <id>)`; works pre-config and non-root |
 | `-h` / `--help` | usage |
 

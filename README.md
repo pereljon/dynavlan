@@ -116,6 +116,9 @@ dynavlan --status       # owned and detected VLANs per trunk row (no apply, no c
                         # NOTE: both run detection, which brings physical NICs administratively
                         #   up and leaves promiscuous mode on; dynavlan does not restore that.
 dynavlan --reconfigure  # rewrite the timer drop-in after changing RESCAN_MINUTES
+dynavlan --teardown     # ATTENDED, console only: remove every VLAN dynavlan owns through a
+                        #   health-gated netplan try (see Removal in docs/deployment-guide.md;
+                        #   --dry-run does NOT preview it)
 dynavlan --version      # print version + build id (works unprivileged; safe with a broken config)
 ```
 

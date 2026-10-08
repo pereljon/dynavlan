@@ -49,6 +49,12 @@ Every terminal exit path, with `dynavlan` line references.
 ### `--dry-run` — `do_dryrun`
 - validation pass or nothing-to-do → **0** (a quiet wire still validates); validation rejection (M3) → **1**; count-gate refusal (S3) → **1** with nothing validated; base-tree copy failure (L8) → **1** with nothing validated; a failed pending-delete or managed-elsewhere query → **1**; other early refusals → **1** (`vstatus` is only ever 0 or 1)
 
+### `--teardown` — `do_teardown` (Group 6)
+- non-root, `ip` missing, unsupported netplan, no `netplan try` → **1**; lock timeout → **1**; a unit enabled, active, or indeterminate → **1**
+- pending-delete drain failure → **1**; unreadable or unrecognized owned file → **1**; nothing owned → **0**
+- `apply_change` not accepted or uncertain → **1** (no manual-delete advice); stop request → **1**
+- accepted but a link still present, or the post-accept drain failed → **1**; accepted and clean → **0** (a failed agent restart only warns, as for any accepted apply)
+
 ### `--reapply` — `do_reapply` (2205-2248)
 - nothing owned → **0** (2208); body identical to on-disk → **0**; applied + accepted → **0** (2248)
 - lock timeout → **1** (2422-2424); no-parent refuse / scratch-dir fail / generate fail / readback fail → **1** (2213/2225/2237/2244)
