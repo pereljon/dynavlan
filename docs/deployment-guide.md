@@ -103,7 +103,7 @@ The keys most deployments touch:
 
 ```
 # VLAN_MIN=1 / VLAN_MAX=1000       # discovery range (VLAN 1 included; skip IDs via VLAN_IGNORE)
-# VLAN_IGNORE=""                   # VLANs never to configure, e.g. "5,20-25"
+# VLAN_IGNORE=""                   # VLANs never ADDED, e.g. "5,20-25" (does not remove ones already owned)
 # RESTART_SNAPS="..."              # snaps to restart after a VLAN change
 # RESTART_SERVICES=""              # systemd services to restart after a VLAN change
 # RESTART_ON_NEW_SUBNET=true       # also restart targets when a new IPv4 subnet appears, not only on a VLAN change
@@ -113,6 +113,10 @@ The keys most deployments touch:
 ```
 
 Set `RESTART_SNAPS`/`RESTART_SERVICES` to whatever agent should re-enumerate interfaces after a VLAN change; with `RESTART_ON_NEW_SUBNET` (default on) dynavlan also restarts them when a new IPv4 subnet appears on any interface, e.g. an access port plugged in after boot or the agent starting before base-interface DHCP completes (see README "Service-restart integration"). Leave `VLAN_ROUTES` off unless you specifically want the box routing via discovered VLANs; the default is full route/DNS isolation.
+
+**Number and quote rules (0.4.18).** Numbers are whole decimal numbers with no leading zero (`5`, not `05`); `VLAN_IGNORE` may not contain an empty element (`"1,"`, `",1"`, `"1,,3"`); a quoted value needs a matching closing quote followed only by an optional `#` comment. A config that breaks these is refused at load with the key named; correct the value, there is no automatic migration.
+
+**`VLAN_IGNORE` and the range only stop NEW VLANs.** A VLAN dynavlan already owns is kept even if you later add it to `VLAN_IGNORE` or narrow `VLAN_MIN`/`VLAN_MAX` past it; `dynavlan --status` lists those as `owned-ignored` / `owned-out-of-range`. To remove one deliberately: remove it from the switch trunk, run `sudo dynavlan --dry-run`, then run an attended two-pass `sudo dynavlan --boot` reconcile with console access. Changes to what dynavlan generates (for example `VLAN_ROUTES`) reach already-owned VLANs only through an attended `sudo dynavlan --reapply`; changing `VLAN_ROUTE_METRIC_START` affects only future metric assignments (including already-owned VLANs that lack a persisted metric during an isolated-to-routed `--reapply`) and never renumbers an existing persisted assignment.
 
 ### What "isolated by default" means
 
@@ -125,7 +129,7 @@ If this box should actually route via the discovered VLANs, enable routed mode:
 ```
 VLAN_ROUTES=true                  # accept each VLAN's DHCP default route
 VLAN_ROUTE_METRIC_START=100       # first metric; MUST stay above the uplink's metric.
-                                  # Metrics are assigned in discovery order, one shared ascending
+                                  # New metrics are assigned in lexical full-token (iface.id) order, one shared ascending
                                   # sequence across every trunk on the box; existing VLANs never renumber.
 ```
 
@@ -137,7 +141,7 @@ sudo dynavlan --reapply
 
 `--reapply` regenerates the owned VLAN set with the current settings and applies it through the same `netplan try` + health-check path, but only if the generated config actually differs from what is on disk (so it is a safe no-op if nothing changed). Preview first with `sudo dynavlan --dry-run`, which prints the assigned id:metric map and flags any conflict.
 
-Each VLAN then accepts its DHCP default route at a distinct metric (100, 101, 102, ... in discovery order, one shared sequence across every trunk on the box), so the table is deterministic and the lowest-metric route - normally the untagged uplink at its own metric - still wins. If any assigned metric would match or beat the uplink's, dynavlan **refuses before touching disk** and names the remedy (raise `VLAN_ROUTE_METRIC_START`); applying it would guarantee a revert loop. DNS/NTP/domains and IPv6 RA stay declined even here - routed mode changes routes only.
+Each VLAN then accepts its DHCP default route at a distinct metric (100, 101, 102, ... in lexical full `iface.id` token order within the assignment batch of VLANs that lack a persisted metric, so `enp1s0.10` precedes `enp1s0.2`; one shared sequence across every trunk on the box), so the table is deterministic and the lowest-metric route - normally the untagged uplink at its own metric - still wins. If any assigned metric would match or beat the uplink's, dynavlan **refuses before touching disk** and names the remedy (raise `VLAN_ROUTE_METRIC_START`); applying it would guarantee a revert loop. DNS/NTP/domains and IPv6 RA stay declined even here - routed mode changes routes only.
 
 To go back to isolation: set `VLAN_ROUTES=false` and `sudo dynavlan --reapply` again.
 

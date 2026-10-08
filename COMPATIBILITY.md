@@ -54,16 +54,18 @@ deliberately coupled; internal refactors stay free even after `1.0`.
 The parser honors only these keys (the `CONFIG_KEYS` allowlist); any other key is refused.
 The promise covers each key's **name, accepted values, and default**.
 
+Numbers are **canonical decimal** everywhere: `0`, or a non-zero digit followed by digits. A leading zero (`05`, `018`) is refused, not converted. Quoted values need a matching closing quote followed only by whitespace and an optional `#` comment. Upgrade note (0.4.18): a config that previously loaded with a leading-zero number, an empty `VLAN_IGNORE` element (`"1,"`, `",1"`, `"1,,3"`), an unmatched quote, or text after a closing quote is now refused at load, naming the key; correct the value (there is no automatic migration).
+
 | Key | Default | Accepted values |
 |-----|---------|-----------------|
 | `DETECT_METHOD` | `both` | `both` \| `lldp` \| `sniff` |
-| `VLAN_MIN` | `1` | int 1-4094 |
+| `VLAN_MIN` | `1` | canonical decimal int 1-4094 |
 | `VLAN_MAX` | `1000` | int 1-4094, >= `VLAN_MIN` |
-| `VLAN_IGNORE` | `""` | comma/space list of ids/ranges within 1-4094 |
+| `VLAN_IGNORE` | `""` | comma/space list of canonical ids/ranges within 1-4094 (no leading zeros, no empty elements) |
 | `VLAN_WARN` | `32` | int >= 1 |
 | `VLAN_LIMIT` | `64` | int; `0` = unlimited |
 | `VLAN_LIMIT_MODE` | `refuse` | `refuse` \| `fill` |
-| `SNIFF_SECONDS` | `60` | int >= 1 |
+| `SNIFF_SECONDS` | `60` | canonical decimal int >= 1 |
 | `BOOT_SETTLE_SECONDS` | `20` | non-neg int (the FR-41 carrier-sample interval derives from it and is floored at 5 when `REMOVE_ON_CARRIER_LOSS=true`; the sniff-comparison settle uses the raw value) |
 | `CARRIER_WAIT_SECONDS` | `30` | non-neg int |
 | `LEASE_SETTLE_SECONDS` | `30` | non-neg int |

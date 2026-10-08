@@ -3326,6 +3326,184 @@ unset -f _g4_is _g4_has _g4_lacks _g4_dry_env _g4_printed_target _g4_removals _g
 unset _g4_dir _g4_out
 
 # ---------------------------------------------------------------------------
+# 1as. Configuration grammar and frozen semantics (Group 5: L2 L11 L12 L14).
+#      Canonical decimal integers only; VLAN_IGNORE with no empty elements or leading
+#      zeros; quoted values must close and end cleanly; ignore/range narrowing only
+#      suppresses NEW candidates; routed metrics follow lexical full-token order.
+# ---------------------------------------------------------------------------
+
+_g5_dir=$(mktemp -d)
+
+# Run the REAL load_config against a one-line conffile; echoes "rc=N" then any diagnostics.
+_g5_load() { # LINE
+	printf '%s\n' "$1" >"$_g5_dir/conf"
+	(
+		CONF_FILE="$_g5_dir/conf"
+		load_config 2>&1
+		echo "rc=$?"
+	)
+}
+_g5_acc() { # desc LINE
+	local o
+	o=$(_g5_load "$2")
+	tests=$((tests + 1))
+	if printf '%s' "$o" | grep -q '^rc=0$'; then
+		printf 'ok   - %s\n' "$1"
+	else
+		fails=$((fails + 1))
+		printf 'FAIL - %s\n       expected accept, got [%s]\n' "$1" "$o"
+	fi
+}
+_g5_rej() { # desc LINE : rejected, with a diagnostic and no arithmetic noise
+	local o
+	o=$(_g5_load "$2")
+	tests=$((tests + 1))
+	if printf '%s' "$o" | grep -q '^rc=1$' && printf '%s' "$o" | grep -q 'dynavlan\[err\]' &&
+		! printf '%s' "$o" | grep -qiE 'value too great|syntax error|arithmetic|invalid number|integer expression'; then
+		printf 'ok   - %s\n' "$1"
+	else
+		fails=$((fails + 1))
+		printf 'FAIL - %s\n       expected clean rejection, got [%s]\n' "$1" "$o"
+	fi
+}
+
+# Every scalar numeric key: its boundary values load, and 00/01/018 are rejected cleanly.
+# key  lowest-valid  invalid-below-min(empty = none)  highest-valid
+while read -r _g5_k _g5_lo _g5_below _g5_hi; do
+	_g5_acc "1as $_g5_k accepts its lowest valid value $_g5_lo" "$_g5_k=$_g5_lo"
+	_g5_acc "1as $_g5_k accepts a canonical multi-digit value" "$_g5_k=$_g5_hi"
+	[ "$_g5_below" = - ] || _g5_rej "1as $_g5_k rejects $_g5_below (below its minimum)" "$_g5_k=$_g5_below"
+	for _g5_bad in 00 01 018; do
+		_g5_rej "1as $_g5_k rejects the non-canonical $_g5_bad" "$_g5_k=$_g5_bad"
+	done
+done <<'TABLE'
+VLAN_MIN 1 0 100
+VLAN_MAX 1 0 4094
+VLAN_WARN 1 0 32
+VLAN_LIMIT 0 - 64
+SNIFF_SECONDS 1 0 60
+BOOT_SETTLE_SECONDS 0 - 20
+CARRIER_WAIT_SECONDS 0 - 30
+LEASE_SETTLE_SECONDS 0 - 30
+RESCAN_MINUTES 1 0 5
+VLAN_ROUTE_METRIC_START 1 0 100
+BACKUP_KEEP 1 0 10
+TABLE
+
+# VLAN_IGNORE: canonical values load; leading zeros and empty comma elements do not.
+for _g5_v in "100" "10-20" "1,5,20-25" "1 5 80" "100, 200" "100 ,200" "100 , 200"; do
+	_g5_acc "1as VLAN_IGNORE accepts [$_g5_v]" "VLAN_IGNORE=\"$_g5_v\""
+done
+for _g5_v in "01" "0100" "010-20" "10-020" ",100" "100," "100,,200" "100, ,200" ", 100"; do
+	_g5_rej "1as VLAN_IGNORE rejects [$_g5_v]" "VLAN_IGNORE=\"$_g5_v\""
+done
+
+# Quoted values: valid forms parse; unmatched quotes and trailing junk refuse the config.
+_g5_acc "1as quotes: a double-quoted value loads" 'VLAN_MIN="5"'
+_g5_acc "1as quotes: a single-quoted value loads" "VLAN_MIN='5'"
+_g5_acc "1as quotes: a bare value loads" 'VLAN_MIN=5'
+_g5_acc "1as quotes: a comment after the closing quote loads" 'VLAN_MIN="5" # floor'
+_g5_acc "1as quotes: an immediate comment after the closing quote loads" 'VLAN_MIN="5"# floor'
+_g5_acc "1as quotes: an empty quoted list loads" 'VLAN_IGNORE=""'
+_g5_acc "1as quotes: a quoted list with inner spaces loads" 'VLAN_IGNORE="1 5 80"   # list'
+_g5_rej "1as quotes: an unmatched double quote is refused" 'VLAN_MIN="5'
+_g5_rej "1as quotes: an unmatched single quote is refused" "VLAN_MIN='5"
+_g5_rej "1as quotes: junk after the closing quote is refused" 'VLAN_MIN="5" junk'
+_g5_rej "1as quotes: junk after a single-quoted value is refused" "VLAN_MIN='5' x"
+call config_normalize_value '"x" # c';  ok "1as normalize: quoted + comment" "x"
+call config_normalize_value '"x'
+err "1as normalize: unmatched quote returns non-zero"
+_g5_o=$(_g5_load 'VLAN_MIN="5')
+tests=$((tests + 1))
+if printf '%s' "$_g5_o" | grep -q 'VLAN_MIN'; then
+	printf 'ok   - %s\n' "1as a refused quote names the key"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       got [%s]\n' "1as a refused quote names the key" "$_g5_o"
+fi
+
+# L12: new routed metrics follow lexical full iface.id token order (2/10/100, two parents);
+# persisted metrics never move.
+call assign_route_metrics "" "enp1s0.2 enp1s0.10 enp1s0.100 enp2s0.2 enp2s0.10" 100
+ok "1as route metrics: a new batch is in lexical full-token order, not numeric id order" \
+	"enp1s0.10:100 enp1s0.100:101 enp1s0.2:102 enp2s0.10:103 enp2s0.2:104"
+call assign_route_metrics "enp1s0.2:100 enp2s0.10:101" "enp1s0.10 enp1s0.100" 100
+ok "1as route metrics: persisted assignments do not move when a batch is added" \
+	"enp1s0.10:102 enp1s0.100:103 enp1s0.2:100 enp2s0.10:101"
+
+# L11/L13: owned VLANs outside the current ignore/range policy are shown as such in status
+# (static fields: present even when detection is unavailable), and a real mode keeps them.
+_g5_status() { # unavailable?  -> do_status output
+	(
+		RESTART_ON_NEW_SUBNET=false DETECT_METHOD=both VLAN_MIN=2 VLAN_MAX=150 IGNORE_SET="100"
+		SEEN_FILE="$_g5_dir/seen"
+		DETECTED_TRUNKS="" DETECT_INVALID=""
+		backend_owned_vlans() { printf '%s' "enp1s0.100 enp1s0.200 enp1s0.50"; }
+		if [ "$1" = unavailable ]; then check_detect_deps() { return 1; }; else check_detect_deps() { return 0; }; fi
+		run_detection() { DETECTED_TRUNKS="enp1s0"; return 0; }
+		iface_tags() { printf '%s' "50 100 200"; }
+		backend_list_managed_vlans() { return 0; }
+		has_carrier() { return 0; }
+		current_subnets() { printf '%s' ""; }
+		do_status 2>&1
+	)
+}
+_g5_o=$(_g5_status ok)
+tests=$((tests + 1))
+case "$_g5_o" in
+*"owned-ignored=[100] owned-out-of-range=[200]"*) printf 'ok   - %s\n' "1as status row shows owned-ignored and owned-out-of-range" ;;
+*)
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       got [%s]\n' "1as status row shows owned-ignored and owned-out-of-range" "$_g5_o"
+	;;
+esac
+_g5_o=$(_g5_status unavailable)
+tests=$((tests + 1))
+case "$_g5_o" in
+*"detected=[unavailable]"*"owned-ignored=[100] owned-out-of-range=[200]"*) printf 'ok   - %s\n' "1as the owned-policy fields print even when detection is unavailable" ;;
+*)
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       got [%s]\n' "1as the owned-policy fields print even when detection is unavailable" "$_g5_o"
+	;;
+esac
+
+# Composed real mode: an owned, still-detected VLAN that is now ignored, and another outside the
+# narrowed range, stay in the target and are not proposed for removal (new-candidate suppression only).
+_g5_o=$(
+	RESET_ON_BOOT=true REMOVE_ON_CARRIER_LOSS=false RESTART_ON_NEW_SUBNET=false RESTART_SNAPS="" RESTART_SERVICES=""
+	VLAN_MIN=2 VLAN_MAX=150 IGNORE_SET="100" VLAN_WARN=100 VLAN_LIMIT=0 VLAN_LIMIT_MODE=refuse VLAN_ROUTES=false
+	PENDING_DELETE_FILE="$_g5_dir/pending" SEEN_FILE="$_g5_dir/seen"
+	DETECTED_TRUNKS="enp1s0"
+	run_detection() { return 0; }
+	iface_tags() { printf '%s' "50 100 200"; }
+	iface_valid() { printf '%s' valid; }
+	backend_owned_vlans() { printf '%s' "enp1s0.100 enp1s0.200 enp1s0.50"; }
+	have_routing() { return 0; }
+	backend_list_managed_vlans() { return 0; }
+	has_carrier() { return 0; }
+	snapshot_default_route() { printf '%s' enp9s0; }
+	backend_netplan_vlan_tokens() { printf '%s' ""; }
+	current_subnets() { printf '%s' ""; }
+	mktemp() { command mktemp -d "$_g5_dir/tree.XXXXXX"; }
+	cp() { return 0; }
+	backend_generate_config() { return 0; }
+	backend_validate() { return 0; }
+	do_dryrun 2>&1
+)
+tests=$((tests + 1))
+if printf '%s\n' "$_g5_o" | grep -q '^  target:    \[enp1s0.100 enp1s0.200 enp1s0.50\]$' &&
+	printf '%s\n' "$_g5_o" | grep -q '^  removals:  \[none\]' && printf '%s\n' "$_g5_o" | grep -q '^  additions: \[none\]'; then
+	printf 'ok   - %s\n' "1as ignored and out-of-range owned VLANs stay in the target, with no removal or addition"
+else
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       got [%s]\n' "1as ignored and out-of-range owned VLANs stay in the target" "$_g5_o"
+fi
+
+rm -rf "$_g5_dir"
+unset -f _g5_load _g5_acc _g5_rej _g5_status
+unset _g5_dir _g5_k _g5_lo _g5_below _g5_hi _g5_bad _g5_v _g5_o
+
+# ---------------------------------------------------------------------------
 # 1aq. Upgrade/systemd lifecycle (Group 2): the real maintainer scripts and install.sh
 #      run as subprocesses; see tests/lifecycle.sh. Its counts are folded in here so
 #      `bash tests/unit.sh` stays the single gate.

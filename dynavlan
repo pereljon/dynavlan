@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.17"
+ver="0.4.18"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -97,24 +97,35 @@ ipv4_network() { # ADDR PREFIX -> network dotted-quad
 #   (valid 1-4094; 0 and 4095 are reserved), or inverted range returns non-zero
 #   and prints nothing (refuse-to-run at the call site).
 parse_vlan_ignore() {
-	local raw="$1"
-	local -a fields parts
-	local f p lo hi i out=""
-	read -ra fields <<<"$raw"
-	for f in "${fields[@]}"; do
-		IFS=',' read -ra parts <<<"$f"
-		for p in "${parts[@]}"; do
-			if [[ "$p" == *-* ]]; then
-				lo="${p%%-*}"
-				hi="${p#*-}"
-				[[ "$lo" =~ ^[0-9]+$ && "$hi" =~ ^[0-9]+$ ]] || return 1
+	local raw="$1" trimmed el item lo hi i out=""
+	local -a elems items
+	trimmed="${raw#"${raw%%[![:space:]]*}"}"
+	trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+	if [ -z "$trimmed" ]; then
+		emit_set
+		return 0
+	fi
+	# Split on commas KEEPING empty elements (the sentinel comma stops `read` dropping a
+	# trailing one): an empty element at the start, middle or end is malformed. Within an
+	# element, whitespace still separates ids, so "1 5 80" and "100, 200" stay valid.
+	IFS=',' read -ra elems <<<"$trimmed,"
+	for el in "${elems[@]}"; do
+		el="${el#"${el%%[![:space:]]*}"}"
+		el="${el%"${el##*[![:space:]]}"}"
+		[ -n "$el" ] || return 1
+		read -ra items <<<"$el"
+		for item in "${items[@]}"; do
+			if [[ "$item" == *-* ]]; then
+				lo="${item%%-*}"
+				hi="${item#*-}"
+				[[ "$lo" =~ ^(0|[1-9][0-9]*)$ && "$hi" =~ ^(0|[1-9][0-9]*)$ ]] || return 1
 				((lo <= hi)) || return 1
 				((lo >= 1 && hi <= 4094)) || return 1
 				for ((i = lo; i <= hi; i++)); do out="$out $i"; done
 			else
-				[[ "$p" =~ ^[0-9]+$ ]] || return 1
-				((p >= 1 && p <= 4094)) || return 1
-				out="$out $p"
+				[[ "$item" =~ ^(0|[1-9][0-9]*)$ ]] || return 1
+				((item >= 1 && item <= 4094)) || return 1
+				out="$out $item"
 			fi
 		done
 	done
@@ -490,7 +501,9 @@ in_list() { # VALUE "a b c" -> 0 if VALUE is one of the words
 	return 1
 }
 
-is_uint() { case "$1" in '' | *[!0-9]*) return 1 ;; *) return 0 ;; esac; }
+# Canonical decimal only: `0`, or a non-zero digit followed by digits. A multi-digit leading
+# zero is rejected, not converted: Bash arithmetic reads it as octal (`018` errors, `010` is 8).
+is_uint() { case "$1" in 0) return 0 ;; '' | *[!0-9]* | 0*) return 1 ;; *) return 0 ;; esac; }
 
 # ---------------------------------------------------------------------------
 # Logging (FR-31/32/33): leveled, to stderr (systemd journal, identifier dynavlan)
@@ -540,12 +553,21 @@ config_allowed_key() { # KEY -> 0 if it is a documented config key
 	in_list "$1" "$CONFIG_KEYS"
 }
 
-config_normalize_value() { # RAWVALUE -> value with inline comment, surrounding quotes, outer whitespace removed
-	local v="$1"
+config_normalize_value() { # RAWVALUE -> value with inline comment, surrounding quotes, outer whitespace removed; rc 1 on a malformed quote
+	local v="$1" rest tail q
 	v="${v#"${v%%[![:space:]]*}"}" # trim leading whitespace
 	case "$v" in
-	'"'*) v="${v#\"}" && v="${v%%\"*}" ;; # double-quoted: inner text (comment after close-quote dropped)
-	"'"*) v="${v#\'}" && v="${v%%\'*}" ;; # single-quoted
+	'"'* | "'"*)
+		# Quoted: needs a matching closing quote, then only whitespace and an optional
+		# comment. An unmatched quote or trailing junk is refused, never silently dropped.
+		q="${v:0:1}"
+		rest="${v:1}"
+		case "$rest" in *"$q"*) ;; *) return 1 ;; esac
+		tail="${rest#*"$q"}"
+		v="${rest%%"$q"*}"
+		tail="${tail#"${tail%%[![:space:]]*}"}"
+		case "$tail" in '' | '#'*) ;; *) return 1 ;; esac
+		;;
 	*)
 		# bare: drop a whitespace-preceded inline comment, then trailing whitespace,
 		# KEEPING internal spaces (an unquoted `a b c` list is preserved whole, not
@@ -561,7 +583,7 @@ config_normalize_value() { # RAWVALUE -> value with inline comment, surrounding 
 # Values are assigned as inert literals (printf -v after the key is allowlisted),
 # so a config file can neither run code nor set an internal/safety variable.
 config_load_file() { # FILE -> 0 on a clean parse, 1 (refuse) on a bad key or non-assignment content
-	local file="$1" line key stripped
+	local file="$1" line key stripped val
 	while IFS= read -r line || [ -n "$line" ]; do
 		stripped="${line#"${line%%[![:space:]]*}"}" # leading-ws-stripped copy
 		case "$stripped" in
@@ -580,7 +602,11 @@ config_load_file() { # FILE -> 0 on a clean parse, 1 (refuse) on a bad key or no
 			log err "refusing $file: unknown or protected setting '$key' (not a documented config key)"
 			return 1
 		fi
-		printf -v "$key" '%s' "$(config_normalize_value "${stripped#*=}")"
+		if ! val=$(config_normalize_value "${stripped#*=}"); then
+			log err "refusing $file: malformed quoted value for $key (needs a matching closing quote, then only a comment): ${stripped#*=}"
+			return 1
+		fi
+		printf -v "$key" '%s' "$val"
 	done <"$file"
 	return 0
 }
@@ -2581,12 +2607,19 @@ do_status() { # FR-35 - report all trunks
 	# the ignored / out-of-range / managed-elsewhere breakdown of what was detected.
 	all_trunks=$(printf '%s\n' $owned_ifaces $DETECTED_TRUNKS | sort -u | tr '\n' ' ' | sed 's/ $//')
 	if [ -n "$all_trunks" ]; then
-		local t cstate configured detected_ids ignored oor
+		local t cstate configured detected_ids ignored oor owned_ids own_ign own_oor
 		for t in $all_trunks; do
 			if has_carrier "$t"; then cstate=up; else cstate=down; fi
 			configured=$(tokens_for_iface "$owned" "$t")
+			# L11: owned VLANs outside the CURRENT ignore/range policy stay owned (the policy
+			# only suppresses new candidates); show them explicitly. Static: needs no detection,
+			# and kept apart from the detected-id fields above, which classify detected ids.
+			owned_ids=$(untag_tokens "$configured")
+			own_ign=$(ids_in_ignore "$owned_ids" "$IGNORE_SET")
+			own_oor=$(ids_out_of_range "$owned_ids" "$VLAN_MIN" "$VLAN_MAX")
 			if [ "$det_state" = unavailable ]; then
-				printf '    %s: carrier=%s configured=[%s] detected=[unavailable]\n' "$t" "$cstate" "${configured:-none}"
+				printf '    %s: carrier=%s configured=[%s] detected=[unavailable] owned-ignored=[%s] owned-out-of-range=[%s]\n' \
+					"$t" "$cstate" "${configured:-none}" "${own_ign:-none}" "${own_oor:-none}"
 				continue
 			fi
 			detected_ids=$(emit_set $(iface_tags "$t"))
@@ -2598,8 +2631,8 @@ do_status() { # FR-35 - report all trunks
 			fi
 			ignored=$(ids_in_ignore "$detected_ids" "$IGNORE_SET")
 			oor=$(ids_out_of_range "$detected_ids" "$VLAN_MIN" "$VLAN_MAX")
-			printf '    %s: carrier=%s configured=[%s] detected=[%s] ignored=[%s] out-of-range=[%s] managed-elsewhere=[%s]\n' \
-				"$t" "$cstate" "${configured:-none}" "${detected_ids:-none}" "${ignored:-none}" "${oor:-none}" "${managed:-none}"
+			printf '    %s: carrier=%s configured=[%s] detected=[%s] ignored=[%s] out-of-range=[%s] managed-elsewhere=[%s] owned-ignored=[%s] owned-out-of-range=[%s]\n' \
+				"$t" "$cstate" "${configured:-none}" "${detected_ids:-none}" "${ignored:-none}" "${oor:-none}" "${managed:-none}" "${own_ign:-none}" "${own_oor:-none}"
 		done
 	fi
 	printf '  run history: journalctl -t dynavlan\n'

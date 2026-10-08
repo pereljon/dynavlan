@@ -209,6 +209,11 @@ S3 count gate, L8 copy failure, L9 quiet wire + guarded pending preview), `--sta
 sampled interfaces and prints per-trunk rows (D5/L13), no-target subnets stay unseen (L10, both branches). 583 unit tests
 pass; Codex approved it locally 2026-10-07; COMMITTED LOCALLY after `025502d`; not hardware-validated (HV-40..45 on the final build). Nothing pushed.
 
+STATE (2026-10-08, Group 5 configuration grammar implemented locally): scope approved by Codex 2026-10-07. Working tree,
+uncommitted: `ver=0.4.18`; canonical decimal numbers, strict `VLAN_IGNORE`, strict quoted values (refuse, name the key, no
+migration), `--status` `owned-ignored`/`owned-out-of-range` fields, lexical metric-order wording, config lifecycle wording.
+691 unit tests pass; Codex-approved locally 2026-10-08; COMMITTED LOCALLY after `8f4b581`; not hardware-validated (HV-50..53). Nothing pushed.
+
 NEXT ACTION: the hardware baseline restore is DONE (2026-09-07, verified: original owned-file checksum,
 exactly 14 VLAN interfaces, both default routes, healthy `--status`/`--dry-run`, timer restored with a
 finite next elapse), and Groups 1, 3 and 2a are committed locally (`bf59ab0`/`d8d7046`, `34bed4e`, and the Group 2a commit

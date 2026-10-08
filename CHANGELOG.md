@@ -12,6 +12,19 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ### Fixed
 
+- Configuration grammar (`ver=` 0.4.17 -> 0.4.18). Numbers must now be canonical decimals:
+  a leading zero (`05`, `018`) is refused instead of being read as octal. `VLAN_IGNORE`
+  refuses an empty element at the start, middle or end (`"1,"`, `",1"`, `"1,,3"`) and
+  leading-zero ids and range endpoints. A quoted value needs a matching closing quote
+  followed only by whitespace and an optional comment; an unmatched quote or trailing
+  text is refused (the error names the key). **Upgrade note:** a config that loaded
+  before with one of those forms is now refused at load (nothing changes on the box);
+  correct the value, there is no automatic migration. `VLAN_IGNORE` and the
+  `VLAN_MIN`/`VLAN_MAX` range are documented and tested as suppressing NEW candidates
+  only, never removing a VLAN already owned; `--status` rows now list such VLANs as
+  `owned-ignored` / `owned-out-of-range`. New routed metrics follow lexical full
+  `iface.id` token order (documented; behavior unchanged), and the config comments now
+  say a change to generated policy needs an attended `--reapply`.
 - Dry-run, status and subnet reporting (`ver=` 0.4.16 -> 0.4.17). `--dry-run` now follows
   the real boot decisions: an invalid detection sample (even a partial one) no longer
   previews a removal, the real VLAN count gate applies (a refusal cancels additions and

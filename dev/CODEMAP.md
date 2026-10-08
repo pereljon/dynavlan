@@ -10,13 +10,13 @@ Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/
 | function | one-line purpose | tests |
 |----------|------------------|-------|
 | `emit_set` | Print ids as a sorted de-duplicated space-separated set (shared by all set producers) | (via others) |
-| `parse_vlan_ignore` | Expand VLAN_IGNORE comma/space list with low-high ranges into a set; any bad token = non-zero (refuse) | 1a |
+| `parse_vlan_ignore` | Expand VLAN_IGNORE comma/whitespace list of canonical ids and low-high ranges into a set; a bad token, a leading zero, or an empty comma element at the start/middle/end = non-zero (refuse); spaces around a comma are accepted | 1a, 1as |
 | `boot_removals` | Owned ids absent from BOTH boot passes; both-empty = remove nothing (zero-detection guard) | 1d |
 | `carrier_removals` | FR-41: full owned-on-trunk set if BOTH carrier samples are "down", else empty (dead-trunk full teardown, not a diff) | 1r |
 | `health_check_eval` | PASS iff the snapshot iface still holds a post-apply default AT the minimum metric (iface only; "" snap = PASS); order-independent for equal-metric multi-uplink (P3) | 1c |
 | `vlan_guard` | Count gate verdict: OVER (> limit, 0 = unlimited) / WARN (> warn) / OK | 1f |
 | `limit_fill` | Lowest-N subset of additions for fill mode by NUMERIC vlan id, iface tie-break (deterministic across a fleet; M7) | 1f |
-| `assign_route_metrics` | FR-37 iface.id:metric map: kept tokens verbatim + next-free ascending metric for new tokens (discovery order, the only mode) | 1g |
+| `assign_route_metrics` | FR-37 iface.id:metric map: kept tokens verbatim + next-free ascending metric for new tokens (lexical full-`iface.id` token order within the batch via `emit_tokens`, e.g. `enp1s0.10` before `enp1s0.2`; the only mode) | 1g |
 | `map_filter` | Keep only listed tokens' entries of a token:metric map (drops removed VLANs' metrics) | 1g |
 | `map_ids` | Tokens (keys) of a token:metric map, as a sorted set | 1g |
 | `plan_route_metrics` | THE FR-37 assignment decision point: owned map + target + additions -> full token:metric map; assigns for target tokens LACKING a metric (not additions). Every caller must use this | 1g |
@@ -47,7 +47,7 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 | function | one-line purpose |
 |----------|------------------|
 | `set_minus` / `set_union` / `count_ids` | Space-separated sorted id-list operations |
-| `in_list` / `is_uint` | Membership and unsigned-integer checks (config validation) |
+| `in_list` / `is_uint` | Membership and canonical-decimal check (`0` or `[1-9][0-9]*`; a multi-digit leading zero is refused, not read as octal) used by config validation (1as) |
 
 ## Logging + config
 
@@ -60,7 +60,7 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 | `load_config` | Defaults, then parse /etc/dynavlan.conf via `config_load_file` (root-owned, not group/other-writable, else refuse), then strict-validate every key |
 | `config_load_file` | H2: parse the config declaratively (never source); honor only allowlisted KEY=value lines, refuse any unknown/protected key or non-assignment line, assign inert literals via `printf -v` (no code execution, no internal-var override) |
 | `config_allowed_key` | H2: membership test of a key against `CONFIG_KEYS`, the exact documented config surface |
-| `config_normalize_value` | H2: strip a config value's inline comment, surrounding quotes, and outer whitespace, keeping internal spaces (unquoted lists preserved, not truncated) |
+| `config_normalize_value` | H2: strip a config value's inline comment, surrounding quotes, and outer whitespace, keeping internal spaces (unquoted lists preserved, not truncated). A quoted value needs a matching closing quote then only whitespace and an optional comment; otherwise it returns 1 and `config_load_file` refuses, naming the key (1as) |
 
 ## Preconditions (FR-0)
 
@@ -158,7 +158,7 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 | `do_reapply` | FR-39: regenerate the OWNED set (whatever trunks it spans) with this build, apply only if the body differs; NO detection (pins to `distinct_ifaces` of the owned tokens), full owned set lease-waited, count gate bypassed |
 | `render_timer_dropin` | Pure: timer drop-in text for an interval; restates ALL monotonic triggers, since the reset clears the whole list (FR-21a) |
 | `do_reconfigure` | Write the rendered drop-in to `dynavlan.timer.d/interval.conf` + daemon-reload |
-| `do_status` | Report with ONE row per owned-or-detected trunk: carrier, configured, detected, ignored, out-of-range, managed-elsewhere (FR-35/L13); M8: gates the detection pass on `check_detect_deps` and returns non-zero if a prerequisite is missing; D5: returns non-zero and marks detection unavailable/incomplete when `DETECT_INVALID` is non-empty (any sampled iface, partial results still printed); a failed managed-elsewhere query reads `unavailable` and is rc 1; a quiet valid wire is rc 0 |
+| `do_status` | Report with ONE row per owned-or-detected trunk: carrier, configured, detected, ignored, out-of-range, managed-elsewhere (FR-35/L13); M8: gates the detection pass on `check_detect_deps` and returns non-zero if a prerequisite is missing; D5: returns non-zero and marks detection unavailable/incomplete when `DETECT_INVALID` is non-empty (any sampled iface, partial results still printed); a failed managed-elsewhere query reads `unavailable` and is rc 1; a quiet valid wire is rc 0; each row also carries static `owned-ignored` / `owned-out-of-range` (owned ids outside the current ignore/range policy), printed even when detection is unavailable (Group 5) |
 | `main` | Mode dispatch: `--version` (pre-config, pre-root) → config → (status/reconfigure) → preconditions → dry-run (non-blocking lock try) → boot/rescan under the fd-held flock, followed by `maybe_restart_on_new_subnet` (FR-40) on every boot/rescan exit path |
 
 ## Non-script artifacts

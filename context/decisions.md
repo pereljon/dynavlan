@@ -904,3 +904,15 @@ and `RESTART_ON_NEW_SUBNET=true`; removal-only, already-seen `--reapply`, and `R
 changes may never trigger it. Guaranteed catch-up would be a separately scoped feature, not part of D2. Exit
 code on a stop is 1. D2 closes only after the benign HV-01 passes on the corrected artifact. Design:
 `docs/superpowers/plans/2026-10-01-group2a-d2-graceful-stop-design.md`.
+
+## 2026-10-08 - Group 5: configuration grammar frozen for 1.0
+
+Decided (operator-approved scope, Codex-reviewed): numbers are canonical decimals (`0` or `[1-9][0-9]*`); `VLAN_IGNORE` refuses leading
+zeros and empty comma elements (spaces around a comma stay valid); quoted values need a matching closing quote then only a comment.
+A previously loading config that breaks these is refused at load, naming the key, before any change; there is NO migration or
+postinst checker (it would duplicate the parser and miss the direct-installer path). `VLAN_IGNORE` and the `VLAN_MIN`/`VLAN_MAX`
+range suppress NEW candidates only; they never remove an already-owned VLAN, and `--status` shows such VLANs as `owned-ignored` /
+`owned-out-of-range`; the attended removal route is switch trunk -> `--dry-run` -> attended two-pass `--boot`. New route metrics go to
+tokens lacking a persisted metric in lexical full-`iface.id` order within the assignment batch; persisted metrics never move. The
+earlier "discovery order" wording was inaccurate (set normalization had already discarded encounter order) and is superseded.
+Rejected: retroactive unattended removal; a generalized config parser; a conffile migration.
