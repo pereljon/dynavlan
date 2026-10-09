@@ -3779,7 +3779,7 @@ _g7_gen='NETPLAN_FILE="$G7_DIR/gen.yaml"; ROUTE_METRICS=""'
 _g7_o=$(_g7 "$_g7_gen"'; VLAN_ROUTES=false
 backend_generate_config "enp2s0.18 enp1s0.100 enp1s0.18"; echo "rc=$?"
 sed 1d "$NETPLAN_FILE"; head -1 "$NETPLAN_FILE" | grep -c "^# Managed by dynavlan .* - do not edit; regenerated on each change\.\$"
-(stat -f %Lp "$NETPLAN_FILE" 2>/dev/null || stat -c %a "$NETPLAN_FILE")')
+(stat -c %a "$NETPLAN_FILE" 2>/dev/null || stat -f %Lp "$NETPLAN_FILE")')
 _g7_ex='rc=0
 network:
   version: 2
