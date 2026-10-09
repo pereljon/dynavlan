@@ -198,33 +198,34 @@ one benign HV-01 on the corrected artifact (needs operator-authorized hardware).
 
 STATE (2026-10-02, Group 2 upgrade/systemd lifecycle implemented locally): Codex approved the scope with
 amendments (new `debian/preinst`, `prerm failed-upgrade`, `postrm` abort cases, `postinst` failure cleanup that
-retains the record, validated 3-field record, run-lock wait even with no timer). Working tree, uncommitted:
+retains the record, validated 3-field record, run-lock wait even with no timer). Implemented:
 `ver=0.4.16`, `install.sh` posture restore (D8/L5/L15), `do_reconfigure` propagates a failed daemon-reload (D10),
-`tests/lifecycle.sh` (folded into `unit.sh`), 541 tests pass. Codex gave local code/test sign-off 2026-10-02 (the operator accepted the unknown-posture preservation exception); COMMITTED LOCALLY after `94ac0a0` (see `git log`); not hardware-validated. Nothing pushed. Real dpkg/systemd
+`tests/lifecycle.sh` (folded into `unit.sh`), 541 tests pass. Codex gave local code/test sign-off 2026-10-02 (the operator accepted the unknown-posture preservation exception); committed locally as `025502d`; not hardware-validated. Nothing pushed. Real dpkg/systemd
 behavior is exercised only by the hardware lifecycle cases. Nothing pushed or deployed.
 
 STATE (2026-10-07, Group 4 dry-run/status/subnet reporting implemented locally): within Codex's approved scope and
-clarifications. Working tree, uncommitted: `ver=0.4.17`, dry-run follows the real boot decisions (S2 invalid-sample guard,
+clarifications. Implemented: `ver=0.4.17`, dry-run follows the real boot decisions (S2 invalid-sample guard,
 S3 count gate, L8 copy failure, L9 quiet wire + guarded pending preview), `--status` aggregates detector validity over all
-sampled interfaces and prints per-trunk rows (D5/L13), no-target subnets stay unseen (L10, both branches). 583 unit tests
-pass; Codex approved it locally 2026-10-07; COMMITTED LOCALLY after `025502d`; not hardware-validated (HV-40..45 on the final build). Nothing pushed.
+sampled interfaces and prints per-trunk rows (D5/L13), no-target subnets stay unseen (L10, both branches). 594 unit tests
+pass; Codex approved it locally 2026-10-07; committed locally as `8f4b581`; not hardware-validated (HV-40..45 on the final build). Nothing pushed.
 
-STATE (2026-10-08, Group 5 configuration grammar implemented locally): scope approved by Codex 2026-10-07. Working tree,
-uncommitted: `ver=0.4.18`; canonical decimal numbers, strict `VLAN_IGNORE`, strict quoted values (refuse, name the key, no
+STATE (2026-10-08, Group 5 configuration grammar implemented locally): scope approved by Codex 2026-10-07. Implemented:
+`ver=0.4.18`; canonical decimal numbers, strict `VLAN_IGNORE`, strict quoted values (refuse, name the key, no
 migration), `--status` `owned-ignored`/`owned-out-of-range` fields, lexical metric-order wording, config lifecycle wording.
-691 unit tests pass; Codex-approved locally 2026-10-08; COMMITTED LOCALLY after `8f4b581`; not hardware-validated (HV-50..53). Nothing pushed.
+691 unit tests pass; Codex-approved locally 2026-10-08; committed locally as `05a7878`; not hardware-validated (HV-50..53). Nothing pushed.
 
 STATE (2026-10-08, Group 6 removal lifecycle implemented locally): Codex approved `dynavlan --teardown` (Option B) with seven corrections.
-Working tree, uncommitted: `ver=0.4.19`; `prerm remove` quiesces then disables the timer and boot service, `postrm purge` also removes the generated timer
+Implemented: `ver=0.4.19`; `prerm remove` quiesces then disables the timer and boot service, `postrm purge` also removes the generated timer
 drop-in, and the attended `--teardown` mode reuses `apply_change` with an empty target. 785 unit tests pass; Codex-approved locally 2026-10-08
-(after a rollback correction); COMMITTED LOCALLY after `05a7878`; not hardware-validated (HV-60/HV-61). Nothing pushed.
+(after a rollback correction); committed locally as `a62f691`; not hardware-validated (HV-60/HV-61). Nothing pushed.
 
-NEXT ACTION: the hardware baseline restore is DONE (2026-09-07, verified: original owned-file checksum,
-exactly 14 VLAN interfaces, both default routes, healthy `--status`/`--dry-run`, timer restored with a
-finite next elapse), and Groups 1, 3 and 2a are committed locally (`bf59ab0`/`d8d7046`, `34bed4e`, and the Group 2a commit
-after it). Next: one benign HV-01 stop case on a build of the corrected artifact (needs operator-authorized
-hardware) to close D2, then the upgrade-and-systemd-lifecycle group (Group 2), with the deferred HV-02/D6
-lifecycle evidence run once against the final service units.
+STATE (2026-10-08, Group 7 evidence hardening): tests only (`tests/unit.sh` 1au, 16 tests; one false `1c` row removed); 800 unit tests pass;
+Codex-approved locally 2026-10-08; committed locally; no `ver=` bump (0.4.19); not pushed, no hardware.
+
+NEXT ACTION: Groups 1, 3, 2a, 2, 4, 5 and 6 are implemented, Codex-approved locally and committed locally (`bf59ab0`/`d8d7046`,
+`34bed4e`, `94ac0a0`, `025502d`, `8f4b581`, `05a7878`, `a62f691`); Group 7 is approved locally and committed locally (see `git log`); none is hardware-validated.
+Next local action: Group 8 documentation synchronization , then Group 9. Hardware is a separate
+operator-authorized Group 9 checkpoint (one pass on the final build: benign HV-01 first to close D2, then the remaining HV cases).
 No push, merge, or release is authorized, and further commits need explicit approval. Per-item status: `context/todo.md`; full sequence:
 `docs/superpowers/plans/2026-09-05-v1.0-major-review-remediation.md`.
 

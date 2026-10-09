@@ -98,7 +98,6 @@ call health_check_eval "enp1s0" "";                     ok "1c lost default -> F
 call health_check_eval ""       "";                     ok "1c empty snap, empty -> PASS"     "PASS"
 call health_check_eval ""       "enp1s0:10";            ok "1c empty snap, uplink up -> PASS" "PASS"
 call health_check_eval "enp1s0" "enp1s0:20";            ok "1c metric changed -> PASS"        "PASS"
-call health_check_eval "enp1s0" "enp1s0:10";            ok "1c gateway changed -> PASS"       "PASS"
 call health_check_eval "enp1s0" "enp1s0:10 enp2s0:5";   ok "1c lower-metric elsewhere -> FAIL" "FAIL"
 # P3: equal-metric multi-uplink must be order-independent - the snapshot iface still
 # holds a min-metric default, so a route-listing order flip must not spuriously FAIL.
@@ -3752,6 +3751,164 @@ fi
 rm -rf "$_g5_dir"
 unset -f _g5_load _g5_acc _g5_rej _g5_status
 unset _g5_dir _g5_k _g5_lo _g5_below _g5_hi _g5_bad _g5_v _g5_o
+
+# ---------------------------------------------------------------------------
+# 1au. Direct evidence for the real generator, route/health parsing, lease wait,
+#      detection union and config surface (Group 7, T1). Each case runs the REAL
+#      function in a fresh `bash` that sources dynavlan, so earlier stubs cannot leak.
+# ---------------------------------------------------------------------------
+
+_g7_dir=$(mktemp -d)
+_g7() { # SCRIPT -> its stdout; runs with the real dynavlan functions loaded
+	G7_DIR="$_g7_dir" bash -c 'source "$1"; set +e +u; eval "$2"' _ "${here}/../dynavlan" "$1" 2>/dev/null
+}
+_g7_is() { # DESC EXPECTED ACTUAL
+	tests=$((tests + 1))
+	if [ "$2" = "$3" ]; then
+		printf 'ok   - %s\n' "$1"
+	else
+		fails=$((fails + 1))
+		printf 'FAIL - %s\n       expected [%s]\n       got      [%s]\n' "$1" "$2" "$3"
+	fi
+}
+
+# (a) backend_generate_config: exact YAML, mode 0600, prior preserved on refusal
+_g7_gen='NETPLAN_FILE="$G7_DIR/gen.yaml"; ROUTE_METRICS=""'
+_g7_o=$(_g7 "$_g7_gen"'; VLAN_ROUTES=false
+backend_generate_config "enp2s0.18 enp1s0.100 enp1s0.18"; echo "rc=$?"
+sed 1d "$NETPLAN_FILE"; head -1 "$NETPLAN_FILE" | grep -c "^# Managed by dynavlan .* - do not edit; regenerated on each change\.\$"
+(stat -f %Lp "$NETPLAN_FILE" 2>/dev/null || stat -c %a "$NETPLAN_FILE")')
+_g7_ex='rc=0
+network:
+  version: 2
+  vlans:'
+for _g7_t in enp1s0.100 enp1s0.18 enp2s0.18; do
+	_g7_ex="$_g7_ex
+    $_g7_t:
+      id: ${_g7_t##*.}
+      link: ${_g7_t%.*}
+      dhcp4: true
+      accept-ra: false
+      dhcp4-overrides:
+        use-routes: false
+        use-dns: false
+        use-ntp: false
+        use-domains: false"
+done
+_g7_ex="$_g7_ex
+1
+600"
+_g7_is "1au generator: exact isolated YAML, sorted across parents, header, mode 0600" "$_g7_ex" "$_g7_o"
+
+_g7_o=$(_g7 "$_g7_gen"'; VLAN_ROUTES=true; ROUTE_METRICS="enp1s0.18:100 enp2s0.21:101"
+backend_generate_config "enp2s0.21 enp1s0.18"; echo "rc=$?"; sed 1d "$NETPLAN_FILE"')
+_g7_ex='rc=0
+network:
+  version: 2
+  vlans:
+    enp1s0.18:
+      id: 18
+      link: enp1s0
+      dhcp4: true
+      accept-ra: false
+      dhcp4-overrides:
+        use-routes: true
+        route-metric: 100
+        use-dns: false
+        use-ntp: false
+        use-domains: false
+    enp2s0.21:
+      id: 21
+      link: enp2s0
+      dhcp4: true
+      accept-ra: false
+      dhcp4-overrides:
+        use-routes: true
+        route-metric: 101
+        use-dns: false
+        use-ntp: false
+        use-domains: false'
+_g7_is "1au generator: exact routed YAML carries each persisted metric" "$_g7_ex" "$_g7_o"
+
+_g7_o=$(_g7 "$_g7_gen"'; VLAN_ROUTES=true; ROUTE_METRICS="enp1s0.18:100"
+d="$G7_DIR/refuse"; mkdir -p "$d"; NETPLAN_FILE="$d/90.yaml"; printf "PRIOR\n" >"$NETPLAN_FILE"
+logf="$d/log"; log() { printf "%s|%s\n" "$1" "${*:2}" >>"$logf"; }
+backend_generate_config "enp1s0.18 enp1s0.21"; echo "rc=$?"
+cat "$NETPLAN_FILE"; grep -c "^err|internal: no route metric assigned for enp1s0.21" "$logf"
+ls -A "$d" | grep -c "^\.dynavlan\."')
+_g7_is "1au generator: missing metric refuses, prior file intact, diagnostic logged, no temp left" "rc=1
+PRIOR
+1
+0" "$_g7_o"
+
+# (b) default-route parsing, lowest-metric snapshot, post-apply health
+_g7_ip2='ip() { printf "%s\n" "default via 198.51.100.1 dev enp2s0 proto dhcp src 198.51.100.9 metric 200 linkdown" "default via 192.0.2.1 dev enp1s0 proto dhcp src 192.0.2.10 metric 100"; }'
+_g7_o=$(_g7 'ip() { printf "%s\n" "default via 192.0.2.1 dev enp1s0 proto dhcp src 192.0.2.10 metric 100" "default dev wg0 scope link" "default via 198.51.100.1 dev enp2s0 proto static metric 200 onlink"; }
+default_routes_tokens | tr "\n" " "')
+_g7_is "1au routes: tokens parse via, metricless (0) and extra attributes" "enp1s0:100 wg0:0 enp2s0:200 " "$_g7_o"
+_g7_o=$(_g7 "$_g7_ip2"'; echo "$(snapshot_default_route) $(snapshot_default_metric)"')
+_g7_is "1au routes: snapshot is the lowest-metric default whatever the listing order" "enp1s0 100" "$_g7_o"
+_g7_o=$(_g7 'ip() { printf "%s\n" "default via 192.0.2.1 dev enp1s0 metric 100" "default via 198.51.100.1 dev enp2s0 metric 100"; }
+a=$(post_apply_health enp2s0)
+ip() { printf "%s\n" "default via 198.51.100.1 dev enp2s0 metric 100" "default via 192.0.2.1 dev enp1s0 metric 100"; }
+b=$(post_apply_health enp2s0)
+ip() { printf "%s\n" "default via 198.51.100.1 dev enp2s0 metric 50" "default via 192.0.2.1 dev enp1s0 metric 100"; }
+c=$(post_apply_health enp1s0); echo "$a $b $c"')
+_g7_is "1au health: equal minimum passes in either order; a lower metric elsewhere fails" "PASS PASS FAIL" "$_g7_o"
+_g7_o=$(_g7 'ip() { :; }
+echo "[$(snapshot_default_route)] [$(snapshot_default_metric)] $(post_apply_health enp1s0)"')
+_g7_is "1au health: no default route gives empty snapshots and FAIL against a prior default" "[] [] FAIL" "$_g7_o"
+
+# (c) wait_leases: box-wide deadline, immediate success, per-token final report
+_g7_wl='LEASE_SETTLE_SECONDS=3; d="$G7_DIR/wl"; rm -rf "$d"; mkdir -p "$d"; : >"$d/sl"; : >"$d/log"
+sleep() { echo s >>"$d/sl"; }
+iface_has_lease() { grep -qx "$1" "$d/leased"; }
+log() { printf "%s|%s\n" "$1" "${*:2}" >>"$d/log"; }'
+_g7_o=$(_g7 "$_g7_wl"'
+printf "enp1s0.100\nenp1s0.200\n" >"$d/leased"
+wait_leases "enp1s0.100 enp1s0.200"
+echo "sleeps=$(wc -l <"$d/sl" | tr -d " ")"; cat "$d/log"')
+_g7_is "1au leases: all leased returns at once, no sleep, one info line each" "sleeps=0
+info|VLAN 100 leased on enp1s0.100
+info|VLAN 200 leased on enp1s0.200" "$_g7_o"
+_g7_o=$(_g7 "$_g7_wl"'
+: >"$d/leased"
+wait_leases "enp1s0.1 enp1s0.2 enp1s0.3 enp1s0.4 enp1s0.5"
+echo "sleeps=$(wc -l <"$d/sl" | tr -d " ") warnings=$(grep -c "^warning|" "$d/log")"')
+_g7_is "1au leases: one box-wide deadline (3 sleeps for 5 unleased tokens), a warning each" "sleeps=3 warnings=5" "$_g7_o"
+_g7_o=$(_g7 "$_g7_wl"'
+printf "enp1s0.18\n" >"$d/leased"
+wait_leases "enp1s0.18 enp1s0.21"
+echo "sleeps=$(wc -l <"$d/sl" | tr -d " ")"; cat "$d/log"')
+_g7_is "1au leases: mixed result reports info for the leased, warning only for the other" "sleeps=3
+info|VLAN 18 leased on enp1s0.18
+warning|VLAN 21 (enp1s0.21) acquired no lease within 3s" "$_g7_o"
+
+# (d) detect_iface: method selection, id union, status propagation
+_g7_di='detect_sniff() { echo "SNIFF_CALLED" >>"$G7_DIR/di"; printf "%s" "$SNIFF_OUT"; }
+detect_lldp() { echo "LLDP_CALLED" >>"$G7_DIR/di"; printf "%s" "$LLDP_OUT"; }
+rm -f "$G7_DIR/di"; SNIFF_OUT="ok 100 20"; LLDP_OUT="ok 20 30"'
+_g7_o=$(_g7 "$_g7_di"'; DETECT_METHOD=sniff; r=$(detect_iface enp1s0); echo "[$r] $(tr "\n" " " <"$G7_DIR/di")"')
+_g7_is "1au detect: sniff mode runs only sniff and reports lldp as na" "[ok na 20 100] SNIFF_CALLED " "$_g7_o"
+_g7_o=$(_g7 "$_g7_di"'; DETECT_METHOD=lldp; r=$(detect_iface enp1s0); echo "[$r] $(tr "\n" " " <"$G7_DIR/di")"')
+_g7_is "1au detect: lldp mode runs only lldp and reports sniff as na" "[na ok 20 30] LLDP_CALLED " "$_g7_o"
+_g7_o=$(_g7 "$_g7_di"'; DETECT_METHOD=both; r=$(detect_iface enp1s0); echo "[$r]"')
+_g7_is "1au detect: both unions the ids (deduped, numeric order) with both statuses" "[ok ok 20 30 100]" "$_g7_o"
+_g7_o=$(_g7 "$_g7_di"'; DETECT_METHOD=both; SNIFF_OUT="fail"; r=$(detect_iface enp1s0); echo "[$r]"')
+_g7_is "1au detect: a failed method keeps its status and the other method's ids" "[fail ok 20 30]" "$_g7_o"
+
+# (e) config surface: allowlist == template keys; one default per allowlisted key
+_g7_o=$(_g7 'printf "%s\n" $CONFIG_KEYS | sort | tr "\n" " "')
+_g7_t=$(sed -n 's/^# \([A-Z][A-Z_]*\)=.*/\1/p' "${here}/../dynavlan.conf" | sort | tr '\n' ' ')
+_g7_is "1au config: CONFIG_KEYS equals the keys the dynavlan.conf template documents" "$_g7_t" "$_g7_o"
+_g7_o=$(_g7 'body=$(declare -f config_defaults); bad=""
+for k in $CONFIG_KEYS; do n=$(printf "%s\n" "$body" | grep -c "^ *$k="); [ "$n" = 1 ] || bad="$bad $k=$n"; done
+echo "bad=[$bad]"')
+_g7_is "1au config: config_defaults assigns every allowlisted key exactly once" "bad=[]" "$_g7_o"
+
+rm -rf "$_g7_dir"
+unset -f _g7 _g7_is
+unset _g7_dir _g7_gen _g7_o _g7_ex _g7_t _g7_ip2 _g7_wl _g7_di
 
 # ---------------------------------------------------------------------------
 # 1aq. Upgrade/systemd lifecycle (Group 2): the real maintainer scripts and install.sh
