@@ -6,8 +6,10 @@
 #   curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash
 #
 # On an apt/dpkg system, adds the dynavlan APT repository and installs via
-# apt (apt-upgradeable from then on). On any other system, or if the apt
-# repository isn't reachable yet, falls back to the tarball + install.sh path.
+# apt (apt-upgradeable from then on). On any other system, or if the APT path
+# fails for any reason on a first install, falls back to the tarball + install.sh
+# path. When no version tag was given, a box that already has dynavlan installed via
+# dpkg refuses that unmanaged fallback instead of overlaying it.
 #
 # Or to install a specific version via the tarball path:
 #   curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v0.2.1

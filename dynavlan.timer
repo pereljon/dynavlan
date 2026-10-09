@@ -15,7 +15,8 @@ Unit=dynavlan-rescan.service
 # `dynavlan --reconfigure` (/etc/systemd/system/dynavlan.timer.d/interval.conf)
 # opens with an empty `OnUnitActiveSec=`, and in systemd an empty assignment to
 # ANY On*Sec= resets the ENTIRE monotonic timer list above - not just the option
-# assigned. The drop-in must therefore restate EVERY trigger declared here.
+# assigned. The drop-in must therefore re-declare every trigger it still needs: it
+# emits OnActiveSec and OnUnitActiveSec, and intentionally drops OnBootSec.
 # Adding a trigger here without adding it to render_timer_dropin() silently
 # drops it: that is exactly how the first-fire trigger was lost, leaving the
 # rescan timer active, healthy, and never elapsing.

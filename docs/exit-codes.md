@@ -2,7 +2,7 @@
 
 **Status: DRAFT — Gate-4 freeze artifact.** This table is the authoritative exit-code
 surface that `COMPATIBILITY.md` freezes at 1.0.0. It does not exist yet as a stable
-contract; this draft enumerates what the script produces today (v0.4.11, line-cited),
+contract; this draft enumerates what the script produces today (v0.4.20; line numbers are deliberately not cited because they drift),
 proposes the frozen table, and records a disposition for each currently-ambiguous exit.
 
 Exit codes are one of the four frozen surfaces (config keys, generated YAML shape, CLI
@@ -19,31 +19,30 @@ code.
 | Code | Current meaning |
 |------|-----------------|
 | `0` | success, OR a deliberate no-op (nothing to change / another run holds the lock / a guarded abort) |
-| `1` | operational failure or refusal — invalid config, not root, precondition fail, lock-acquire fail, validation fail, detection unavailable, **and an applied-then-health-failed-and-reverted run** |
+| `1` | operational failure or refusal — invalid config, not root, precondition fail, lock-acquire fail, validation fail, detection unavailable, **and an apply that was not accepted (health-failed and reverted, or uncertain)** |
 | `2` | usage error — no mode given, or an unknown mode (a requested `-h`/`--help` is `0`) |
 
 The problem this draft resolves: `0` currently covers both "success" and three distinct
 "changed nothing" cases (one of which logs at `err`), and `1` conflates "refused before
-touching anything" with "tried, health-failed, safely reverted." Neither overload is
+touching anything" with "tried, health-failed, revert attempted." Neither overload is
 wrong per se, but the freeze should make each a deliberate, documented choice.
 
-## Complete inventory by mode (v0.4.11, grounded)
+## Complete inventory by mode (v0.4.20)
 
-Every terminal exit path, with `dynavlan` line references.
+Every terminal exit path, by function.
 
-### All modes — `main` (2351-2400)
-- `--version` / `-V` → **0**, before config load and root check (2360-2362)
+### All modes — `main`
+- `--version` / `-V` → **0**, before config load and root check
 - `-h` / `--help` (explicitly requested) → **0** (0.4.13; requested help is success)
-- no arg → **2**; unknown mode → **2** (2367-2376)
-- unknown mode → **2** (2368-2371)
-- `load_config` failure → **1** (2374-2377)
-- `check_preconditions` failure → **1** (2400)
-- lock-file open failure (reapply/boot/rescan) → **1** (2419/2433)
+- no arg → **2**; unknown mode → **2**
+- `load_config` failure → **1** (except `--teardown`, which falls back to built-in defaults with a warning and continues)
+- `check_preconditions` failure → **1**
+- lock-file open failure (reapply/boot/rescan) → **1**
 
 ### `--status` — `do_status`
 - non-root → **1**; detection prerequisite missing (M8) → **1** (`detected trunks: unavailable`); a runtime detector failure on ANY sampled interface (D5) → **1** (incomplete or unavailable, whether the partial result is empty or not); a managed-elsewhere query failure → **1**; otherwise → **0**, including a genuinely quiet valid wire
 
-### `--reconfigure` — `do_reconfigure` (…-2344)
+### `--reconfigure` — `do_reconfigure`
 - cannot create drop-dir → **1**; write failure → **1**; `systemctl daemon-reload` failure (the new timer interval is not active) → **1**; success → **0** (the reload is skipped, not failed, only where systemd is positively absent); non-root → **1** (main)
 
 ### `--dry-run` — `do_dryrun`
@@ -55,34 +54,37 @@ Every terminal exit path, with `dynavlan` line references.
 - `apply_change` not accepted or uncertain → **1** (no manual-delete advice); stop request → **1**
 - accepted but a link still present, or the post-accept drain failed → **1**; accepted and clean → **0** (a failed agent restart only warns, as for any accepted apply)
 
-### `--reapply` — `do_reapply` (2205-2248)
-- nothing owned → **0** (2208); body identical to on-disk → **0**; applied + accepted → **0** (2248)
-- lock timeout → **1** (2422-2424); no-parent refuse / scratch-dir fail / generate fail / readback fail → **1** (2213/2225/2237/2244)
+### `--reapply` — `do_reapply`
+- nothing owned → **0**; body identical to on-disk → **0**; applied + accepted → **0**
+- lock timeout → **1**; no-parent refuse / scratch-dir fail / generate fail / readback fail → **1**
 - every `apply_change` failure → **1** (see below)
 
 ### `--boot` — `do_boot` / `--rescan` — `do_rescan`
-- lock busy → **0** `skipped, run in progress` (2437-2439) — deliberate, FR-30
+- lock busy → **0** `skipped, run in progress` — deliberate, FR-30
 - FR-22 zero-detection abort → **0**, severity now conditional on the owned set
   (`warning` if owned VLANs are preserved behind a quiet wire, else `info`; D1, fixed
   in 0.4.12) — was `log err` then 0
-- no change → **0** (1925, 1930)
-- `gate_vlan_count` refuse (limit exceeded, `refuse` mode) → **1** (1928 / rescan 2031)
+- no change → **0**
+- pending-delete drain failure → **1** and no further reconciliation, with two different shapes: a failed current-state query happens before the delete loop and preserves the pending record untouched; a failure to write the survivor record happens after the attempted deletes, can truncate or partly rewrite the record, and a still-failing token can be lost. A later managed-elsewhere query failure → **1** before any change, but does not undo an earlier drain
+- `gate_vlan_count` refuse (limit exceeded, `refuse` mode) → **1**
 - fill-mode → proceeds to apply; exit reflects the apply outcome (not a distinct code)
 - any `apply_change` failure → **1**
 
 ### `apply_change` failure paths (all → 1)
-- C1 default-route-in-removals guard (1647-1649); route-metric conflict (1656); backup
-  fail (1662); generate fail (1666); validate fail (1671-1677); **health-fail revert
-  (1695-1698)** — applied, `netplan try` reverted, uplink preserved, `return 1`
+- C1 default-route-in-removals guard; route-metric conflict; backup
+  fail; generate fail; validate fail; **health-fail or otherwise unaccepted
+  apply** — `return 1`. Rc 1 means unaccepted, failed or uncertain; it is not
+  proof of a completed live revert (the caller's message says so, L6). A stop
+  request (SIGTERM, FR-43) before or after ACCEPT also exits 1
 
 ## Proposed frozen table
 
 | Code | Meaning | Notes |
 |------|---------|-------|
-| `0` | Success, or a deliberate no-op that left the box unchanged and healthy | Covers: applied+accepted; nothing to change; lock-skip; guarded aborts (see dispositions) |
-| `1` | Refused or failed *before* changing anything, OR an apply that was safely reverted | Fail-toward-safe: box reachable, logged. The union is intentional (see D4) |
+| `0` | Success or a deliberate no-op; does not by itself establish routing health. | Covers: applied+accepted; nothing to change; lock-skip; guarded aborts (see dispositions) |
+| `1` | Operational refusal, failure or interruption; may follow partial work, an unaccepted/uncertain apply, or interruption after ACCEPT. Does not prove a completed revert. | The union is intentional (see D4); the cause is in the journal |
 | `2` | Usage error: no mode, or an unknown mode (requested `-h`/`--help` is `0`) | Never touches config or hardware |
-| `3` | *(proposed, optional)* Applied, post-apply health check FAILED, auto-reverted, box safe | Only if a real consumer needs it — see Decision below |
+| `3` | *(proposed, optional)* Applied, post-apply health check FAILED, revert attempted | Only if a real consumer needs it — see Decision below |
 
 Codes stay below 126 (shell/signal reserved range). Additions to this table are allowed
 post-1.0 as a free minor addition **provided the table is documented as open-ended** —
@@ -97,13 +99,13 @@ the freeze is deliberate.
 Was `log err "...aborted..."` then `return 0` — an error-severity log paired with a
 success exit, internally inconsistent. It is an intended no-op (zero detection + removal
 disabled → change nothing), so exit 0 is correct and the log level was the bug. The same
-predicate was already `log info` in `do_rescan` (1943), so boot was the outlier.
+predicate was already `log info` in `do_rescan`, so boot was the outlier.
 
 Fixed by making the severity track the owned set (the guard now computes `owned` first):
 `warning` when owned VLANs are being preserved behind a now-quiet wire (the per-trunk
-preserve `warning` at 1882 is unreachable from this early return, so this is the only
+preserve `warning` is unreachable from this early return, so this is the only
 signal — matching that line's convention), `info` when nothing is owned and there is
-genuinely nothing to do (matching 1788/1943). A blanket `warning` was rejected: it would
+genuinely nothing to do (matching `do_rescan`). A blanket `warning` was rejected: it would
 cry-wolf on every boot of a dark spare box; a blanket `info` would lose the signal under
 `LOG_LEVEL=warning`. `notice` was rejected: the codebase reserves it for state changes.
 
@@ -112,15 +114,15 @@ Note: dynavlan's `log()` prints the level as *text* to stderr and no unit sets
 visible to human readers and to dynavlan's own `LOG_LEVEL` gate, but NOT to
 `journalctl -p`. The severity choice matters for those two, not for priority filtering.
 
-### D2 — Lock-skip (2437-2439): **KEEP 0, document**
+### D2 — Lock-skip: **KEEP 0, document**
 `log info "skipped, run in progress"` → 0. Deliberate per FR-30: a timer rescan that
 collides with a running apply is a healthy no-op, not a failure; it retries next cycle.
 Freeze as 0. No change.
 
-### D3 — No-change reconcile (1925, 1930): **KEEP 0, document**
+### D3 — No-change reconcile: **KEEP 0, document**
 Nothing to add or remove → 0. Unambiguously correct. Freeze as 0. No change.
 
-### D4 — Health-fail revert (1695-1698): **KEEP 1** (decision point for code 3 below)
+### D4 — Health-fail revert: **KEEP 1** (decision point for code 3 below)
 Currently 1, grouped with refused-before-trying. Keep it non-zero on **observability
 grounds**: both systemd units are `Type=oneshot` with no `OnFailure=`/`SuccessExitStatus=`,
 so a non-zero exit is the only passive signal that puts the unit in failed state — the one

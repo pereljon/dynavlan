@@ -18,22 +18,24 @@ has actually been validated on, not a hardware requirement.
 | Monitoring agent (restart hook) | Domotz snap |
 
 Any netplan/systemd-networkd box on any switch vendor should work; the above is the
-maintainer's validation bed. Latest sign-off: v0.4.11, 2026-08-06 (below).
+maintainer's validation bed. Latest completed sign-off: v0.4.11, 2026-08-06 (below). That pass predates every change of the v1.0 review (`ver=` 0.4.12 to 0.4.20), which is NOT yet hardware-validated: see "Pending: final-build pass" below.
 
 ---
 
-## Current validation pass (v0.4.11, gate-4 group-5 accumulation)
+## Completed pass (v0.4.11, gate-4 group-5 accumulation)
 
-Consolidated console-backed validation of everything merged since the last
-hardware pass (v0.4.2). Run this **once** before cutting the next release, not
-per-fix. Console-backed only: a bad apply drops SSH, so drive from the serial
-console, never SSH-only.
+Consolidated console-backed validation of everything merged between v0.4.2 and
+v0.4.11, run once rather than per-fix. This section is a historical record of that
+run: the per-phase results are in the sign-off below (the per-check Pass boxes in
+the tables were not individually ticked). Phase 3b.2 and the Phase 4.1 positive
+C1 case were deferred. Console-backed only: a bad apply drops SSH, so drive from
+the serial console, never SSH-only.
 
 **Build-identity gate (FR-38).** Before drawing any conclusion from behavior,
-confirm the running build. This validates the accumulated pre-freeze build (0.4.11
-as of this writing); it is **not tagged**, so install from the `main` checkout
-(source install; `install.sh` stamps the commit) and verify the running build
-matches `main` HEAD:
+confirm the running build. That pass ran on a locally built `.deb` of the then-`main`
+HEAD (0.4.11, later tagged `v0.4.11`). For any future pass, install the build under
+test (a source install stamps the commit) and verify the running build matches the
+expected commit:
 
 ```
 git -C <repo> rev-parse --short HEAD   # the expected build id
@@ -100,8 +102,8 @@ do not chase them at the console.
 
 | # | Check | Do | Expect | Pass |
 |---|-------|----|--------|------|
-| 4.1 | **C1 positive-refusal** | routed mode (`VLAN_ROUTES=true`) so a dynavlan VLAN carries the box default route; then force that VLAN into the removal set (drop its tag on the switch, or narrow the range) and `sudo dynavlan --boot` | dynavlan **refuses the whole reconcile before any disk change** (`default_iface_in_removals`); default route intact; box reachable; nothing deleted | [ ] |
-| 4.2 | **L3-30 carrier-pull PRUNE** (revised, unvalidated on HW) | pull the owned trunk's cable; let two carrier samples elapse across the debounce; `sudo dynavlan --rescan` | that trunk's entire owned set is **pruned** (not preserved), gated on healthy `have_routing`; re-plug + `--rescan` re-provisions | [ ] |
+| 4.1 | **C1 positive-refusal** | routed mode (`VLAN_ROUTES=true`) so a dynavlan VLAN carries the box default route; then force that VLAN into the removal set (drop its tag on the switch; narrowing `VLAN_MIN`/`VLAN_MAX` or adding it to `VLAN_IGNORE` does NOT remove an already-owned VLAN) and `sudo dynavlan --boot` | dynavlan **refuses the whole reconcile before any disk change** (`default_iface_in_removals`); default route intact; box reachable; nothing deleted | [ ] (deferred: the faithful positive-refusal case was not run) |
+| 4.2 | **L3-30 carrier-pull PRUNE** (revised; validated 2026-08-06, see sign-off) | pull the owned trunk's cable; let two carrier samples elapse across the debounce; `sudo dynavlan --rescan` | that trunk's entire owned set is **pruned** (not preserved), gated on healthy `have_routing`; re-plug + `--rescan` re-provisions | [ ] |
 
 ---
 
@@ -122,3 +124,37 @@ Findings recorded in `context/todo.md`; SKELETON P2/FIFO-EOF status and the test
 L3-30 note updated. Preserve-biased behavior confirmed along the way: neither
 `VLAN_MAX` narrowing nor `VLAN_IGNORE` prunes an already-owned VLAN, and `--reapply`
 no-ops when the on-disk yaml already matches the generated config.
+
+---
+
+## Group 0 record (v1.0 review, pre-remediation build)
+
+Console-backed, on the clean pre-remediation `0.4.13 (build e3f2cef)` before the review
+fixes: HV-00 (baseline and recovery rehearsal) PASSED. HV-01 (whole-cgroup stop of the
+rescan service during an applied-but-unconfirmed `netplan try`) FAILED: stopping the unit
+killed both the script and `netplan try`, no revert occurred, and the candidate stayed live
+and on disk (finding D2). The box was restored to its recorded 14-VLAN baseline. The fix
+(`KillMode=mixed`, SIGTERM handling before ACCEPT, `ver=` 0.4.15) is covered by unit and
+lifecycle tests only; it is **not** hardware-validated.
+
+---
+
+## Pending: final-build pass
+
+A single console-backed pass on the final build is still to run. Nothing below has run on
+hardware; the unit suite and local lifecycle tests do not close these. Historical results
+above stay tied to the builds they were run on.
+
+| Area | Cases | Relates to |
+|------|-------|--------|
+| Stop during `netplan try` (benign) | HV-01 | D2 |
+| Pristine package install, manual-to-package migration | HV-02, HV-21 | D6 |
+| Installer and package posture, quiesce failure, reload propagation | HV-20, HV-22..25 | D8, D9, D10 |
+| Detection mutations, detector failure, count-gate preview, quiet wire, union status rows, zero-target catch-up | HV-40..45 | D4, D5, S2, S3 |
+| Config grammar, ignore/range preservation, routed metric order, generated-policy reapply | HV-50..53 | L2, L12 |
+| Package remove/purge, attended teardown | HV-60, HV-61 | D7 |
+| Published package reaches the box | HV-31 | D3 (only an authorized release can prove it) |
+
+Before the pass: confirm the running build with `dynavlan --version` (a `-dirty` suffix or
+a wrong build id means stop), and keep a console open. A teardown or any destructive case
+needs a recorded way back to the baseline.

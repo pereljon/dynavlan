@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.19"
+ver="0.4.20"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -55,7 +55,7 @@ DETECTED_TRUNKS=""   # carrier-up ifaces with >= 1 detected tag (the trunk map)
 LAST_BACKUP=""       # path of the most recent pre-change backup
 VALIDATE_ERRSRC=""   # "ours" | "base" after a failed backend_validate
 VALIDATE_ERRMSG=""
-ROUTE_METRICS=""     # "id:metric" map for this run (FR-37, VLAN_ROUTES=true only)
+ROUTE_METRICS=""     # "iface.id:metric" map for this run (FR-37, VLAN_ROUTES=true only)
 
 # ---------------------------------------------------------------------------
 # Pure helpers (side-effect-free, unit-tested in tests/unit.sh)
@@ -168,9 +168,11 @@ carrier_removals() { # OWNED_ON_TRUNK C1 C2
 #   the lowest-metric default route captured before apply ("" if none). POST_ROUTES is
 #   the post-apply default routes as "iface:metric" tokens ("" if none). Prints PASS/FAIL.
 #   Decision is on the interface only (design §8): a metric or gateway change on the same
-#   iface is a normal DHCP event and must not revert. Empty snapshot never reverts on an
-#   independently-missing uplink, and generated VLANs add no default (AC-12), so any new
-#   default that appears is the base uplink, not ours.
+#   iface is a normal DHCP event and must not revert. An empty snapshot is an
+#   unconditional PASS (AC-12): with no pre-apply uplink there is nothing to protect, so a
+#   box that independently lacks an uplink never reverts. Isolated VLANs add no default;
+#   in routed mode metrics are assigned, but with an empty snapshot this check does not
+#   constrain any new default.
 health_check_eval() {
 	local snap_iface="$1" post_routes="$2"
 	local tok iface metric minmetric=""
@@ -300,7 +302,7 @@ map_ids() {
 
 # plan_route_metrics OWNED_MAP TARGET ADDITIONS START
 #   The single decision point for FR-37 metric assignment: given the map persisted
-#   in our own YAML, produce the full "id:metric" map for TARGET.
+#   in our own YAML, produce the full "iface.id:metric" map for TARGET.
 #
 #   The set needing a NEW metric is "target ids that do not already have one", NOT
 #   the additions. Those differ whenever an owned VLAN has no persisted metric,
@@ -326,7 +328,7 @@ plan_route_metrics() {
 }
 
 # map_filter MAP IDS
-#   Keep only the "id:metric" tokens of MAP whose id is in the IDS set (used to
+#   Keep only the "iface.id:metric" tokens of MAP whose token is in the IDS set (used to
 #   drop removed VLANs' persisted metrics before reassignment). Order preserved.
 map_filter() {
 	local map="$1" ids=" $2 " tok out=""
@@ -339,9 +341,9 @@ map_filter() {
 
 # metric_conflict UPLINK_METRIC MAP
 #   FR-37 guard: CONFLICT if any assigned metric is <= the uplink default's metric
-#   (that VLAN's default would out-prioritize or tie the uplink -> guaranteed
-#   health-FAIL revert loop; refuse loudly up front instead). Empty uplink metric
-#   (no pre-apply default) -> OK.
+#   (that VLAN's default would out-prioritize or tie the uplink; a tie leaves two
+#   co-equal defaults, so which one carries the box's traffic is ambiguous. Refuse
+#   loudly up front instead). Empty uplink metric (no pre-apply default) -> OK.
 metric_conflict() {
 	local up="$1" map="$2" tok metric
 	if [ -n "$up" ]; then
@@ -2247,7 +2249,7 @@ do_rescan() {
 
 	# Removals: owned trunks that are carrier-down. Fast path preserved - the
 	# settle sleep is incurred ONLY when at least one owned trunk is actually down,
-	# so steady state (all trunks up) has no new latency and stays add-only.
+	# so steady state (all trunks up) has no new latency and removes nothing.
 	if [ "$REMOVE_ON_CARRIER_LOSS" = true ]; then
 		local down_trunks=""
 		for trunk in $owned_ifaces; do
@@ -2546,11 +2548,11 @@ do_dryrun() {
 # FR-39: regenerate the OWNED set with the current build and apply only if the
 # generated body actually differs from what is on disk.
 #
-# Deliberately runs NO detection. If it detected and trunk selection landed on a
-# different NIC, "reapply" would silently become a trunk RELOCATION - every VLAN
-# renamed onto another parent - with none of boot's two-pass evidence and no
-# cleanup of the abandoned links. Pinning to the owned parent also makes this fast
-# and carrier-independent, which is what an operator invoking it by hand wants.
+# Deliberately runs NO detection. It re-renders the owned set verbatim, on whatever
+# parents it already spans, so a reapply can never change which trunks are in scope or
+# silently add or prune a VLAN (that is only ever boot/rescan, with their evidence
+# rules). It is also fast and carrier-independent, which is what an operator invoking
+# it by hand wants.
 do_reapply() {
 	local owned parents live generated saved tmpdir hdr rc
 	owned=$(backend_owned_vlans)
@@ -2777,7 +2779,7 @@ do_status() { # FR-35 - report all trunks
 # The reset line is load-bearing and so is its blast radius: an empty assignment
 # to ANY On*Sec= clears the ENTIRE monotonic timer list, not just the option
 # being assigned. Clearing OnUnitActiveSec therefore also drops the base unit's
-# first-fire trigger, and this drop-in has to restate it. Rendering the interval
+# first-fire triggers, and this drop-in has to supply one again. Rendering the interval
 # alone left the timer anchored solely on OnUnitActiveSec, which needs a PREVIOUS
 # activation to anchor on; with none it never elapses. Hardware-validated failure
 # (2026-07-25): timer active, Result=success, never triggered, next_elapse=0,
@@ -2792,7 +2794,8 @@ render_timer_dropin() { # RESCAN_MINUTES -> drop-in file contents
 	printf '# Rendered by dynavlan --reconfigure from RESCAN_MINUTES. Do not edit.\n'
 	printf '[Timer]\n'
 	printf '# An empty On*Sec= resets the ENTIRE monotonic timer list (not just the option\n'
-	printf '# assigned), so every trigger the base unit declares must be restated here.\n'
+	printf '# assigned), so every desired effective trigger must be emitted here; OnActiveSec\n'
+	printf '# replaces the base unit OnBootSec.\n'
 	printf 'OnUnitActiveSec=\n'
 	printf 'OnActiveSec=%smin\n' "$first_fire"
 	printf 'OnUnitActiveSec=%smin\n' "$1"

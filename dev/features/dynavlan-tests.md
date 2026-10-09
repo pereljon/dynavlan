@@ -1,17 +1,17 @@
 # dynavlan - Test Plan
 
-Companion to `dev/features/dynavlan.md`. Scope is deliberately right-sized for a single-file bash tool one maintainer deploys on appliances: no test framework, no mock backend, no CI, no coverage target. Confidence comes from three cheap layers plus the `netplan try` auto-revert safety net (already validated).
+Companion to `dev/features/dynavlan.md`. Scope is deliberately right-sized for a single-file bash tool one maintainer deploys on appliances: no test framework, no full apply/rollback simulator, no CI, no coverage target. Confidence comes from three cheap layers (a unit suite, `--dry-run`, and console-backed hardware cases) plus the `netplan try` auto-revert safety net (validated on hardware). The unit suite (`tests/unit.sh`, 1a-1au, plus `tests/lifecycle.sh` folded in as 1aq) covers the pure helpers and also runs real production functions with stubbed system commands; it cannot establish real netplan timing, which only the hardware layer does.
 
 ## Philosophy
 
 - Test the pure logic where silent bugs hide and are trivial to isolate.
 - Use the tool's own `--dry-run` as the primary decision-path verification on real inputs.
 - Exercise the apply/rollback safety cases by hand on the actual appliance with console access, since they cannot be safely triggered over SSH (a bad apply drops the uplink) and are not worth simulating; the real Meraki trunk is what exercises detection.
-- Add heavier machinery (mock backend, namespace trunk, CI) only if dynavlan grows more maintainers or broader use. The §4 backend seam in the design doc makes that a later, contained addition.
+- Add heavier machinery (mock backend, namespace trunk, CI) only if dynavlan grows more maintainers or broader use. The `backend_*` functions in design §4 are a partial seam, so a mock backend would first need the direct netplan and platform calls abstracted; it is not a small later addition.
 
 ## Layer 1 - Unit assert script (pure functions)
 
-A plain bash script (`tests/unit.sh`) with asserts, run manually or in a pre-commit. Covers only the three side-effect-free functions where an edge-input bug would silently mis-configure a VLAN and would not be obvious from running the tool.
+A plain bash script (`tests/unit.sh`) with asserts, run manually or in a pre-commit. It began with the side-effect-free functions where an edge-input bug would silently mis-configure a VLAN; later sections (1h onward) add real production functions run with stubbed system commands. The 1a-1g tables below are the original pure-helper cases; the per-section notes after them record what each later group added.
 
 ### 1a. `parse_vlan_ignore`
 | Input | Expected |
@@ -45,10 +45,10 @@ A plain bash script (`tests/unit.sh`) with asserts, run manually or in a pre-com
 | (enp1s0, gw, 10) | via enp1s0 | PASS |
 | (enp1s0, gw, 10) | via enp2s0 (different iface) | FAIL → revert |
 | (enp1s0, gw, 10) | none | FAIL → revert |
-| empty (no default) | none | PASS (empty→empty, AC-12) |
-| empty (no default) | via enp1s0 (uplink finally leased) | PASS (change added no default) |
+| empty (no default) | none | PASS (empty snapshot, AC-12) |
+| empty (no default) | via enp1s0 (uplink finally leased) | PASS (an empty snapshot passes unconditionally; nothing to protect) |
 | (enp1s0, gw, 10) | via enp1s0, **metric 20** (metric changed) | PASS (FR-18 compares iface only; guards against a false-revert if someone tightens to compare metric) |
-| (enp1s0, gw1, 10) | via enp1s0, **gw2** (gateway changed) | PASS (iface unchanged; ARP is non-fatal, guards against it silently becoming fatal) |
+| (enp1s0, gw1, 10) | via enp1s0, **gw2** (gateway changed) | not a unit row: the evaluator receives `iface:metric` tokens only, so a gateway change cannot appear in its input (the gateway is neither stored nor compared). The earlier unit row for this case carried no gateway and was removed in Group 7; the property holds by construction, and `post_apply_health` parsing of real `ip route` rows is pinned by 1au. |
 | (enp1s0, gw, 10) | two defaults: enp1s0 m10 AND enp2s0 **m5** | FAIL → revert (lowest-metric default moved off the snapshot iface; see design §8) |
 | (enp1s0, gw, 10) | two **equal-metric** defaults: enp1s0 m10 AND enp2s0 m10 | PASS in EITHER listing order (P3: order-independent; snapshot iface still holds a default at the min metric) |
 | (enp2s0, gw, 10) | two equal-metric defaults: enp1s0 m10 AND enp2s0 m10 | PASS (the other equal-metric uplink is the snapshot iface) |
@@ -64,7 +64,7 @@ The two-pass removal math is high-consequence (a bug tears down a real VLAN or l
 | {18,21,22} / {18,21} / {18,21} | {22} (absent from both) |
 | {18,21,22} / {18} / {18,21} | {22} (21 present in pass2 so kept; 22 absent from both passes so removed) |
 | {18,21,22} / {18,21,22} / {18,21,22} | {} (all present) |
-| {18,21} / {} / {} | {18,21} (both absent both passes) but gated by FR-22: if BOTH passes empty → zero-detection abort, remove nothing |
+| {18,21} / {} / {} | {} (both passes empty: `boot_removals` removes nothing; the zero-detection guard, FR-22, is enforced in the caller as well) |
 
 ### 1e. (removed) trunk-selection hysteresis
 
@@ -458,6 +458,6 @@ Note: FR-23 removal-set math is covered by Layer 1 1d (per-trunk; combined acros
 ## Deliberately out of scope (add later if the tool graduates)
 
 - A test framework (bats): the assert script suffices.
-- A mock backend + state-machine suite: the manual checklist + `netplan try` safety net cover the branches at this scale.
+- A full apply/rollback simulator: real netplan timing is covered only by console-backed hardware cases. The orchestration decisions around that primitive (accept loop gates, stop handling, health, deletes) have stubbed unit tests (1ao, 1au and others), but the manual checklist alone does not cover every branch; D1/D2 of the v1.0 review showed that, so the checklist is not presented as a substitute.
 - A synthetic/namespace virtual trunk or CI: not needed while testing runs on the real appliance plus live Meraki trunk; revisit if CI or multi-maintainer development starts.
 - Coverage targets: not meaningful for a thin orchestration script.

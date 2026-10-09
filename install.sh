@@ -322,7 +322,8 @@ EOF
 if [ "$TIMER_RESTARTED" -eq 1 ]; then
 	cat <<EOF
 This was an upgrade: the rescan timer was running before and has been restarted, so the
-NEW code will rescan (add-only) within RESCAN_MINUTES. Run the --dry-run
+NEW code will rescan within RESCAN_MINUTES (adding VLANs, and pruning a trunk
+that stays carrier-down while the box still has a healthy uplink route). Run the --dry-run
 above now if you want to see what it will do before it does it. To hold it off:
      sudo systemctl stop dynavlan.timer
 EOF

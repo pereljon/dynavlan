@@ -342,7 +342,8 @@ call lldp_tagged_vlans "";               ok "1i empty input -> empty"           
 # ---------------------------------------------------------------------------
 # 1j. render_timer_dropin - FR-21 timer interval drop-in
 #     An empty assignment to ANY On*Sec= resets the ENTIRE monotonic timer
-#     list, so the drop-in must restate every trigger, not just the interval.
+#     list, so the drop-in must emit the first-fire trigger it needs as well as
+#     the interval (it replaces the base OnBootSec with OnActiveSec).
 #     Rendering only OnUnitActiveSec left the timer with no first-fire anchor
 #     and it never elapsed (hardware-validated dead timer, 2026-07-25). The
 #     exact-match assert pins both the content AND the ordering: the reset has
@@ -353,13 +354,14 @@ read -r -d '' expect_dropin <<'EOF' || true
 # Rendered by dynavlan --reconfigure from RESCAN_MINUTES. Do not edit.
 [Timer]
 # An empty On*Sec= resets the ENTIRE monotonic timer list (not just the option
-# assigned), so every trigger the base unit declares must be restated here.
+# assigned), so every desired effective trigger must be emitted here; OnActiveSec
+# replaces the base unit OnBootSec.
 OnUnitActiveSec=
 OnActiveSec=2min
 OnUnitActiveSec=7min
 EOF
 
-call render_timer_dropin 7; ok "1j drop-in restates first-fire + interval, reset first" "$expect_dropin"
+call render_timer_dropin 7; ok "1j drop-in emits first-fire + interval, reset first" "$expect_dropin"
 
 call render_timer_dropin 5
 tests=$((tests + 1))
@@ -739,7 +741,7 @@ call pending_deletes
 ok "1ae absent record -> empty" ""
 
 call write_pending_deletes "enp2s0.40 enp1s0.100 enp2s0.40"
-ok "1ae empty write succeeds silently" ""
+ok "1ae non-empty write succeeds silently" ""
 call pending_deletes
 ok "1ae round-trip is sorted-unique" "enp1s0.100 enp2s0.40"
 

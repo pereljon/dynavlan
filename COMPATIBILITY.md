@@ -141,8 +141,8 @@ be added later as a free minor addition.
 
 | Code | Meaning |
 |------|---------|
-| `0` | success, or a deliberate no-op that left the box unchanged and healthy (includes a requested `--help`/`-V`) |
-| `1` | refused or failed before changing anything, OR an apply that was safely reverted |
+| `0` | Success or a deliberate no-op; does not by itself establish routing health. Includes a requested `--help`/`-V`. |
+| `1` | Operational refusal, failure or interruption; may follow partial work, an unaccepted/uncertain apply, or interruption after ACCEPT. Does not prove a completed revert. |
 | `2` | usage error: no mode given, or an unknown mode |
 
 Full per-mode inventory, dispositions, and the rationale for keeping a reverted apply at

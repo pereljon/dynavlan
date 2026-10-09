@@ -36,10 +36,10 @@ Install/first-run/removal live in `docs/deployment-guide.md`. Hardware testing i
 Infrastructure, not a framework. Never surprise the operator; never strand the box.
 
 - **Never strand a headless box:** every apply is validated, health-checked against a pre-apply default-route snapshot, and auto-reverts (`netplan try`). Every failure path fails toward "no change, reachable, logged." Rollback is gated on a routing health check, never on an exit code.
-- **Own one namespace, touch nothing else:** dynavlan owns exactly one generated netplan file and never reads base config for assumptions nor modifies any other file.
+- **Own one namespace, touch nothing else:** dynavlan owns exactly one generated netplan file and never modifies any other netplan file. Discovery makes no assumptions from base config; validation, the overlap check and `--dry-run` do read the merged netplan tree to detect conflicts.
 - **Discover, don't assume:** interfaces, the trunk, and VLANs are all discovered from live kernel state and the wire. No hardcoded interface names, VLAN IDs, native VLAN, or base filenames.
 - **Smallest thing that works:** no speculative backends, frameworks, or test infrastructure until a real second case exists. The backend seam is structured for portability but has one implementation.
-- **Hardware- and vendor-agnostic:** works on any netplan/systemd-networkd box, any switch vendor, any VLAN scheme (validated on a Protectli/igb appliance on a Meraki trunk).
+- **Hardware- and vendor-agnostic:** no vendor or NIC-name assumptions in detection; works on a netplan/systemd-networkd box within the documented platform and interface-name limits (validated on a Protectli/igb appliance on Meraki and UniFi trunks).
 
 `dynavlan` is intentionally a single self-contained file (design §1). Optimize for clarity: expanded multi-line guards over dense one-liners, never compressed to save lines.
 

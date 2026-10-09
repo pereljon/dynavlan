@@ -8,8 +8,8 @@ Bridges `docs/dynavlan-PRD.md` (v3.1, what/why) to implementation (how). The PRD
 |----------|--------|-----------|
 | Language | **bash** | Zero runtime dependency, portable across distros at the shell level (no interpreter-version coupling), natural fit for orchestrating `netplan`/`ip`/`tcpdump`/`lldpctl`. Concurrency footguns (flock/fifo) are contained in a few functions (§7, §9). |
 | Timer interval | **static systemd timer + config-synced drop-in** | systemd timers are static files. `RESCAN_MINUTES` is materialized into `/etc/systemd/system/dynavlan.timer.d/interval.conf` by `dynavlan --reconfigure` (also run at install), followed by `systemctl daemon-reload`. Runtime edits to `RESCAN_MINUTES` require re-running `--reconfigure`. Avoids a self-rescheduling loop or a long-running daemon (PRD chose oneshot+timer). |
-| Two-pass boot removal state | **in-process, within the single `--boot` run** | FR-23: detect, sleep `BOOT_SETTLE_SECONDS`, detect again, remove only VLANs absent from both. Held in shell variables; no persistence, no cross-invocation state (rescan stays strictly add-only per FR-21). |
-| Network backend | **abstracted seam, netplan the only implementation** | See §4. Structure for portability without building multiple backends (that would be speculative). |
+| Two-pass boot removal state | **in-process, within the single `--boot` run** | FR-23: detect, sleep `BOOT_SETTLE_SECONDS`, detect again, remove only VLANs absent from both. Held in shell variables; no persistence, no cross-invocation state (rescan has no detection-diff removal; its only removal path is FR-41 carrier-down pruning). |
+| Network backend | **partial netplan storage/apply seam, netplan the only implementation** | See §4. The `backend_*` functions isolate the owned-file storage, validation, apply and delete operations, but the core also depends directly on netplan (version and `netplan try` probes, base-config queries, the backup/restore of the owned file) and on `ip`/`/sys`. It is not a portability adapter; a second backend would need real refactoring first (that would be speculative now). |
 | Config format | **declaratively-parsed `/etc/dynavlan.conf`** | Commented KEY=value, parsed line-by-line against an allowlist of the documented keys - NEVER `source`d (H2, 2026-08-04). A config line can only set a documented key; an unknown/protected key or non-assignment line refuses to run, and values are inert literals (`printf -v`), so config can neither execute code nor override an internal/safety variable. Matches the PRD schema (§8 there). |
 
 ## 2. Architecture: two layers
@@ -21,24 +21,26 @@ Bridges `docs/dynavlan-PRD.md` (v3.1, what/why) to implementation (how). The PRD
 |  detection · filter/exclude/candidates · reconcile logic · |
 |  health-check evaluation · logging · flock · entrypoints   |
 +-------------------------------------------------------------+
-                         | calls (never touches netplan directly)
+                         | calls (most netplan access, not all: see §4)
                          v
 +-------------------------------------------------------------+
-|  BACKEND SEAM (six operations) - netplan implementation     |
+|  BACKEND FUNCTIONS (partial seam) - netplan implementation  |
 |  list_managed_vlans · generate_config · validate ·          |
-|  apply_with_revert · remove_vlan · owned_vlans              |
+|  apply_with_revert · remove_vlan · owned_vlans/metrics      |
 +-------------------------------------------------------------+
 ```
 
-The core contains all the intelligence and is portable. The backend seam is the only netplan-coupled code. A future port (NetworkManager, systemd-networkd-direct, ifupdown) implements the six operations; the core is untouched.
+The core holds the decision logic. The `backend_*` functions hold most netplan-coupled code, but not all of it: the core still calls `netplan`, `ip` and the owned file directly in the places listed in §4. A future port (NetworkManager, systemd-networkd-direct, ifupdown) would implement the `backend_*` operations and also need those direct dependencies abstracted first.
 
 ## 3. Ownership model (stated abstractly)
 
 dynavlan owns a **namespace** of VLAN definitions and never modifies definitions outside it. Netplan instantiates this as "own `/etc/netplan/90-dynavlan.yaml`, exclude every other file" (FR-13). Future backends: NM = "own `dynavlan-*` connections"; networkd-direct = "own `90-dynavlan.*` unit files". The exclusion logic (FR-10) is "every VLAN managed outside our namespace," queried via the backend.
 
-## 4. Backend seam - the six operations
+## 4. Backend functions - a partial seam
 
-Each is a bash function `backend_<op>`; the netplan implementation is the initial (only) one. Contract is capability-level, not netplan-specific.
+Each is a bash function `backend_<op>`; the netplan implementation is the only one. The table gives the capability each function stands for. Further `backend_*` helpers exist (`backend_owned_metrics`, `backend_netplan_vlan_tokens`, `backend_stop_cleanup`); the six rows below are the apply-relevant operations, and the NM/networkd columns are speculative sketches, not designs.
+
+**Direct dependencies outside the `backend_*` functions** (so the seam is partial): the netplan version gate and the `netplan try --help` probe (`check_netplan_version`, `check_preconditions`, `check_apply_prereqs`); `backup_current`/`restore_prior` operate on the owned file path; the base-tree copy and `netplan generate` handling in `--dry-run`; interface discovery, link up/promisc and carrier reads (`ip`, `/sys`); route snapshots and health (`ip route show default`); and detection tools (`tcpdump`, `lldpctl`).
 
 | Operation | Contract | netplan impl | NM impl (future) | networkd-direct (future) |
 |-----------|----------|--------------|------------------|--------------------------|
@@ -90,7 +92,7 @@ A startup `backend_detect` (reads `/etc/os-release`, probes for `netplan`) is de
 | `prune_backups` | Keep newest `BACKUP_KEEP` |
 | `log` | Leveled journal logging (identifier `dynavlan`), start/end lines |
 | `do_status` / `do_dryrun` / `do_reconfigure` | Operator entrypoints; both `do_status` and `do_dryrun` report per-owned-trunk carrier state (FR-41), and `do_dryrun` previews a would-be carrier-down removal |
-| `backend_*` (×6) | The seam of §4 |
+| `backend_*` | The partial storage/apply seam of §4 |
 
 ## 6. Control flow per mode
 
@@ -142,10 +144,10 @@ FR-41 (carrier-down removal, §11b) adds one PRE-condition in front of this chai
 
 ## 8. Health check (FR-18)
 
-- `snapshot_default_route`: `ip route show default` → lowest-metric route's `dev`, `via`, `metric`. May be empty.
-- Post-apply PASS iff: a default route exists AND the **lowest-metric** default route's `dev` equals the snapshot `dev`. Comparison is on `dev` (interface) only, never metric or gateway (a metric or gateway change on the same iface is a normal DHCP event and must not revert). If a spurious lower-metric default appears on a *different* iface post-apply, the lowest-metric default has moved off the base uplink → FAIL/revert. **Empty-snapshot rule (AC-12):** if the snapshot was empty, PASS iff post-apply is also empty or the only new default is one the change did not add (VLANs add none, per FR-14) — never revert solely because the box independently had no uplink.
+- `snapshot_default_route`: returns only the interface of the lowest-metric IPv4 default route, or empty if none; the metric is queried separately for routed conflict checks, and no gateway is captured.
+- Post-apply PASS iff: a default route exists AND the **lowest-metric** default route's `dev` equals the snapshot `dev`. Comparison is on `dev` (interface) only, never metric or gateway (a metric or gateway change on the same iface is a normal DHCP event and must not revert). If a spurious lower-metric default appears on a *different* iface post-apply, the lowest-metric default has moved off the base uplink → FAIL/revert. **Empty-snapshot rule (AC-12):** if the snapshot was empty there is no uplink to protect, so the evaluator PASSES unconditionally, whatever the post-apply routes are (`health_check_eval`). Isolated VLANs add no default (FR-14), so nothing is missed there; in routed mode metrics are assigned, but with an empty snapshot the check does not constrain any new default. dynavlan never reverts solely because the box independently had no uplink.
 - ARP reachability of the gateway is optional, secondary, **strictly non-fatal**: a silent gateway must not fail the check. Never ICMP.
-- Dependency: valid only because FR-14 gives generated VLANs no default route, so snapshot/post-apply reflect the base uplink alone. A change to FR-14 isolation keys must revisit this.
+- Dependency (isolated-mode rationale): valid because FR-14 gives generated VLANs no default route, so snapshot/post-apply reflect the base uplink alone. Routed mode (FR-37) supports IPv4 VLAN defaults and relies on FR-37's metric rules and the snapshot comparison instead; `accept-ra: false` still excludes IPv6 defaults. A change to the FR-14 isolation keys must revisit this.
 
 ## 9. `netplan try` accept/revert primitive (netplan `apply_with_revert`)
 
@@ -176,8 +178,8 @@ The concurrency-sensitive part (IR-2), hardened after the round-2 review found t
 - `/etc/dynavlan.conf` (commented defaults).
 - `/etc/netplan/90-dynavlan.yaml` (0600, generated).
 - `dynavlan.service`: `Type=oneshot`, `After=systemd-networkd.service`, NOT `Wants/After=network-online.target`, `ExecStart=/usr/local/sbin/dynavlan --boot`, `WantedBy=multi-user.target`, `KillMode=mixed`, `TimeoutStopSec=60` (D2), `TimeoutStartSec=600` (boot can take CARRIER_WAIT + 2*SNIFF + BOOT_SETTLE + lease settle).
-- `dynavlan-rescan.service`: `Type=oneshot`, `ExecStart=/usr/local/sbin/dynavlan --rescan`, no `[Install]` (activated only by the timer). SEPARATE from dynavlan.service because a `.timer` activates a service with a fixed `ExecStart` mode, and boot (reconcile, with removals) vs rescan (add-only) are different modes. This is one more unit than the original "two units" wording.
-- `dynavlan.timer`: `OnBootSec`/`OnUnitActiveSec` (monotonic), `Unit=dynavlan-rescan.service`, `WantedBy=timers.target`; interval via `.d/interval.conf` from `RESCAN_MINUTES` (rendered by `--reconfigure`).
+- `dynavlan-rescan.service`: `Type=oneshot`, `ExecStart=/usr/local/sbin/dynavlan --rescan`, no `[Install]` (activated only by the timer). SEPARATE from dynavlan.service because a `.timer` activates a service with a fixed `ExecStart` mode, and boot (full reconcile with detection-diff and carrier-down removals) vs rescan (additions plus FR-41 carrier-down pruning) are different modes. This is one more unit than the original "two units" wording.
+- `dynavlan.timer`: `OnBootSec`/`OnActiveSec`/`OnUnitActiveSec` (monotonic), `Unit=dynavlan-rescan.service`, `WantedBy=timers.target`; interval via `.d/interval.conf` from `RESCAN_MINUTES` (rendered by `--reconfigure`). The drop-in resets the monotonic list and emits only `OnActiveSec` (first fire) and `OnUnitActiveSec` (interval), so it intentionally replaces the base `OnBootSec` with `OnActiveSec`.
 - Persistent journald guaranteed at install (`/var/log/journal` + `Storage=persistent` drop-in). dynavlan logs to the journal via stderr (identifier `dynavlan`); the optional `/var/log/dynavlan.log` file branch was not built - the install guarantees the journald branch instead (FR-31 requires one branch, not both).
 - `install.sh`: require root; install script (0755) + config (0644, never clobber existing) + all three units; ensure `tcpdump` and `lldpd` present; write the journald persistence drop-in; `--reconfigure`; `enable dynavlan.service` + `enable dynavlan.timer` (both armed for NEXT boot - deliberately NOT `--now`: a monotonic timer whose `OnBootSec` is already past fires immediately, which would run a rescan apply before the operator's `--dry-run` preview). Install never triggers any network change; first apply is the operator's `--boot` or the next reboot (which also starts the timer).
 - Known limitation (FR-11): if an external netplan file reuses dynavlan's exact stanza key (`<iface>.<id>`), `netplan get` merges the two entries into one and the overlap warning cannot fire (detecting it would require reading base files by name, which crosses the never-read-base-config line). Accepted; different-key/same-id overlaps are detected and warned.
@@ -216,7 +218,7 @@ Through v0.3.0, a trunk going carrier-down was treated identically to a tagless-
 
 ## 12. Portability plan (what to build now vs later)
 
-**Now (cheap, structural):** the §4 backend seam as six functions; the abstract ownership model (§3); the `apply_with_revert` capability contract. The core never calls `netplan` directly. (`backend_detect` is deferred with the second backend - not built while netplan is the only one.)
+**Now (cheap, structural):** the §4 `backend_*` functions; the abstract ownership model (§3); the `apply_with_revert` capability contract. The core still has the direct netplan and platform dependencies listed in §4. (`backend_detect` is deferred with the second backend - not built while netplan is the only one.)
 
 **Later (only when a second backend is real):** NM/networkd/ifupdown implementations; a real `backend_detect`; any backend-selection config. Each future backend's hardest piece is the revert (NM native / networkd-direct hand-rolled).
 

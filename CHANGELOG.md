@@ -12,6 +12,11 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ### Fixed
 
+- Wording corrections in operator-visible output (`ver=` 0.4.19 -> 0.4.20). The `install.sh`
+  upgrade message no longer says a rescan is "add-only" (it adds VLANs and prunes a debounced
+  carrier-down trunk), and the comment written into the generated timer drop-in now says every
+  desired effective trigger must be emitted after the reset, with `OnActiveSec` replacing the
+  base `OnBootSec`. No behavior change; the drop-in is rewritten on the next `--reconfigure`.
 - Removal lifecycle (`ver=` 0.4.18 -> 0.4.19). New `dynavlan --teardown`: the attended,
   console-backed way to remove every owned VLAN. It takes the run lock (bounded wait), runs
   on built-in defaults if the config is invalid, needs root/`ip`/netplan but not the
@@ -103,6 +108,16 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
   `curl`/`grep` inside a capture pipeline aborted the script silently, so the messages
   written for exactly those cases never printed. Retrieval and parsing are now separate,
   keeping a transport/read failure and an empty parsed result distinct and reported.
+- VLAN identity, pending-delete guards and apply reporting (`ver=` 0.4.13 -> 0.4.14). A
+  netplan VLAN stanza is now identified by its own `id:` and `link:` fields, not its mapping
+  key, so arbitrarily keyed stanzas are no longer merged or mistaken; the stanza query reports
+  "none configured" and "cannot tell" differently, and callers that gate on ownership stop
+  on a failed query. Each pending-delete retry takes a fresh default-route and netplan
+  ownership query and checks every token against those results (it does not re-query
+  before each individual delete), and preserves the record if a query fails, so a past
+  removal alone no longer authorizes a delete. A change that was not
+  accepted no longer claims a completed revert, and a failed, unrecordable delete no longer
+  prints a contradictory "removed" summary.
 - FR-22 zero-detection boot abort logged at `err` while exiting 0 (an error-severity
   line on an intended no-op). Severity now tracks the owned set: `warning` when owned
   VLANs are preserved behind a now-quiet wire, `info` when nothing is owned. Exit code

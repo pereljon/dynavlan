@@ -148,7 +148,7 @@ and documented pre-1.0 decisions stay fixed unless concrete evidence emerges (`c
 2026-09-05); (2) two new open questions - promiscuous-mode lifecycle and detection failure-state exposure
 (`context/open_questions.md`) - plus a still-unapplied `dev/CODEMAP.md` doc-drift fix logged in
 `context/todo.md` (stale test-section description, duplicated `iface_tags` row, "Token helpers ... pure"
-mislabeling two impure functions). Session closed out here to start a separate debug coding run.
+mislabeling two impure functions; applied later in Group 8, 2026-10-08). Session closed out here to start a separate debug coding run.
 
 STATE (2026-09-07 UTC, major-review Group 1 approved locally; Group 0 D2 failed on hardware): the
 operator-approved remediation plan is active on `release/1.0.0-review`. Group 1 (D1/L1/L6/L7) is
@@ -220,20 +220,23 @@ drop-in, and the attended `--teardown` mode reuses `apply_change` with an empty 
 (after a rollback correction); committed locally as `a62f691`; not hardware-validated (HV-60/HV-61). Nothing pushed.
 
 STATE (2026-10-08, Group 7 evidence hardening): tests only (`tests/unit.sh` 1au, 16 tests; one false `1c` row removed); 800 unit tests pass;
-Codex-approved locally 2026-10-08; committed locally; no `ver=` bump (0.4.19); not pushed, no hardware.
+Codex-approved locally 2026-10-08; committed locally as `09b23ab`; no `ver=` bump (0.4.19); not pushed, no hardware.
 
-NEXT ACTION: Groups 1, 3, 2a, 2, 4, 5 and 6 are implemented, Codex-approved locally and committed locally (`bf59ab0`/`d8d7046`,
-`34bed4e`, `94ac0a0`, `025502d`, `8f4b581`, `05a7878`, `a62f691`); Group 7 is approved locally and committed locally (see `git log`); none is hardware-validated.
-Next local action: Group 8 documentation synchronization , then Group 9. Hardware is a separate
-operator-authorized Group 9 checkpoint (one pass on the final build: benign HV-01 first to close D2, then the remaining HV cases).
-No push, merge, or release is authorized, and further commits need explicit approval. Per-item status: `context/todo.md`; full sequence:
-`docs/superpowers/plans/2026-09-05-v1.0-major-review-remediation.md`.
+STATE (2026-10-08, Group 8 documentation synchronization in the working tree): Codex approved the scope (D11, D12, D13, S1, L16 plus
+Groups 1-7 fallout). Edits are comment/doc/template plus two output strings (install.sh upgrade message, generated timer drop-in comment, with the 1j expectation), so `ver=` 0.4.19 -> 0.4.20 (output wording only). Codex required two rounds of bounded corrections, applied, and approved Group 8 locally 2026-10-08. Not committed; awaiting the operator's commit approval. No hardware.
+
+NEXT ACTION: Groups 1, 3, 2a, 2, 4, 5, 6 and 7 are implemented, Codex-approved locally and committed locally (`bf59ab0`/`d8d7046`,
+`34bed4e`, `94ac0a0`, `025502d`, `8f4b581`, `05a7878`, `a62f691`, `09b23ab`); none is hardware-validated. Group 8 is Codex-approved locally in the working
+tree; next is its commit (with approval), then Group 9 (final verification). Hardware is a separate
+operator-authorized Group 9 checkpoint (one pass on the final build: benign HV-01 first to close D2, then the remaining HV cases; D2/HV-01
+stays open, HV-31 is release-gated). No push, merge, or release is authorized, and further commits need explicit approval. Per-item status:
+`context/todo.md`; full sequence: `docs/superpowers/plans/2026-09-05-v1.0-major-review-remediation.md`.
 
 Before coding a change, read in order:
 4. dev/SKELETON.md - logic flow and key invariants
 5. dev/CODEMAP.md - where things live (per-function map)
 6. docs/dynavlan-PRD.md - authoritative requirements (FR/NFR/AC)
-7. dev/features/dynavlan.md - technical design: architecture, backend seam, apply/rollback state machine
+7. dev/features/dynavlan.md - technical design: architecture, partial backend seam, apply/rollback state machine
 8. dev/features/dynavlan-tests.md - test plan (unit asserts, --dry-run, hardware checklist)
 
 These files are the project's working memory; keep them current.
@@ -244,16 +247,20 @@ Each file gets one clear role; keep this table current.
 
 | File | Purpose |
 |------|---------|
-| `CLAUDE.md` | Conventions, checklists, guardrails for working in this repo |
+| `AGENTS.md` | Conventions, checklists, guardrails for working in this repo (shared rules in `../AGENTS.md`) |
 | `context/index.md` | Read-order and file-role map for a fresh session; pointers to the live-state files |
 | `context/todo.md` | Outstanding tasks and their state (source of truth for project status) |
 | `context/decisions.md` | Dated log of decisions made and rejected |
 | `context/open_questions.md` | Unresolved questions with status and resolution path |
 | `dev/CODEMAP.md` | Where things live: per-function purposes, for locating code |
 | `dev/SKELETON.md` | How it works: logic flow and key invariants (incl. the hardware-validated behaviors) |
-| `dev/features/dynavlan.md` | Technical design: architecture, backend seam, apply/rollback state machine, module decomposition, systemd/install layout |
+| `dev/features/dynavlan.md` | Technical design: architecture, partial backend seam, apply/rollback state machine, module decomposition, systemd/install layout |
 | `dev/features/dynavlan-tests.md` | Test plan: unit assert cases, `--dry-run` verification, hardware integration checklist |
 | `docs/dynavlan-PRD.md` | Product requirements: authoritative FR/NFR/AC with severity+impact tags |
+| `COMPATIBILITY.md` | The 1.x compatibility contract (DRAFT until 1.0.0): config keys, YAML shape, CLI flags, exit codes |
+| `docs/exit-codes.md` | Exit-code inventory by mode and the frozen table |
+| `docs/hardware-validation.md` | Validated hardware, the console-backed validation record, and the pending final-build pass |
+| `docs/positioning-brief.md` | Positioning and audience notes (not behavior) |
 | `docs/v1.0-definition.md` | Authoritative 1.0 definition: maturity bar, release gates, compatibility policy, out-of-scope |
 | `docs/deployment-guide.md` | Deployment guide: install, configure, first attended run, operation, removal |
 | `README.md` | Landing page: what the project is and where the docs are |

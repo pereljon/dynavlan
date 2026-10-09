@@ -43,9 +43,12 @@ upgrade` yourself when you want the latest release; dynavlan is not
 structured for unattended-upgrades. A conffile prompt can appear if both the
 shipped `/etc/dynavlan.conf` default changed and you edited yours - this can
 hang a headless upgrade, so don't run `apt upgrade` unattended on a remote
-box. A box already installed via `.deb` or `install.sh` needs no reinstall:
-adding the keyring + source is enough, since apt recognizes the existing
-install by package name/version.
+box. A box already installed via a `.deb` needs no reinstall: adding the keyring
++ source is enough, since dpkg knows the package. A box installed with
+`install.sh` is not in dpkg's database, so apt does not recognize it; `apt install
+dynavlan` migrates it instead (the package records the unit posture first, takes
+over the units, and removes the old copies `install.sh` left in
+`/etc/systemd/system` that would shadow the package's).
 
 An upgrade preserves the timer/service state you left them in, for both the
 package and `install.sh`: each of `dynavlan.service` and `dynavlan.timer` keeps
@@ -228,7 +231,8 @@ Removals depend on *why* a VLAN went away:
 | `/etc/dynavlan.conf` | configuration |
 | `/etc/netplan/90-dynavlan.yaml` | the ONE netplan file dynavlan owns (do not edit; regenerated) |
 | `/var/backups/dynavlan/` | timestamped backups of the owned file (last `BACKUP_KEEP`) |
-| `/etc/systemd/system/dynavlan.{service,timer}`, `dynavlan-rescan.service` | units |
+| `/etc/systemd/system/dynavlan.{service,timer}`, `dynavlan-rescan.service` | units from an `install.sh` install (a package install puts them in `/lib/systemd/system` instead) |
+| `/etc/systemd/system/dynavlan.timer.d/interval.conf` | timer interval drop-in written by `dynavlan --reconfigure` (both install paths) |
 | `/run/dynavlan.lock` | run lock (fd-held; safe to ignore) |
 
 ## 7. Removal

@@ -4,59 +4,54 @@ Owns: open tasks and their status. Does NOT hold permanent facts or decisions (t
 Maintain: update whenever a task is added, changes state, or completes.
 Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 
-## Current state (2026-09-06 PDT / 2026-09-07 UTC)
+## Current state (2026-10-08)
 
-The v1.0 major review is underway on `release/1.0.0-review`. Group 1 (D1/L1/L6/L7) is locally
-code/test approved after two Codex correction rounds (`ver=0.4.14`, 312 unit assertions, 0 failures),
-and is now committed locally as `bf59ab0` (with the Group 0 evidence/status commit `d8d7046`); both are
-unpushed and undeployed. Group 0 hardware evidence used the clean
-pre-remediation `0.4.13 (build e3f2cef)`: HV-00 passed, then HV-01 failed cleanly. Stopping the real
-rescan service during an applied-but-unconfirmed addition killed both Bash and `netplan try`; no
-revert occurred and the candidate remained live/on disk. D2 is now a confirmed HIGH defect with
-potentially CRITICAL impact and blocks release. No D2 correction is designed or implemented.
-HV-02/D6 and Groups 2-9 are deferred. The hardware box was restored to its recorded 14-VLAN baseline on
-2026-09-07 (verified: original owned-file checksum, exactly 14 VLAN interfaces, both default routes,
-healthy `--status`/`--dry-run`, rescan unit reset, timer enabled+active with a finite next elapse). It
-deliberately still runs the reviewed `0.4.13 (build e3f2cef)` package - which PREDATES Group 1's fixes,
-so validating Group 1 behavior on hardware requires deploying the reviewed build first. Full local-only
-evidence and Codex disposition:
-`docs/superpowers/plans/2026-09-07-group0-d2-report-for-codex.md`.
+The v1.0 major review is underway on `release/1.0.0-review`. Groups 1, 3, 2a, 2, 4, 5, 6 and 7 are implemented,
+Codex-approved locally and committed locally (nothing pushed, merged, deployed or released). `ver=0.4.19` committed (0.4.20 pending in the Group 8 working tree).
+Unit suite 800 tests, 0 failures. Group 8 bumps `ver=` to 0.4.20 (output wording only, uncommitted).
+
+| Group | Scope | Commit |
+|-------|-------|--------|
+| 0 | Hardware evidence (HV-00 PASS, HV-01 FAIL = D2) | `d8d7046` |
+| 1 | D1/L1/L6/L7 identity, pending-delete guards, honest reporting (`ver=0.4.14`) | `bf59ab0` |
+| 3 | D3/L4 APT bootstrap and release handoff (no `ver=` bump) | `34bed4e` |
+| 2a | D2 graceful stop during `netplan try` (`ver=0.4.15`) | `94ac0a0` |
+| 2 | D6/D8/D9/D10 upgrade and systemd lifecycle (`ver=0.4.16`) | `025502d` |
+| 4 | D4/D5/S2/S3 dry-run, status, subnet reporting (`ver=0.4.17`) | `8f4b581` |
+| 5 | Configuration grammar and frozen semantics (`ver=0.4.18`) | `05a7878` |
+| 6 | D7 attended `--teardown`, remove disables units (`ver=0.4.19`) | `a62f691` |
+| 7 | T1 direct test evidence (tests only, no `ver=` bump) | `09b23ab` |
+
+Group 8 (documentation synchronization) is Codex-approved locally (2026-10-08) and awaits the operator's commit approval;
+it is not yet committed. Group 9 (final verification) follows.
+
+None of this is hardware-validated. The reference box still runs the reviewed `0.4.13 (build e3f2cef)` package,
+which predates every fix; its network state was restored to the recorded 14-VLAN baseline on 2026-09-07.
+One operator-authorized, console-backed pass on the final build is still needed: a benign HV-01 first (closes D2),
+then HV-02, HV-20..25, HV-40..45, HV-50..53, HV-60/61. HV-31 (the published package reaches the box) attaches to a
+real authorized release. Evidence and dispositions: `docs/superpowers/plans/2026-09-07-group0-d2-report-for-codex.md`,
+the remediation plan, and `docs/hardware-validation.md` ("Pending: final-build pass").
 
 ### Gate-4 freeze - remaining before the 1.0.0 tag
 - [ ] Version-gate git hooks (pre-commit `ver=` bump + `build=` column-0 invariant, FR-38)
-- [ ] YAML "exactly one comment line at line 1" unit tripwire in `tests/unit.sh` (asserts on
-      `backend_generate_config` output, not just `config_body_differs`)
-- [ ] Move the `VLAN_LIMIT=0` fixed-`TRY_TIMEOUT`/untested-at-scale caveat into `dynavlan.conf`
-      where an operator setting `0` will read it (it is in COMPATIBILITY.md + exit-codes.md only)
+- [x] YAML "exactly one comment line at line 1" unit tripwire (done 2026-10-08, Group 7): the `1au` exact-output
+      tests run the real `backend_generate_config` and pin the full text including the single header line
+- [x] Move the `VLAN_LIMIT=0` fixed-`TRY_TIMEOUT`/untested-at-scale caveat into `dynavlan.conf` (done 2026-10-08, Group 8)
 - [x] Decide `--help` exit code (done 2026-08-07): changed to `0`, requested help is success;
       no-mode/unknown stay `2`. ver 0.4.13, §1l-bis tripwires. (`context/open_questions.md`)
-- [ ] README cross-link to `COMPATIBILITY.md` (deferred until the contract is finalized)
+- [x] README cross-link to `COMPATIBILITY.md` (done 2026-10-08, Group 8; the file stays DRAFT until 1.0.0)
 - [ ] Full major (X.0.0) review with >=1 non-Opus reviewer, after the surface is final. Scope +
       re-litigation policy decided 2026-09-05 (`context/decisions.md`): covers `install.sh`, Debian
       maintainer scripts, systemd units, and release workflows alongside `dynavlan`/`tests/unit.sh`,
       not the script alone; four first-pass focus subjects identified (detection failure-state
       exposure, promiscuous-mode lifecycle, accept/revert assurance boundary, HV-1 fresh-install
       timer) - first two now tracked in `context/open_questions.md`.
-      STATUS (2026-09-07 UTC): findings register + remediation plan written
+      STATUS (2026-10-08): findings register and remediation plan written and operator-approved
       (`docs/superpowers/plans/2026-09-04-v1.0-major-review-findings.md`,
-      `docs/superpowers/plans/2026-09-05-v1.0-major-review-remediation.md`, operator-approved). Group 1
-      (D1/L1/L6/L7) implemented (ver 0.4.13 -> 0.4.14) and locally Codex-approved after two correction
-      rounds (312/0). Group 0: HV-00 PASS; HV-01/D2 FAIL accepted as a confirmed HIGH defect with
-      potentially CRITICAL impact because whole-cgroup stop kills the process required to revert and
-      leaves the candidate applied/on disk. Release is blocked; no additional destructive D2 variant
-      is required. Group 2 (upgrade and systemd lifecycle) is implemented (`ver=0.4.16`, new `debian/preinst`, `tests/lifecycle.sh`; 541 tests, 0 failures), locally signed off by Codex 2026-10-02, committed locally (`025502d`), not hardware-validated. Group 4 (dry-run, status and subnet reporting) is implemented and Codex-approved locally (`ver=0.4.17`, 594 tests, 0 failures), committed locally (`8f4b581`); HV-40..45 still need the final-build hardware pass. Group 5 (configuration grammar and frozen semantics) is implemented (`ver=0.4.18`, 691 tests, 0 failures), Codex-approved locally 2026-10-08, committed locally (`05a7878`); HV-50..53 await the final-build hardware pass. Group 7 (direct test evidence, tests only, `tests/unit.sh` 1au; 800 tests, 0 failures) is Codex-approved locally 2026-10-08 and committed locally; no `ver=` bump. Group 6 (removal lifecycle, `--teardown`) is implemented (`ver=0.4.19`, 785 tests, 0 failures), Codex-approved locally 2026-10-08, committed locally (`a62f691`); HV-60/HV-61 await the final-build hardware pass. Group 2a (D2 graceful service stop) is designed and implemented, Codex-approved (2026-10-01), and
-      committed locally (`ver=0.4.15`, units `KillMode=mixed`/`TimeoutStopSec=60`, 403 tests, 0 failures); it
-      closes only after one benign HV-01 on the corrected artifact. HV-02/D6 and the upgrade-lifecycle, dry-run/
-      status, config-grammar, removal, evidence-hardening, doc-sync and final-verification groups remain outstanding.
-      Group 1 is committed locally as `bf59ab0` (Group 0 evidence/status as `d8d7046`); Group 3
-      (APT bootstrap and publication, D3/L4) is committed locally as `34bed4e`, Codex-approved. Nothing is
-      pushed, merged, or released.
-- [ ] Fix `dev/CODEMAP.md` doc drift found during review-prep 2026-09-04/05 (not yet applied): the
-      `tests/unit.sh` row still says "Layer-1 pure-helper asserts (1a-1g)" though the suite now runs
-      sections through `1ah` plus `1g-bis`/`1l-bis`/`1x`; `iface_tags` is listed twice (once bundled
-      with `tags_var`, once standalone, same description); the "Token helpers ... pure" section header
-      is inaccurate - `tag_tokens` calls `log warning` on an over-length name and `ifaces_without_carrier`
-      reads live carrier state via `has_carrier`, neither is side-effect-free.
+      `docs/superpowers/plans/2026-09-05-v1.0-major-review-remediation.md`). Groups 0-7 done as in "Current
+      state" above; Group 8 (docs) in progress, Group 9 (final verification and the hardware pass) outstanding.
+      Release is blocked on D2 hardware confirmation (HV-01) and D3 (HV-31, release-gated).
+- [x] Fix `dev/CODEMAP.md` doc drift (done 2026-10-08, Group 8): duplicate `iface_tags` row removed, purity labels corrected, test and artifact rows brought up to date.
 Older history: v0.4.0 (carrier-down VLAN removal, FR-41) hardware-validated
 (6/6 L3-30 sub-cases PASS), tagged, pushed, GitHub release with `.deb` auto-built (see the v0.4.0
 milestone below). v0.3.0 (restart-on-new-subnet) also released, prior to this. Superseded, kept for history:
