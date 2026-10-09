@@ -6,8 +6,8 @@ Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 
 ## Current state (2026-10-08)
 
-The v1.0 major review is underway on `release/1.0.0-review`. Groups 1, 3, 2a, 2, 4, 5, 6 and 7 are implemented,
-Codex-approved locally and committed locally (nothing pushed, merged, deployed or released). `ver=0.4.19` committed (0.4.20 committed in Group 8, `6eefdd1`).
+The v1.0 major review is underway on `release/1.0.0-review`. Groups 1, 3, 2a, 2, 4, 5, 6, 7 and 8 are implemented,
+Codex-approved locally and committed locally (nothing pushed, merged, deployed or released). `ver=0.4.20` committed (Group 8, `6eefdd1`).
 Unit suite 800 tests, 0 failures. Group 8 bumped `ver=` to 0.4.20 (output wording only).
 
 | Group | Scope | Commit |
@@ -22,7 +22,7 @@ Unit suite 800 tests, 0 failures. Group 8 bumped `ver=` to 0.4.20 (output wordin
 | 6 | D7 attended `--teardown`, remove disables units (`ver=0.4.19`) | `a62f691` |
 | 7 | T1 direct test evidence (tests only, no `ver=` bump) | `09b23ab` |
 
-Group 8 (documentation synchronization) is Codex-approved locally (2026-10-08) and committed locally as `6eefdd1` (`ver=0.4.20`). Group 9 (final verification) follows.
+Group 8 (documentation synchronization) is Codex-approved locally (2026-10-08) and committed locally as `6eefdd1` (`ver=0.4.20`). Group 9A (local/static gate) is Codex-approved and closed (2026-10-08); the retained clean `.deb` (0.4.20, build `d9b3618`, sha256 `49b8dad4...a2276e`) is the 9B handoff artifact. Group 9B (hardware) awaits operator authorization.
 
 None of this is hardware-validated. The reference box still runs the reviewed `0.4.13 (build e3f2cef)` package,
 which predates every fix; its network state was restored to the recorded 14-VLAN baseline on 2026-09-07.
@@ -48,7 +48,7 @@ the remediation plan, and `docs/hardware-validation.md` ("Pending: final-build p
       STATUS (2026-10-08): findings register and remediation plan written and operator-approved
       (`docs/superpowers/plans/2026-09-04-v1.0-major-review-findings.md`,
       `docs/superpowers/plans/2026-09-05-v1.0-major-review-remediation.md`). Groups 0-7 done as in "Current
-      state" above; Group 8 (docs) in progress, Group 9 (final verification and the hardware pass) outstanding.
+      state" above; Group 8 (docs) done, Group 9A closed, Group 9B (the hardware pass) outstanding.
       Release is blocked on D2 hardware confirmation (HV-01) and D3 (HV-31, release-gated).
 - [x] Fix `dev/CODEMAP.md` doc drift (done 2026-10-08, Group 8): duplicate `iface_tags` row removed, purity labels corrected, test and artifact rows brought up to date.
 Older history: v0.4.0 (carrier-down VLAN removal, FR-41) hardware-validated
