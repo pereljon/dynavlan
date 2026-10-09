@@ -223,11 +223,10 @@ STATE (2026-10-08, Group 7 evidence hardening): tests only (`tests/unit.sh` 1au,
 Codex-approved locally 2026-10-08; committed locally as `09b23ab`; no `ver=` bump (0.4.19); not pushed, no hardware.
 
 STATE (2026-10-08, Group 8 documentation synchronization in the working tree): Codex approved the scope (D11, D12, D13, S1, L16 plus
-Groups 1-7 fallout). Edits are comment/doc/template plus two output strings (install.sh upgrade message, generated timer drop-in comment, with the 1j expectation), so `ver=` 0.4.19 -> 0.4.20 (output wording only). Codex required two rounds of bounded corrections, applied, and approved Group 8 locally 2026-10-08. Not committed; awaiting the operator's commit approval. No hardware.
+Groups 1-7 fallout). Edits are comment/doc/template plus two output strings (install.sh upgrade message, generated timer drop-in comment, with the 1j expectation), so `ver=` 0.4.19 -> 0.4.20 (output wording only). Codex required two rounds of bounded corrections, applied, and approved Group 8 locally 2026-10-08. Committed locally as `6eefdd1`. Not pushed, no hardware.
 
 NEXT ACTION: Groups 1, 3, 2a, 2, 4, 5, 6 and 7 are implemented, Codex-approved locally and committed locally (`bf59ab0`/`d8d7046`,
-`34bed4e`, `94ac0a0`, `025502d`, `8f4b581`, `05a7878`, `a62f691`, `09b23ab`); none is hardware-validated. Group 8 is Codex-approved locally in the working
-tree; next is its commit (with approval), then Group 9 (final verification). Hardware is a separate
+`34bed4e`, `94ac0a0`, `025502d`, `8f4b581`, `05a7878`, `a62f691`, `09b23ab`); none is hardware-validated. Group 8 is Codex-approved locally and committed locally (`6eefdd1`); next is Group 9 (final verification). Hardware is a separate
 operator-authorized Group 9 checkpoint (one pass on the final build: benign HV-01 first to close D2, then the remaining HV cases; D2/HV-01
 stays open, HV-31 is release-gated). No push, merge, or release is authorized, and further commits need explicit approval. Per-item status:
 `context/todo.md`; full sequence: `docs/superpowers/plans/2026-09-05-v1.0-major-review-remediation.md`.

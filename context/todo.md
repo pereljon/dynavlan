@@ -7,8 +7,8 @@ Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 ## Current state (2026-10-08)
 
 The v1.0 major review is underway on `release/1.0.0-review`. Groups 1, 3, 2a, 2, 4, 5, 6 and 7 are implemented,
-Codex-approved locally and committed locally (nothing pushed, merged, deployed or released). `ver=0.4.19` committed (0.4.20 pending in the Group 8 working tree).
-Unit suite 800 tests, 0 failures. Group 8 bumps `ver=` to 0.4.20 (output wording only, uncommitted).
+Codex-approved locally and committed locally (nothing pushed, merged, deployed or released). `ver=0.4.19` committed (0.4.20 committed in Group 8, `6eefdd1`).
+Unit suite 800 tests, 0 failures. Group 8 bumped `ver=` to 0.4.20 (output wording only).
 
 | Group | Scope | Commit |
 |-------|-------|--------|
@@ -22,8 +22,7 @@ Unit suite 800 tests, 0 failures. Group 8 bumps `ver=` to 0.4.20 (output wording
 | 6 | D7 attended `--teardown`, remove disables units (`ver=0.4.19`) | `a62f691` |
 | 7 | T1 direct test evidence (tests only, no `ver=` bump) | `09b23ab` |
 
-Group 8 (documentation synchronization) is Codex-approved locally (2026-10-08) and awaits the operator's commit approval;
-it is not yet committed. Group 9 (final verification) follows.
+Group 8 (documentation synchronization) is Codex-approved locally (2026-10-08) and committed locally as `6eefdd1` (`ver=0.4.20`). Group 9 (final verification) follows.
 
 None of this is hardware-validated. The reference box still runs the reviewed `0.4.13 (build e3f2cef)` package,
 which predates every fix; its network state was restored to the recorded 14-VLAN baseline on 2026-09-07.
