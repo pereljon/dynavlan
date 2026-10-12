@@ -9,7 +9,7 @@ Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 The v1.0 major review is underway on `release/1.0.0-review`. Groups 1, 3, 2a, 2, 4, 5, 6, 7 and 8 are implemented,
 Codex-approved locally and committed locally (nothing pushed, merged or released; the retained `0.4.20 (build d9b3618)` package was deployed to the reference box for the 2026-10-09 first hardware batch). `ver=0.4.20` committed (Group 8, `6eefdd1`).
 Unit suite at the committed Group 8/9A gate: 800 tests, 0 failures. Group 8 bumped `ver=` to 0.4.20 (output wording only).
-2026-10-12: the isolated pre-try validation fix (`ver=0.4.21`, 871 tests, 0 failures) is committed as `72d9eea`; its clean package runs on the appliance, and its HV-01 restored the prior owned file and runtime files: D2 CLOSED, retained kernel link accepted as a limitation (context/decisions.md 2026-10-12).
+2026-10-12: the isolated pre-try validation fix (`ver=0.4.21`, 871 tests, 0 failures) is committed as `72d9eea`; its clean package runs on the appliance, and its HV-01 restored the prior owned file and runtime files: D2 CLOSED, retained kernel link accepted as a limitation (context/decisions.md 2026-10-12). Hardware batch 2 (runbook steps 4-6) ran the same day: 13 cases PASS, HV-41 FAIL (fails safe; open question), box restored (docs/hardware-validation.md).
 
 | Group | Scope | Commit |
 |-------|-------|--------|

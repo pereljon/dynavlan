@@ -18,7 +18,7 @@ has actually been validated on, not a hardware requirement.
 | Monitoring agent (restart hook) | Domotz snap |
 
 Any netplan/systemd-networkd box on any switch vendor should work; the above is the
-maintainer's validation bed. Latest completed sign-off: v0.4.11, 2026-08-06 (below). That pass predates every change of the v1.0 review (`ver=` 0.4.12 to 0.4.21), which is NOT yet hardware-validated apart from D2 (HV-01 on 0.4.21, Group 0 record below): see "Pending: final-build pass" below.
+maintainer's validation bed. Latest completed sign-off: v0.4.11, 2026-08-06 (below). That pass predates every change of the v1.0 review (`ver=` 0.4.12 to 0.4.21), which is NOT yet hardware-validated apart from D2 (HV-01 on 0.4.21, Group 0 record below) and batch 2 (below): see "Pending: final-build pass" below.
 
 ---
 
@@ -145,18 +145,39 @@ D2 closure is pending that disposition.
 
 ---
 
+## Final-build pass, batch 2 (2026-10-12, `0.4.21 (build 72d9eea)`)
+
+Console-backed, timer stopped, every config and record variant restored and checksum-verified; a temporary VLAN 995 (DHCP, one test container as the traffic source) was created and removed by recorded IDs. Box, switch and controllers ended equal to their pre-batch backups (the owned YAML differs only in its header, now written by 0.4.21).
+
+| Case | Result |
+|------|--------|
+| HV-10 external Netplan key | PASS: keys `en-vpn` and `vlan995x`, either field order, read as managed elsewhere and excluded from additions; removing the file restored the proposal |
+| HV-40 detection link flags | PASS: with promiscuous mode off on `enp2s0`, `--status` and `--dry-run` turned it on (FR-2) and changed no file or record |
+| HV-41 runtime detector failure | **FAIL** (fails safe): with `DETECT_METHOD=lldp` and lldpd stopped, `lldpctl` (lldpd 1.0.13) exits 0 with empty output, so `--status` reported `detected trunks: [none]` with rc 0 instead of unavailable/non-zero; the dry-run proposed no additions or removals |
+| HV-42 count gate | PASS: `refuse` exits 1 with no change and skips validation; `fill` stops at the limit and validates |
+| HV-43 quiet wire | PASS: with port 6's tagged VLANs blocked (carrier and native kept), the dry-run preserved the owned set and still previewed the pending re-delete, the unseen subnet, the target, the count gate and validation, without changing either record |
+| HV-44 status rows (live part) | PASS: shared rows and a configured-but-undetected row match kernel and wire state |
+| HV-45 zero restart targets | PASS: the add left the new subnet unseen ("no restart targets"); with one target the next rescan restarted it once, the following one did not |
+| HV-50 config grammar | PASS: canonical and quoted-then-comment values load; leading zero, empty element and unclosed quote refuse before detection with no arithmetic diagnostics |
+| HV-51 ignore/range narrowing | PASS: an owned VLAN in `VLAN_IGNORE`, then outside `VLAN_MAX`, stayed owned through status, dry-run, rescan and a two-pass `--boot` |
+| HV-52 routed metrics | PASS: unit test on the box (871/0) for lexical order and persistence; live metrics 1000-1014, distinct and above the uplinks (10, 20) |
+| HV-53 generated policy | PASS: a rescan did not rerender; `--reapply` applied routed mode through `netplan try`; a second reapply and a metric-start change were no-ops; `--reapply` back to isolated restored the owned YAML byte-for-byte |
+| HV-22 package refusal | PASS: with the timer unstoppable, `dpkg -i` exited 1 before replacing the script; package, binary and timer state unchanged |
+| HV-24 reconfigure (live part) | PASS: rc 0, drop-in correct, finite next elapse |
+
+The attended `--boot` removed the temporary VLAN after it left the wire; detection ignored the box's own outbound frames on it.
+
 ## Pending: final-build pass
 
-A console-backed pass on the final build is still to run (HV-01/D2 is done, see the Group 0 record above). Nothing below has run on
+The rest of the console-backed pass on the final build is still to run (HV-01/D2 and batch 2 are done, see above). Nothing below has passed on
 hardware; the unit suite and local lifecycle tests do not close these. Historical results
 above stay tied to the builds they were run on.
 
 | Area | Cases | Relates to |
 |------|-------|--------|
 | Pristine package install, manual-to-package migration | HV-02, HV-21 | D6 |
-| Installer and package posture, quiesce failure, reload propagation | HV-20, HV-22..25 | D8, D9, D10 |
-| Detection mutations, detector failure, count-gate preview, quiet wire, union status rows, zero-target catch-up | HV-40..45 | D4, D5, S2, S3 |
-| Config grammar, ignore/range preservation, routed metric order, generated-policy reapply | HV-50..53 | L2, L12 |
+| Installer posture, restoration failure, historical config migration | HV-20, HV-23, HV-25 | D8, D9 |
+| LLDP detector failure (failed in batch 2, fix pending) | HV-41 | D4 |
 | Package remove/purge, attended teardown | HV-60, HV-61 | D7 |
 | Published package reaches the box | HV-31 | D3 (only an authorized release can prove it) |
 
