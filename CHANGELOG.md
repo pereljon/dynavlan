@@ -18,8 +18,10 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
   the candidate's generated files behind although the owned YAML was restored). The candidate is now
   validated in an isolated scratch root that mirrors `/lib/netplan`, `/etc/netplan` and `/run/netplan`,
   before the backup and the live write, and a stop requested during validation is honored before any live
-  change. `--dry-run` uses the same staging, so it now also sees `/lib` and `/run` inputs. Not yet
-  hardware-confirmed; whether the kernel link or its lease survive a revert is unverified.
+  change. `--dry-run` uses the same staging, so it now also sees `/lib` and `/run` inputs.
+  Hardware-confirmed on an interrupted isolated-mode add (HV-01, 2026-10-12). Known limitation: a VLAN
+  link created only by the reverted change stays in the kernel with its address and connected route,
+  and its VLAN is treated as managed elsewhere until it is removed by hand (deployment guide, section 5).
 - Wording corrections in operator-visible output (`ver=` 0.4.19 -> 0.4.20). The `install.sh`
   upgrade message no longer says a rescan is "add-only" (it adds VLANs and prunes a debounced
   carrier-down trunk), and the comment written into the generated timer drop-in now says every

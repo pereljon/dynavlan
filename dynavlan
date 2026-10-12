@@ -1972,8 +1972,9 @@ apply_change_run() { # TARGET_TOKENS ADDITION_TOKENS REMOVAL_TOKENS [LEASE_TOKEN
 	if backend_apply_with_revert "$snap_iface" "$probe"; then
 		log notice "netplan try ACCEPTED"
 		prune_backups
-		# ip link delete only AFTER accept; on revert the stale links are harmless
-		# but deleting them would lose monitoring on VLANs the revert just restored.
+		# ip link delete only AFTER accept: deleting on a revert would lose monitoring on
+		# VLANs the revert just restored. A link created only by a reverted candidate is
+		# left in place (netplan never deletes a virtual link) and needs manual recovery.
 		# M5: a delete that fails here is recorded, not forgotten - the next
 		# reconcile's drain_pending_deletes retries it (ownership-safe).
 		local unrecorded_delete_failure=0

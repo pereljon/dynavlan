@@ -223,6 +223,16 @@ Removals depend on *why* a VLAN went away:
 - **The whole trunk went carrier-down** (unplugged, switch port disabled, cable pulled): the trunk's entire owned set is pruned, at boot *or* on the timer, once the link has stayed down across a two-sample debounce and the box still has a healthy default route. Governed by `REMOVE_ON_CARRIER_LOSS` (default `true`); set it to `false` for the pre-v0.4.0 behavior of keeping those VLANs indefinitely. A brief flap does not trigger it, and neither does a box with no working uplink of its own - if the dead trunk was the only route out, everything is preserved.
 - **Carrier is up but nothing is detected** (a quiet or slow-to-converge trunk): preserved. Detection uncertainty never removes anything.
 
+### After a stopped or reverted apply
+
+A stop or revert during `netplan try` restores the configuration, but a VLAN link that only the reverted change created can stay in the kernel with its DHCP address and connected route. While it exists, dynavlan treats that VLAN as managed elsewhere and does not add it. To recover, from a console:
+
+1. Check the configuration first: `/etc/netplan/90-dynavlan.yaml` matches the last good state and `netplan get network.vlans` does not list the VLAN.
+2. Identify the leftover link exactly: it appears in `ip -d link show type vlan`, is not in any netplan file, and shows as `unmanaged` in `networkctl list`.
+3. Remove only that link: `sudo ip link delete <trunk>.<id>`. Alternatively, reboot during an authorized window.
+
+Never delete a link that any netplan file defines, and never remove links in bulk.
+
 ## 6. Files on the box
 
 | Path | What |

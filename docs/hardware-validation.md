@@ -18,7 +18,7 @@ has actually been validated on, not a hardware requirement.
 | Monitoring agent (restart hook) | Domotz snap |
 
 Any netplan/systemd-networkd box on any switch vendor should work; the above is the
-maintainer's validation bed. Latest completed sign-off: v0.4.11, 2026-08-06 (below). That pass predates every change of the v1.0 review (`ver=` 0.4.12 to 0.4.20), which is NOT yet hardware-validated: see "Pending: final-build pass" below.
+maintainer's validation bed. Latest completed sign-off: v0.4.11, 2026-08-06 (below). That pass predates every change of the v1.0 review (`ver=` 0.4.12 to 0.4.21), which is NOT yet hardware-validated apart from D2 (HV-01 on 0.4.21, Group 0 record below): see "Pending: final-build pass" below.
 
 ---
 
@@ -140,19 +140,19 @@ confirmation, the child exited, the owned YAML was restored byte-for-byte, no po
 original defaults survived, and the run ended rc 1 in about 6.5 seconds. But the candidate VLAN link kept
 its DHCP address and its generated `/run/systemd/network` files after the revert, so the "prior
 configuration live" criterion is not met; see the open rollback question in `context/open_questions.md`.
+The cause was a real `netplan generate` before the try, which put candidate files into `netplan try`'s runtime backup; `ver=` 0.4.21 validates in an isolated root instead. HV-01 on the corrected artifact (2026-10-12, `0.4.21 (build 72d9eea)`): a stop during a live, unconfirmed `netplan try` exited in 5.9 s with no confirmation or post-accept work, the owned YAML and defaults were unchanged, and `/run/systemd/network` was byte-identical to the pre-run state with no candidate files or parent reference. The candidate kernel link persisted with its DHCP address and connected route (FR-24), recorded separately and removed by hand at the console. **D2 is closed** (2026-10-12); the retained link is an operator-accepted limitation (FR-43, recovery in the deployment guide, section 5). A routed-mode revert and full kernel convergence are not proven.
 D2 closure is pending that disposition.
 
 ---
 
 ## Pending: final-build pass
 
-A single console-backed pass on the final build is still to run. Nothing below has run on
+A console-backed pass on the final build is still to run (HV-01/D2 is done, see the Group 0 record above). Nothing below has run on
 hardware; the unit suite and local lifecycle tests do not close these. Historical results
 above stay tied to the builds they were run on.
 
 | Area | Cases | Relates to |
 |------|-------|--------|
-| Stop during `netplan try` (benign) | HV-01 | D2 |
 | Pristine package install, manual-to-package migration | HV-02, HV-21 | D6 |
 | Installer and package posture, quiesce failure, reload propagation | HV-20, HV-22..25 | D8, D9, D10 |
 | Detection mutations, detector failure, count-gate preview, quiet wire, union status rows, zero-target catch-up | HV-40..45 | D4, D5, S2, S3 |

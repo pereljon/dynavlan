@@ -9,7 +9,7 @@ Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 The v1.0 major review is underway on `release/1.0.0-review`. Groups 1, 3, 2a, 2, 4, 5, 6, 7 and 8 are implemented,
 Codex-approved locally and committed locally (nothing pushed, merged or released; the retained `0.4.20 (build d9b3618)` package was deployed to the reference box for the 2026-10-09 first hardware batch). `ver=0.4.20` committed (Group 8, `6eefdd1`).
 Unit suite at the committed Group 8/9A gate: 800 tests, 0 failures. Group 8 bumped `ver=` to 0.4.20 (output wording only).
-Current uncommitted state (2026-10-12): the isolated pre-try validation fix (`ver=0.4.21`) is Codex-approved locally; 871 tests, 0 failures; awaiting operator commit approval.
+2026-10-12: the isolated pre-try validation fix (`ver=0.4.21`, 871 tests, 0 failures) is committed as `72d9eea`; its clean package runs on the appliance, and its HV-01 restored the prior owned file and runtime files: D2 CLOSED, retained kernel link accepted as a limitation (context/decisions.md 2026-10-12).
 
 | Group | Scope | Commit |
 |-------|-------|--------|
@@ -27,8 +27,7 @@ Group 8 (documentation synchronization) is Codex-approved locally (2026-10-08) a
 
 Only the 2026-10-09 first batch has run on hardware (below): upgrade, baseline, HV-70 and the graceful-stop protocol are verified observations, but no Group is fully hardware-validated and HV-01/D2 is PARTIAL; everything else is not hardware-validated. Before it, the
 reference box ran the reviewed `0.4.13 (build e3f2cef)` package (restored to the recorded 14-VLAN baseline on 2026-09-07).
-The first hardware batch ran on 2026-10-09 (upgrade to `0.4.20 (build d9b3618)`, corrected baseline, HV-70 on the target OS, HV-01 partial; the box was recovered and cleanup verified; the appliance now runs 0.4.20). HV-01 is PARTIAL (see `context/open_questions.md`), so D2 stays open; the isolated pre-try validation fix (`ver=0.4.21`) is implemented locally and not yet committed, packaged or hardware-tested; no further hardware batch is authorized. The remaining pass, once authorized, is: a repeat HV-01 after the rollback disposition (closes D2),
-then HV-02, HV-20..25, HV-40..45, HV-50..53, HV-60/61. HV-31 (the published package reaches the box) attaches to a
+The first hardware batch ran on 2026-10-09 (upgrade to `0.4.20 (build d9b3618)`, corrected baseline, HV-70 on the target OS, HV-01 partial; the box was recovered and cleanup verified; the appliance now runs 0.4.20). HV-01 is PARTIAL (see `context/open_questions.md`), so D2 stays open; the isolated pre-try validation fix (`ver=0.4.21`) was committed (`72d9eea`), packaged and deployed on 2026-10-12, and its HV-01 restored the prior runtime files (the kernel link persisted, FR-24); no further hardware batch is authorized. D2 closed on 2026-10-12 (HV-01 on 0.4.21). The remaining pass, once authorized, is: HV-02, HV-20..25, HV-40..45, HV-50..53, HV-60/61. HV-31 (the published package reaches the box) attaches to a
 real authorized release. Evidence and dispositions: `docs/superpowers/plans/2026-09-07-group0-d2-report-for-codex.md`,
 the remediation plan, and `docs/hardware-validation.md` ("Pending: final-build pass").
 
@@ -50,7 +49,7 @@ the remediation plan, and `docs/hardware-validation.md` ("Pending: final-build p
       (`docs/superpowers/plans/2026-09-04-v1.0-major-review-findings.md`,
       `docs/superpowers/plans/2026-09-05-v1.0-major-review-remediation.md`). Groups 0-7 done as in "Current
       state" above; Group 8 (docs) done, Group 9A closed, Group 9B (the hardware pass) outstanding.
-      Release is blocked on D2 hardware confirmation (HV-01) and D3 (HV-31, release-gated).
+      Release is blocked on the remaining hardware cases and D3 (HV-31, release-gated); D2 closed 2026-10-12.
 - [x] Fix `dev/CODEMAP.md` doc drift (done 2026-10-08, Group 8): duplicate `iface_tags` row removed, purity labels corrected, test and artifact rows brought up to date.
 Older history: v0.4.0 (carrier-down VLAN removal, FR-41) hardware-validated
 (6/6 L3-30 sub-cases PASS), tagged, pushed, GitHub release with `.deb` auto-built (see the v0.4.0

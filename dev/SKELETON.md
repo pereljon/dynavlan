@@ -77,7 +77,7 @@ apply_change(target, additions, removals)
   backend_generate_config(target)      # LIVE write, atomic: mktemp same-dir 0600, fsync, rename (try reads this file)
   backend_apply_with_revert            # the accept primitive below
   ACCEPT: prune backups → delete removed VLAN links (ONLY here) → wait leases (ONE box-wide LEASE_SETTLE_SECONDS deadline, all pending polled together - never per-VLAN in series, which could outrun the systemd start timeout and skip the restarts, H5) → restart targets
-  FAIL:   apply not accepted (child may have reverted, failed early, or hit the wall-clock guard - never assumed a completed revert, L6); converge disk back to the prior file; NO deletes, NO restarts
+  FAIL:   apply not accepted (child may have reverted, failed early, or hit the wall-clock guard - never assumed a completed revert, L6); converge disk back to the prior file; NO deletes, NO restarts (a link only the reverted candidate created stays in the kernel: accepted limitation, FR-43)
 ```
 
 ### The accept primitive (netplan try + fifo)
