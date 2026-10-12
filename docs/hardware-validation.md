@@ -134,8 +134,13 @@ fixes: HV-00 (baseline and recovery rehearsal) PASSED. HV-01 (whole-cgroup stop 
 rescan service during an applied-but-unconfirmed `netplan try`) FAILED: stopping the unit
 killed both the script and `netplan try`, no revert occurred, and the candidate stayed live
 and on disk (finding D2). The box was restored to its recorded 14-VLAN baseline. The fix
-(`KillMode=mixed`, SIGTERM handling before ACCEPT, `ver=` 0.4.15) is covered by unit and
-lifecycle tests only; it is **not** hardware-validated.
+(`KillMode=mixed`, SIGTERM handling before ACCEPT, `ver=` 0.4.15) was exercised on the corrected build `0.4.20 (build d9b3618)` on 2026-10-09: HV-01 is
+**PARTIAL**. Stopping the rescan service during a live, unaccepted `netplan try` withheld the
+confirmation, the child exited, the owned YAML was restored byte-for-byte, no post-accept work ran, the
+original defaults survived, and the run ended rc 1 in about 6.5 seconds. But the candidate VLAN link kept
+its DHCP address and its generated `/run/systemd/network` files after the revert, so the "prior
+configuration live" criterion is not met; see the open rollback question in `context/open_questions.md`.
+D2 closure is pending that disposition.
 
 ---
 

@@ -102,7 +102,9 @@ The core also calls `netplan`, `ip` and the owned file directly (version/`try` p
 | `backend_netplan_vlan_tokens` | Every `netplan get network.vlans` stanza as an `iface.id` token, identity taken from that stanza's own `id:`/`link:` fields (never the mapping key, which can be spelled any way - L1); duplicates retained for callers that need overlap counts. Return code reflects the underlying query's own success/failure (0 = query ran, including a genuinely-empty result; non-zero = the query itself failed) - callers gating an ownership/safety decision on its output MUST check this |
 | `backend_list_managed_vlans` | IFACE -> bare VLAN ids managed OUTSIDE our namespace on THAT trunk (reuses `backend_netplan_vlan_tokens` for the netplan half, plus a kernel `ip -d link` scan, minus our own tokens on that iface) |
 | `backend_generate_config` | Write our file atomically (same-dir mktemp 0600, fsync, rename) from a target token set; isolation stanza (incl. `accept-ra: false` in both modes, FR-14a), or routes+metric per FR-37, keyed per token |
-| `backend_validate` | `netplan generate`; on failure classify VALIDATE_ERRSRC ours-vs-base (base = freeze) |
+| `backend_validate` | `netplan generate [--root-dir ROOT]`; on failure classify VALIDATE_ERRSRC ours-vs-base (base = freeze) |
+| `backend_stage_netplan_tree` | Copy `/etc/netplan` (required) and `/lib/netplan`, `/run/netplan` (optional) into a scratch root at the same paths; a failed copy of an existing input returns 1; used by apply and `--dry-run` (tests 1av) |
+| `backend_validate_candidate` | Isolated pre-try validation: scratch root under `SCRATCH_DIR`, stage, write the candidate there, `backend_validate "$root"`; always removes the root and restores `NETPLAN_FILE`. rc 0 valid, 1 rejected, 2 setup failure (tests 1av) |
 | `backend_stop_cleanup` | D2 stop-path cleanup: withdraws the unaccepted fifo writer and waits (`TRY_TIMEOUT + STOP_CHILD_MARGIN`) for `netplan try` to revert; tests 1ao |
 | `backend_apply_with_revert` | The accept primitive: netplan try + fifo, apply-evidence + liveness + consecutive-health + window-bound accept; per-change settle floor via `apply_settle_floor`; captures netplan try's exit on both paths (audit); FAIL holds fifo open for try's own revert timer |
 | `backend_remove_vlan` | `ip link delete` of a removed VLAN interface (only ever called after ACCEPT). Returns rc 1 on delete failure so the caller can record a retry (M5) |
@@ -150,7 +152,7 @@ The core also calls `netplan`, `ip` and the owned file directly (version/`try` p
 
 | function | one-line purpose |
 |----------|------------------|
-| `apply_change` | D2 wrapper: installs the TERM trap, calls `apply_change_run`, removes it. `apply_change_run` is the §7 safety chain: snapshot → **C1 default-route removal guard (refuse if snap_iface in removals)** → (FR-37 metric assign + conflict refusal) → backup → generate → validate → apply_with_revert → ACCEPT: prune/deletes/leases/restarts, FAIL: converge disk, nothing else |
+| `apply_change` | D2 wrapper: installs the TERM trap, calls `apply_change_run`, removes it. `apply_change_run` is the §7 safety chain: snapshot → **C1 default-route removal guard (refuse if snap_iface in removals)** → (FR-37 metric assign + conflict refusal) → isolated validation (`backend_validate_candidate`) → STOP recheck → backup → live generate → apply_with_revert → ACCEPT: prune/deletes/leases/restarts, FAIL: converge disk, nothing else |
 | `log_exclusions` | Warn per detected-but-managed-elsewhere VLAN |
 | `warn_overlap` | FR-11: warn when an owned `(link,id)` tuple (via `backend_netplan_vlan_tokens`, not key-name matching) is also defined under a different key elsewhere; `do_rescan` now calls it before its no-change early return, matching `do_boot` (L1) |
 | `gate_vlan_count` | Orchestrate warn / refuse / fill per VLAN_LIMIT_MODE; removals-only always passes |
@@ -180,5 +182,5 @@ The core also calls `netplan`, `ip` and the owned file directly (version/`try` p
 | `dynavlan-rescan.service` | Timer-invoked oneshot (`--rescan`) |
 | `dynavlan.timer` | OnBootSec/OnActiveSec/OnUnitActiveSec → rescan service; the `--reconfigure` drop-in resets the monotonic list and restates `OnActiveSec` + `OnUnitActiveSec`, so it intentionally replaces the base `OnBootSec` with `OnActiveSec` |
 | `install.sh` | Root installer: stamps the build id into the script (FR-38, awk + verify + `bash -n`), script/config/units, deps, persistent journald, enables service+timer for NEXT boot (never applies); ONE EXIT trap (`cleanup`) does temp-file removal and timer restore |
-| `tests/unit.sh` | Layer-1 unit suite (sections 1a-1au): pure helpers plus real functions run with stubbed system commands; sources the script and folds in `tests/lifecycle.sh` (§1aq) |
+| `tests/unit.sh` | Layer-1 unit suite (sections 1a-1av): pure helpers plus real functions run with stubbed system commands; sources the script and folds in `tests/lifecycle.sh` (§1aq) |
 | `tests/lifecycle.sh` | Package maintainer-script and `install.sh` lifecycle tests against fake `systemctl`/`dpkg`; run from `unit.sh` §1aq |

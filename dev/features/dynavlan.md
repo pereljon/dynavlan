@@ -115,10 +115,12 @@ Runs under the flock (§ FR-30). Pseudocode with every failure branch:
 ```
 apply_change(target_set):
   snap = snapshot_default_route()                 # may be empty
-  backend_generate_config(target_set)             # atomic temp+fsync+rename (FR-16)
-  if not backend_validate():                      # FR-17
-     log err (distinguish our-YAML vs base-file); restore prior file; return NO_CHANGE
-  backup_current(); prune_backups()
+  if not backend_validate_candidate(target_set):  # FR-17: ISOLATED scratch root (staged /lib+/etc+/run YAML, netplan generate --root-dir);
+     log err (distinguish our-YAML vs base-file); return NO_CHANGE   # live file never touched, live /run not regenerated
+  if stop_requested: return NO_CHANGE             # D2: a stop during validation leaves the live file untouched
+  if not backup_current(): return NO_CHANGE
+  if not backend_generate_config(target_set):     # LIVE atomic temp+fsync+rename (FR-16); netplan try's backup then sees the PRIOR runtime files
+     restore_prior(); return NO_CHANGE
 
   accepted = backend_apply_with_revert(health_check_fn = -> health_check(snap))   # FR-18
      # netplan impl: netplan try --timeout N + fifo drive (§9);
@@ -126,9 +128,11 @@ apply_change(target_set):
 
   if not accepted:                                # REVERT path (FR-27, H-3)
      log err apply-rollback
+     restore_prior()                              # converge disk to the prior file
      return NO_CHANGE                             # NO deletes, NO lease-settle, NO restarts
 
   # ACCEPTED path only:
+  prune_backups()
   for vlan in removals:                           # FR-24: ip link delete ONLY here, after accept
      backend_remove_vlan(vlan) or record_pending_delete(vlan)  # M5: failed delete -> retry next run
   wait_leases(additions)                          # bounded, non-fatal (FR-27)

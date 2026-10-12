@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.20"
+ver="0.4.21"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -32,6 +32,8 @@ SYSTEMD_UNIT_ETC="/etc/systemd/system"            # unit file locations (teardow
 SYSTEMD_UNIT_LIB="/lib/systemd/system"
 SYSTEMD_RUN_DIR="/run/systemd/system"          # present only while systemd is the running init (sd_booted)
 BACKUP_DIR="/var/backups/dynavlan"             # FR-19: audit/history backups (outside /etc/netplan)
+NETPLAN_ROOT=""                                # prefix of the host netplan input dirs (empty in production; tests point it at a fixture)
+SCRATCH_DIR="/run"                             # where candidate-validation scratch roots are made (tmpfs)
 MIN_NETPLAN="0.106"                            # FR-0: pinned minimum (Ubuntu 22.04 baseline)
 TRY_TIMEOUT=30                                 # FR-18: netplan try confirmation window (starts AFTER its apply)
 POLL_INTERVAL=2                                # accept-loop sampling interval (§9)
@@ -1266,6 +1268,54 @@ backend_validate() { # [ROOTDIR] - netplan generate; sets VALIDATE_ERRSRC/MSG on
 	return 1
 }
 
+# Copy the effective netplan YAML inputs into a scratch root at their original paths.
+# Netplan 0.107 reads /lib/netplan, /etc/netplan and /run/netplan with same-name shadowing
+# and cross-directory filename order, so a --root-dir validation must see all three.
+# /etc/netplan is required; /lib and /run are optional directories. A failed copy of an
+# existing input refuses (L8): validating a partial tree would pass what the real apply rejects.
+# Generated /run/systemd/network is deliberately NOT copied.
+backend_stage_netplan_tree() { # ROOT
+	local root="$1" d
+	mkdir -p "$root/etc/netplan" && cp -a "$NETPLAN_ROOT/etc/netplan/." "$root/etc/netplan/" 2>/dev/null || return 1
+	for d in lib run; do
+		[ -d "$NETPLAN_ROOT/$d/netplan" ] || continue
+		mkdir -p "$root/$d/netplan" && cp -a "$NETPLAN_ROOT/$d/netplan/." "$root/$d/netplan/" 2>/dev/null || return 1
+	done
+	return 0
+}
+
+# Validate the candidate for TARGET_TOKENS in a throwaway root, so no live generated backend
+# file changes before `netplan try` takes its own runtime backup. A real `netplan generate`
+# here would put the candidate's /run/systemd/network files into that backup, and a revert
+# would restore them. rc 0 valid; 1 rejected (VALIDATE_ERRSRC/VALIDATE_ERRMSG set); 2 setup
+# failure (logged; nothing validated). Always removes the scratch root and restores NETPLAN_FILE.
+backend_validate_candidate() { # TARGET_TOKENS
+	local target="$1" root saved rc
+	root=$(mktemp -d "$SCRATCH_DIR/dynavlan.apply.XXXXXX") || {
+		log err "cannot create a scratch directory in $SCRATCH_DIR to validate the candidate; refusing to apply, changing nothing"
+		return 2
+	}
+	if ! backend_stage_netplan_tree "$root"; then
+		rm -rf "$root"
+		log err "could not copy the complete netplan input tree to a scratch root; not validating a partial tree; refusing to apply, changing nothing"
+		return 2
+	fi
+	saved="$NETPLAN_FILE"
+	NETPLAN_FILE="$root/etc/netplan/90-dynavlan.yaml"
+	backend_generate_config "$target"
+	rc=$?
+	NETPLAN_FILE="$saved"
+	if [ "$rc" -ne 0 ]; then
+		rm -rf "$root"
+		log err "could not write the candidate config into the scratch root; refusing to apply, changing nothing"
+		return 2
+	fi
+	backend_validate "$root"
+	rc=$?
+	rm -rf "$root"
+	return "$rc"
+}
+
 # FR-18 / §9: apply via netplan try, health-check-gated accept driven through a fifo.
 #
 # TIMING MODEL (the crux): netplan try APPLIES the config first and only then reads
@@ -1889,6 +1939,23 @@ apply_change_run() { # TARGET_TOKENS ADDITION_TOKENS REMOVAL_TOKENS [LEASE_TOKEN
 		log notice "stop requested before any change; nothing applied"
 		return 1
 	fi
+	local vrc
+	backend_validate_candidate "$target"
+	vrc=$?
+	if [ "$vrc" -ne 0 ]; then
+		if [ "$vrc" -eq 1 ]; then
+			if [ "$VALIDATE_ERRSRC" = base ]; then
+				log err "netplan generate failed on a BASE netplan file (NOT dynavlan's); dynavlan updates are frozen until the base config is fixed: $VALIDATE_ERRMSG"
+			else
+				log err "netplan generate rejected dynavlan's own config: $VALIDATE_ERRMSG"
+			fi
+		fi
+		return 1
+	fi
+	if stop_requested; then
+		log notice "stop requested before any change; nothing applied"
+		return 1
+	fi
 	[ -f "$NETPLAN_FILE" ] && had_prior=1
 	if ! backup_current; then
 		log err "cannot back up current $NETPLAN_FILE (disk full or $BACKUP_DIR unwritable); refusing to apply"
@@ -1896,15 +1963,6 @@ apply_change_run() { # TARGET_TOKENS ADDITION_TOKENS REMOVAL_TOKENS [LEASE_TOKEN
 	fi
 	if ! backend_generate_config "$target"; then
 		log err "failed to write $NETPLAN_FILE"
-		restore_prior "$had_prior"
-		return 1
-	fi
-	if ! backend_validate ""; then
-		if [ "$VALIDATE_ERRSRC" = base ]; then
-			log err "netplan generate failed on a BASE netplan file (NOT dynavlan's); dynavlan updates are frozen until the base config is fixed: $VALIDATE_ERRMSG"
-		else
-			log err "netplan generate rejected dynavlan's own config: $VALIDATE_ERRMSG"
-		fi
 		restore_prior "$had_prior"
 		return 1
 	fi
@@ -2508,10 +2566,9 @@ do_dryrun() {
 		printf '  (dry-run only: no netplan try, no apply, no restart)\n'
 		return 1
 	fi
-	mkdir -p "$tree/etc/netplan"
 	# L8: a partial base tree must never validate as OK - the real apply would validate
 	# against files this preview omitted. A failed copy is a failed pre-flight.
-	if ! cp -a /etc/netplan/. "$tree/etc/netplan/" 2>/dev/null; then
+	if ! backend_stage_netplan_tree "$tree"; then
 		rm -rf "$tree"
 		printf '  validate:  SKIPPED - could not copy the complete base netplan tree; not validating a partial tree\n'
 		return 1

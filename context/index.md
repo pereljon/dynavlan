@@ -230,8 +230,8 @@ workflow bindings, the finding map and a secret/identifier scan passed, and Code
 (0.4.20, build `d9b3618`, 47364 bytes, sha256 `49b8dad493f245bc15e159712ceb7bff60b4143339d8ef2eeb0925a10ab2276e`). This is not hardware validation or release readiness.
 
 NEXT ACTION: Groups 1, 3, 2a, 2, 4, 5, 6, 7 and 8 are implemented, Codex-approved locally and committed locally (`bf59ab0`/`d8d7046`,
-`34bed4e`, `94ac0a0`, `025502d`, `8f4b581`, `05a7878`, `a62f691`, `09b23ab`, `6eefdd1`); none is hardware-validated. Group 9A is closed. Group 9B (the one
-console-backed hardware pass on the retained `.deb`) awaits operator authorization: benign HV-01 first (D2 stays OPEN until it passes), then the remaining cases.
+`34bed4e`, `94ac0a0`, `025502d`, `8f4b581`, `05a7878`, `a62f691`, `09b23ab`, `6eefdd1`); no group is fully hardware-validated (the first hardware batch on 2026-10-09 verified the upgrade, baseline, HV-70 and the graceful-stop protocol; HV-01/D2 is PARTIAL). Group 9A is closed. Group 9B's first batch ran on 2026-10-09 (appliance now `0.4.20 (build d9b3618)`, recovered): HV-01 is PARTIAL (rollback residual, see `context/open_questions.md`), D2 stays OPEN. Further hardware batches are not authorized.
+The isolated pre-try validation fix (`ver=0.4.21`, 871 tests, 0 failures) is Codex-approved locally (2026-10-12) and uncommitted; next: operator commit approval, then a clean rebuilt package and one operator-authorized benign HV-01 on it.
 HV-31 is release-gated; `COMPATIBILITY.md` stays DRAFT; second-site validation and the version-gate hooks are outstanding. No push, merge, or release is needed or
 authorized for 9B, and further commits need explicit approval. Per-item status: `context/todo.md`; full sequence:
 `docs/superpowers/plans/2026-09-05-v1.0-major-review-remediation.md`.

@@ -7,8 +7,9 @@ Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 ## Current state (2026-10-08)
 
 The v1.0 major review is underway on `release/1.0.0-review`. Groups 1, 3, 2a, 2, 4, 5, 6, 7 and 8 are implemented,
-Codex-approved locally and committed locally (nothing pushed, merged, deployed or released). `ver=0.4.20` committed (Group 8, `6eefdd1`).
-Unit suite 800 tests, 0 failures. Group 8 bumped `ver=` to 0.4.20 (output wording only).
+Codex-approved locally and committed locally (nothing pushed, merged or released; the retained `0.4.20 (build d9b3618)` package was deployed to the reference box for the 2026-10-09 first hardware batch). `ver=0.4.20` committed (Group 8, `6eefdd1`).
+Unit suite at the committed Group 8/9A gate: 800 tests, 0 failures. Group 8 bumped `ver=` to 0.4.20 (output wording only).
+Current uncommitted state (2026-10-12): the isolated pre-try validation fix (`ver=0.4.21`) is Codex-approved locally; 871 tests, 0 failures; awaiting operator commit approval.
 
 | Group | Scope | Commit |
 |-------|-------|--------|
@@ -22,11 +23,11 @@ Unit suite 800 tests, 0 failures. Group 8 bumped `ver=` to 0.4.20 (output wordin
 | 6 | D7 attended `--teardown`, remove disables units (`ver=0.4.19`) | `a62f691` |
 | 7 | T1 direct test evidence (tests only, no `ver=` bump) | `09b23ab` |
 
-Group 8 (documentation synchronization) is Codex-approved locally (2026-10-08) and committed locally as `6eefdd1` (`ver=0.4.20`). Group 9A (local/static gate) is Codex-approved and closed (2026-10-08); the retained clean `.deb` (0.4.20, build `d9b3618`, sha256 `49b8dad4...a2276e`) is the 9B handoff artifact. Group 9B (hardware) awaits operator authorization.
+Group 8 (documentation synchronization) is Codex-approved locally (2026-10-08) and committed locally as `6eefdd1` (`ver=0.4.20`). Group 9A (local/static gate) is Codex-approved and closed (2026-10-08); the retained clean `.deb` (0.4.20, build `d9b3618`, sha256 `49b8dad4...a2276e`) is the 9B handoff artifact. Group 9B's first hardware batch ran on 2026-10-09; further batches await operator authorization.
 
-None of this is hardware-validated. The reference box still runs the reviewed `0.4.13 (build e3f2cef)` package,
-which predates every fix; its network state was restored to the recorded 14-VLAN baseline on 2026-09-07.
-One operator-authorized, console-backed pass on the final build is still needed: a benign HV-01 first (closes D2),
+Only the 2026-10-09 first batch has run on hardware (below): upgrade, baseline, HV-70 and the graceful-stop protocol are verified observations, but no Group is fully hardware-validated and HV-01/D2 is PARTIAL; everything else is not hardware-validated. Before it, the
+reference box ran the reviewed `0.4.13 (build e3f2cef)` package (restored to the recorded 14-VLAN baseline on 2026-09-07).
+The first hardware batch ran on 2026-10-09 (upgrade to `0.4.20 (build d9b3618)`, corrected baseline, HV-70 on the target OS, HV-01 partial; the box was recovered and cleanup verified; the appliance now runs 0.4.20). HV-01 is PARTIAL (see `context/open_questions.md`), so D2 stays open; the isolated pre-try validation fix (`ver=0.4.21`) is implemented locally and not yet committed, packaged or hardware-tested; no further hardware batch is authorized. The remaining pass, once authorized, is: a repeat HV-01 after the rollback disposition (closes D2),
 then HV-02, HV-20..25, HV-40..45, HV-50..53, HV-60/61. HV-31 (the published package reaches the box) attaches to a
 real authorized release. Evidence and dispositions: `docs/superpowers/plans/2026-09-07-group0-d2-report-for-codex.md`,
 the remediation plan, and `docs/hardware-validation.md` ("Pending: final-build pass").

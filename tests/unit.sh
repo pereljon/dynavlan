@@ -1888,11 +1888,13 @@ unset -f mkfifo
 _bc_saved=$(declare -f backup_current)
 _bgc_saved=$(declare -f backend_generate_config)
 _bv_saved=$(declare -f backend_validate)
+_bvc_saved=$(declare -f backend_validate_candidate)
 _sdr3_saved=$(declare -f snapshot_default_route)
 _bawr_saved=$(declare -f backend_apply_with_revert)
 backup_current() { return 0; }
 backend_generate_config() { return 0; }
 backend_validate() { return 0; }
+backend_validate_candidate() { return 0; }
 snapshot_default_route() { :; }
 VLAN_ROUTES=false
 _saved_npf3="$NETPLAN_FILE"
@@ -1999,13 +2001,14 @@ BACKUP_DIR="$_bd_saved"
 eval "$_bc_saved"
 eval "$_bgc_saved"
 eval "$_bv_saved"
+eval "$_bvc_saved"
 eval "$_sdr3_saved"
 eval "$_bawr_saved"
 eval "$_brv3_saved"
 eval "$_wl2_saved"
 eval "$_rt2_saved"
 NETPLAN_FILE="$_saved_npf3"
-unset _bawr_rc _bc_saved _bgc_saved _bv_saved _sdr3_saved _bawr_saved \
+unset _bawr_rc _bc_saved _bgc_saved _bv_saved _bvc_saved _sdr3_saved _bawr_saved \
 	_saved_npf3 _out _rc _brv3_saved _rpd_saved _wl2_saved _rt2_saved _pd3_saved _bd_saved
 
 # restore_prior: a failure to remove a first-install candidate (no prior file
@@ -2572,6 +2575,9 @@ _d2_netplan() { # stub `netplan try`; stdin is the FIFO
 }
 
 _d2_env() { # call at the top of every scenario subshell
+	NETPLAN_ROOT="$_d2_dir/host"
+	mkdir -p "$NETPLAN_ROOT/etc/netplan"
+	SCRATCH_DIR="$_d2_dir"
 	POLL_INTERVAL=1
 	TRY_TIMEOUT=4
 	STOP_CHILD_MARGIN=1
@@ -3132,6 +3138,27 @@ _g4_has "1ar dry-run base-tree copy failure returns non-zero" "rc=1" "$_g4_out"
 _g4_has "1ar dry-run base-tree copy failure says it did not validate a partial tree" "not validating a partial tree" "$_g4_out"
 _g4_lacks "1ar dry-run base-tree copy failure never calls validation" "CALLS:validate" "$_g4_out"
 
+# 1av parity: dry-run stages its validation tree through the same helper as apply_change
+# (so it no longer omits /lib/netplan and /run/netplan), and still validates only a staged tree.
+_g4_out=$(
+	_g4_dry_env
+	backend_stage_netplan_tree() { echo "$1" >"$_g4_dir/staged"; return 0; }
+	do_dryrun 2>&1
+	echo "STAGED:$(cat "$_g4_dir/staged" 2>/dev/null | sed 's#.*/##' | cut -c1-5)"
+	[ -e "$_g4_dir/calls" ] && echo "CALLS:$(cat "$_g4_dir/calls")"
+)
+_g4_has "1av dry-run stages its scratch tree through backend_stage_netplan_tree" "STAGED:tree." "$_g4_out"
+_g4_has "1av dry-run still validates the staged tree" "CALLS:validate" "$_g4_out"
+_g4_out=$(
+	_g4_dry_env
+	backend_stage_netplan_tree() { return 1; }
+	do_dryrun 2>&1
+	echo "rc=$?"
+	[ -e "$_g4_dir/calls" ] && echo "CALLS:$(cat "$_g4_dir/calls")"
+)
+_g4_has "1av dry-run: a staging failure refuses without validating a partial tree" "not validating a partial tree" "$_g4_out"
+_g4_lacks "1av dry-run: a staging failure never calls validation" "CALLS:validate" "$_g4_out"
+
 # L9 + L10: a quiet wire still previews guarded pending retries and the no-target subnet state,
 # validates, and changes nothing (no delete, no pending/seen write).
 _g4_out=$(
@@ -3555,6 +3582,9 @@ _g6_out=$(
 	snapshot_default_route() { printf '%s' enp9s0; }
 	post_apply_health() { echo PASS; }
 	backend_validate() { return 0; }
+	NETPLAN_ROOT="$_g6_dir/host"
+	mkdir -p "$NETPLAN_ROOT/etc/netplan"
+	SCRATCH_DIR="$_g6_dir"
 	main --teardown 2>&1
 	echo "rc=$?"
 	echo "FILE:$(tr '\n' '~' <"$NETPLAN_FILE")"
@@ -3911,6 +3941,141 @@ _g7_is "1au config: config_defaults assigns every allowlisted key exactly once" 
 rm -rf "$_g7_dir"
 unset -f _g7 _g7_is
 unset _g7_dir _g7_gen _g7_o _g7_ex _g7_t _g7_ip2 _g7_wl _g7_di
+
+# ---------------------------------------------------------------------------
+# 1av. Isolated candidate validation before `netplan try` (Group 2a follow-up).
+#      apply_change must validate the candidate in a scratch root so no live generated
+#      backend file changes before netplan try takes its own runtime backup: a bare
+#      `netplan generate` first would put the candidate's /run/systemd/network files into
+#      that backup, and a revert would restore them. Each case runs the REAL functions in a
+#      fresh bash; `netplan` and the try driver are the only stubs.
+# ---------------------------------------------------------------------------
+
+_av_dir=$(mktemp -d)
+_av_env='
+d="$G7_DIR/$CASE"; rm -rf "$d"
+mkdir -p "$d/host/etc/netplan" "$d/scratch" "$d/backups" "$d/runtime"
+NETPLAN_ROOT="$d/host"; SCRATCH_DIR="$d/scratch"; BACKUP_DIR="$d/backups"
+NETPLAN_FILE="$d/host/etc/netplan/90-dynavlan.yaml"; ORIG_NF="$NETPLAN_FILE"
+printf "PRIOR\n" >"$NETPLAN_FILE"; printf "BASE\n" >"$d/host/etc/netplan/01-base.yaml"
+printf "PRIOR-RUNTIME\n" >"$d/runtime/net"
+VLAN_ROUTES=false; ROUTE_METRICS=""; STOP_REQUESTED=0
+snapshot_default_route() { :; }
+log() { printf "LOG[%s] %s\n" "$1" "$2"; }
+netplan() {
+	[ "$1" = generate ] || return 0
+	if [ "$2" = --root-dir ]; then
+		echo "generate-root $3" >>"$d/calls"
+		[ -f "$3/etc/netplan/90-dynavlan.yaml" ] || return 1
+		[ -n "$NP_FAIL" ] && { echo "$NP_FAIL"; return 1; }
+		return 0
+	fi
+	echo "generate-live" >>"$d/calls"
+	printf "CANDIDATE-RUNTIME\n" >"$d/runtime/net"
+	return 0
+}
+backend_apply_with_revert() {
+	echo "try runtime=$(cat "$d/runtime/net") candidate=$(grep -c "enp1s0.9:" "$NETPLAN_FILE")" >>"$d/calls"
+	return 1
+}
+report() {
+	echo "rc=$RC"
+	echo "calls<$(tr "\n" "|" <"$d/calls" 2>/dev/null | sed "s#$d#D#g")>"
+	echo "runtime=$(cat "$d/runtime/net")"
+	echo "live=$(head -1 "$NETPLAN_FILE")"
+	echo "scratch_left=$(find "$d/scratch" -mindepth 1 | wc -l | tr -d " ")"
+	echo "nf_global_restored=$([ "$NETPLAN_FILE" = "$ORIG_NF" ] && echo yes || echo no)"
+}'
+_av() { # CASE SCRIPT -> combined output
+	G7_DIR="$_av_dir" CASE="$1" bash -c 'source "$1"; set +e +u; eval "$2"; eval "$3"' _ "${here}/../dynavlan" "$_av_env" "$2" 2>&1
+}
+_av_has() { # DESC NEEDLE HAYSTACK
+	tests=$((tests + 1))
+	case "$3" in
+	*"$2"*) printf 'ok   - %s\n' "$1" ;;
+	*) fails=$((fails + 1)); printf 'FAIL - %s\n       missing [%s]\n       in      [%s]\n' "$1" "$2" "$3" ;;
+	esac
+}
+_av_lacks() { # DESC NEEDLE HAYSTACK
+	tests=$((tests + 1))
+	case "$3" in
+	*"$2"*) fails=$((fails + 1)); printf 'FAIL - %s\n       unexpected [%s]\n       in         [%s]\n' "$1" "$2" "$3" ;;
+	*) printf 'ok   - %s\n' "$1" ;;
+	esac
+}
+
+# (a) happy path: the candidate is validated in a scratch root; the only generate before try is
+# --root-dir; a live runtime sentinel is unchanged when try begins; try sees the candidate YAML;
+# the scratch tree is gone and the NETPLAN_FILE global is restored.
+_av_o=$(_av happy 'apply_change "enp1s0.9" "enp1s0.9" ""; RC=$?; report')
+_av_has "1av happy: validation generates in a --root-dir scratch root" "generate-root D/scratch/dynavlan.apply." "$_av_o"
+_av_lacks "1av happy: no bare (live) netplan generate before the try" "generate-live" "$_av_o"
+_av_has "1av happy: try starts with the live runtime sentinel unchanged and sees the candidate" "try runtime=PRIOR-RUNTIME candidate=1" "$_av_o"
+_av_has "1av happy: runtime sentinel still unchanged afterwards" "runtime=PRIOR-RUNTIME" "$_av_o"
+_av_has "1av happy: the scratch validation precedes the try" "generate-root " "${_av_o%%try runtime*}"
+_av_has "1av happy: scratch tree removed" "scratch_left=0" "$_av_o"
+_av_has "1av happy: NETPLAN_FILE global restored" "nf_global_restored=yes" "$_av_o"
+_av_has "1av happy: a non-accepted try still restores the prior owned file" "live=PRIOR" "$_av_o"
+
+# (b) failures before the live write: non-zero, no try, live YAML and runtime unchanged, cleanup done
+_av_chk() { # CASE DESC SCRIPT [EXTRA-NEEDLE]
+	_av_o=$(_av "$1" "$3")
+	_av_has "1av $2: refuses" "rc=1" "$_av_o"
+	_av_lacks "1av $2: never launches try" "try runtime=" "$_av_o"
+	_av_lacks "1av $2: never regenerates live backend files" "generate-live" "$_av_o"
+	_av_has "1av $2: live owned file untouched" "live=PRIOR" "$_av_o"
+	_av_has "1av $2: runtime untouched" "runtime=PRIOR-RUNTIME" "$_av_o"
+	_av_has "1av $2: scratch removed" "scratch_left=0" "$_av_o"
+	_av_has "1av $2: NETPLAN_FILE global restored" "nf_global_restored=yes" "$_av_o"
+	[ -n "$4" ] && _av_has "1av $2: says why" "$4" "$_av_o"
+}
+_av_chk copyfail "copy failure of an input tree" 'cp() { return 1; }; apply_change "enp1s0.9" "enp1s0.9" ""; RC=$?; report' "complete netplan input tree"
+_av_chk scratchfail "scratch directory failure" 'SCRATCH_DIR="$d/nonexistent/x"; apply_change "enp1s0.9" "enp1s0.9" ""; RC=$?; report' "scratch directory"
+_av_chk genfail "candidate generation failure" 'backend_generate_config() { return 1; }; apply_change "enp1s0.9" "enp1s0.9" ""; RC=$?; report' "candidate config"
+_av_chk ours "ours rejected by netplan" 'NP_FAIL="Error in network definition: $d/x/90-dynavlan.yaml: bad"; apply_change "enp1s0.9" "enp1s0.9" ""; RC=$?; report' "rejected dynavlan's own config"
+_av_chk base "base rejected by netplan" 'NP_FAIL="Error in network definition: 01-base.yaml: bad"; apply_change "enp1s0.9" "enp1s0.9" ""; RC=$?; report' "BASE netplan file"
+_av_o=$(_av stopfirst 'STOP_REQUESTED=1; apply_change_run "enp1s0.9" "enp1s0.9" ""; RC=$?; report')
+_av_has "1av stop before any change: refuses with the stop message" "stop requested before any change" "$_av_o"
+_av_lacks "1av stop before any change: no scratch work, no try" "generate-root" "$_av_o"
+
+# STOP arriving during scratch validation (injected at the validation boundary, no timing race):
+# after a successful validation the stop is honored before any backup or live write.
+_av_o=$(_av stopmid 'backend_validate() { STOP_REQUESTED=1; return 0; }
+backup_current() { echo "backup-after-stop" >>"$d/calls"; return 0; }
+apply_change "enp1s0.9" "enp1s0.9" ""; RC=$?; report')
+_av_has "1av stop during validation: refuses" "rc=1" "$_av_o"
+_av_has "1av stop during validation: says nothing was changed" "stop requested before any change" "$_av_o"
+_av_lacks "1av stop during validation: no backup" "backup-after-stop" "$_av_o"
+_av_lacks "1av stop during validation: no try" "try runtime=" "$_av_o"
+_av_has "1av stop during validation: live owned file untouched" "live=PRIOR" "$_av_o"
+_av_has "1av stop during validation: runtime untouched" "runtime=PRIOR-RUNTIME" "$_av_o"
+_av_has "1av stop during validation: scratch removed" "scratch_left=0" "$_av_o"
+_av_has "1av stop during validation: NETPLAN_FILE global restored" "nf_global_restored=yes" "$_av_o"
+
+# (c) staging copies the effective YAML hierarchy to matching paths (same-name shadowing preserved);
+# /etc/netplan is required; /lib and /run are optional; a failed copy of an existing input refuses.
+_av_o=$(_av stage 'mkdir -p "$d/host/lib/netplan" "$d/host/run/netplan" "$d/root"
+printf "LIB-A\n" >"$d/host/lib/netplan/10-a.yaml"; printf "ETC-A\n" >"$d/host/etc/netplan/10-a.yaml"; printf "RUN-B\n" >"$d/host/run/netplan/20-b.yaml"
+backend_stage_netplan_tree "$d/root"; echo "rc=$?"
+echo "lib=$(cat "$d/root/lib/netplan/10-a.yaml")"; echo "etc=$(cat "$d/root/etc/netplan/10-a.yaml")"; echo "run=$(cat "$d/root/run/netplan/20-b.yaml")"; echo "base=$(cat "$d/root/etc/netplan/01-base.yaml")"')
+_av_has "1av stage: succeeds" "rc=0" "$_av_o"
+_av_has "1av stage: /lib/netplan input keeps its path" "lib=LIB-A" "$_av_o"
+_av_has "1av stage: same-name /etc/netplan file is a separate input (shadowing preserved)" "etc=ETC-A" "$_av_o"
+_av_has "1av stage: /run/netplan input keeps its path" "run=RUN-B" "$_av_o"
+_av_has "1av stage: the other /etc/netplan files are copied" "base=BASE" "$_av_o"
+_av_o=$(_av stageopt 'mkdir -p "$d/root"; backend_stage_netplan_tree "$d/root"; echo "rc=$?"; echo "libdir=$([ -d "$d/root/lib/netplan" ] && echo y || echo n)"')
+_av_has "1av stage: absent optional /lib and /run directories are fine" "rc=0" "$_av_o"
+_av_has "1av stage: and are not invented in the scratch root" "libdir=n" "$_av_o"
+_av_o=$(_av stagemiss 'rm -rf "$d/host/etc/netplan"; mkdir -p "$d/root"; backend_stage_netplan_tree "$d/root"; echo "rc=$?"')
+_av_has "1av stage: a missing /etc/netplan refuses" "rc=1" "$_av_o"
+_av_o=$(_av stagefail 'mkdir -p "$d/host/lib/netplan" "$d/root"; printf x >"$d/host/lib/netplan/10-a.yaml"
+cp() { case "$*" in *lib/netplan*) return 1 ;; esac; command cp "$@"; }
+backend_stage_netplan_tree "$d/root"; echo "rc=$?"')
+_av_has "1av stage: a failed copy of an EXISTING optional input refuses" "rc=1" "$_av_o"
+
+rm -rf "$_av_dir"
+unset -f _av _av_has _av_lacks _av_chk
+unset _av_dir _av_env _av_o
 
 # ---------------------------------------------------------------------------
 # 1aq. Upgrade/systemd lifecycle (Group 2): the real maintainer scripts and install.sh

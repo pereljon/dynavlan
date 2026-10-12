@@ -12,6 +12,14 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ### Fixed
 
+- Rollback correctness (`ver=` 0.4.20 -> 0.4.21). `apply_change` validated the candidate with a real
+  `netplan generate` before `netplan try`, so try's runtime backup (`/run/systemd/network`) captured the
+  candidate's generated files and a revert restored them (observed on hardware: an interrupted add left
+  the candidate's generated files behind although the owned YAML was restored). The candidate is now
+  validated in an isolated scratch root that mirrors `/lib/netplan`, `/etc/netplan` and `/run/netplan`,
+  before the backup and the live write, and a stop requested during validation is honored before any live
+  change. `--dry-run` uses the same staging, so it now also sees `/lib` and `/run` inputs. Not yet
+  hardware-confirmed; whether the kernel link or its lease survive a revert is unverified.
 - Wording corrections in operator-visible output (`ver=` 0.4.19 -> 0.4.20). The `install.sh`
   upgrade message no longer says a rescan is "add-only" (it adds VLANs and prunes a debounced
   carrier-down trunk), and the comment written into the generated timer drop-in now says every

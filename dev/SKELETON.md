@@ -71,9 +71,10 @@ Count gate (FR-12/36): warn above VLAN_WARN; above VLAN_LIMIT either refuse loud
 apply_change(target, additions, removals)
   snapshot default route (iface [+ metric in routed mode])
   [routed mode] assign per-VLAN metrics; REFUSE up front if any metric <= uplink metric
+  backend_validate_candidate(target)   # ISOLATED: stage /lib+/etc+/run netplan YAML into a scratch root, write the candidate there, netplan generate --root-dir; distinguishes "our YAML bad" vs "base file bad" (freeze). Never regenerates live /run/systemd/network (try's runtime backup would capture the candidate and a revert would restore it). rc 2 = setup failure, nothing changed
+  re-check STOP                        # a TERM during validation is honored before any live change
   backup current owned file            # failure = refuse (no safe convergence target without it)
-  backend_generate_config(target)      # atomic: mktemp same-dir 0600, fsync, rename
-  backend_validate                     # netplan generate; distinguishes "our YAML bad" vs "base file bad" (freeze)
+  backend_generate_config(target)      # LIVE write, atomic: mktemp same-dir 0600, fsync, rename (try reads this file)
   backend_apply_with_revert            # the accept primitive below
   ACCEPT: prune backups → delete removed VLAN links (ONLY here) → wait leases (ONE box-wide LEASE_SETTLE_SECONDS deadline, all pending polled together - never per-VLAN in series, which could outrun the systemd start timeout and skip the restarts, H5) → restart targets
   FAIL:   apply not accepted (child may have reverted, failed early, or hit the wall-clock guard - never assumed a completed revert, L6); converge disk back to the prior file; NO deletes, NO restarts
