@@ -5,6 +5,18 @@ Read these live-state files first on every session, in order:
 2. context/open_questions.md - unresolved questions
 3. context/decisions.md - decisions already made (do not re-litigate)
 
+CURRENT STATE (2026-10-12) - this paragraph supersedes every dated STATE and NEXT ACTION paragraph below,
+which are kept as history. The v1.0 major review's runtime and hardware work is CLOSED with accepted
+limitations (D2 retained link, C1 on the shared guard, Gate 3 waived; finding matrix in
+docs/hardware-validation.md). `main`, `origin/main` and `release/1.0.0-review` are at `503621b`. The
+reference box runs `0.4.22 (build 01e9f98)` at its 14-VLAN baseline. The uncommitted 1.0.0 candidate on
+`release/1.0.0-review` (`ver=1.0.0`, script otherwise identical to `01e9f98`; version-gate hooks in
+`githooks/`; `COMPATIBILITY.md` final text effective with the 1.0.0 tag) is taking Codex's local
+corrections (installer executable-bit and empty `core.hooksPath` fixes, doc wording). NEXT: Codex
+closure, then ONE explicit operator approval for R1-R6 (hook install, commit, ff-only merge, push,
+v1.0.0 tag and release, console-backed HV-31). Nothing in R1-R6 is authorized yet. HV-31/D3 stays
+release-gated.
+
 STATE (2026-08-03): dynavlan v0.3.0 released and hardware-validated (restart-on-new-subnet, FR-40:
 restart the nominated agent when a new IPv4 subnet appears on any interface, not only on a tagged-VLAN
 change; closes the agent-started-before-DHCP boot race and covers access/native ports). Hardware-validated
@@ -229,9 +241,10 @@ STATE (2026-10-08, Group 9A local/static gate): Codex approved and closed 9A. Sy
 workflow bindings, the finding map and a secret/identifier scan passed, and Codex verified the retained clean `.deb` built from `d9b3618`
 (0.4.20, build `d9b3618`, 47364 bytes, sha256 `49b8dad493f245bc15e159712ceb7bff60b4143339d8ef2eeb0925a10ab2276e`). This is not hardware validation or release readiness.
 
-NEXT ACTION: Groups 1, 3, 2a, 2, 4, 5, 6, 7 and 8 are implemented, Codex-approved locally and committed locally (`bf59ab0`/`d8d7046`,
+HISTORY, superseded by CURRENT STATE above (the next two paragraphs mix 2026-10-08..13 states and are not the active handoff).
+Former NEXT ACTION: Groups 1, 3, 2a, 2, 4, 5, 6, 7 and 8 are implemented, Codex-approved locally and committed locally (`bf59ab0`/`d8d7046`,
 `34bed4e`, `94ac0a0`, `025502d`, `8f4b581`, `05a7878`, `a62f691`, `09b23ab`, `6eefdd1`); no group is fully hardware-validated (the first hardware batch on 2026-10-09 verified the upgrade, baseline, HV-70 and the graceful-stop protocol; HV-01/D2 is PARTIAL). Group 9A is closed. Group 9B's first batch ran on 2026-10-09 (appliance now `0.4.20 (build d9b3618)`, recovered): HV-01 is PARTIAL (rollback residual, see `context/open_questions.md`), D2 stays OPEN. Further hardware batches are not authorized.
-The isolated pre-try validation fix (`ver=0.4.21`, 871 tests, 0 failures) is committed as `72d9eea` (2026-10-12); the clean package (sha256 `6237fc58...b0ff79e`) is deployed and the appliance runs `0.4.21 (build 72d9eea)`. Its HV-01 (2026-10-12) restored the prior owned file and runtime files: D2 is CLOSED; the retained candidate kernel link is an operator-accepted limitation (context/decisions.md 2026-10-12). The box runs 0.4.21 at its recovered 14-VLAN baseline. Hardware batch 2 (2026-10-12, runbook steps 4-6): 13 cases PASS, HV-41 FAIL (LLDP daemon-down reads as empty; fails safe; open question); HV-41 and two LOW wording findings fixed in `01e9f98` (`ver=0.4.22`, 885/0). Hardware batch 3 (2026-10-13, runbook steps 7-10 plus the HV-41 recheck) passed every run case; C1 accepted on the HV-61 shared-guard refusal (switch-induced `--boot` not exercised) and the reinstall posture documented (context/decisions.md 2026-10-13); the box runs 0.4.22 (`01e9f98`) at its baseline. The v1.0 review's remediation and hardware work is closed (finding matrix: docs/hardware-validation.md). Remaining for 1.0: merge/push, HV-31 with an authorized release, Gate 4 hooks (Gate 3 waived for 1.0, 2026-10-13) and `COMPATIBILITY.md` freeze.
+The isolated pre-try validation fix (`ver=0.4.21`, 871 tests, 0 failures) is committed as `72d9eea` (2026-10-12); the clean package (sha256 `6237fc58...b0ff79e`) is deployed and the appliance runs `0.4.21 (build 72d9eea)`. Its HV-01 (2026-10-12) restored the prior owned file and runtime files: D2 is CLOSED; the retained candidate kernel link is an operator-accepted limitation (context/decisions.md 2026-10-12). The box runs 0.4.21 at its recovered 14-VLAN baseline. Hardware batch 2 (2026-10-12, runbook steps 4-6): 13 cases PASS, HV-41 FAIL (LLDP daemon-down reads as empty; fails safe; open question); HV-41 and two LOW wording findings fixed in `01e9f98` (`ver=0.4.22`, 885/0). Hardware batch 3 (2026-10-13, runbook steps 7-10 plus the HV-41 recheck) passed every run case; C1 accepted on the HV-61 shared-guard refusal (switch-induced `--boot` not exercised) and the reinstall posture documented (context/decisions.md 2026-10-13); the box runs 0.4.22 (`01e9f98`) at its baseline. The v1.0 review's remediation and hardware work is closed (finding matrix: docs/hardware-validation.md). Merged and pushed (`503621b`). The 1.0.0 candidate (hooks, `ver=1.0.0`, final compatibility text, supported platforms) is prepared locally and uncommitted; remaining: Codex review, then one operator approval for hook install, commit, merge, push, the v1.0.0 release and HV-31 (Gate 3 waived for 1.0, 2026-10-13).
 HV-31 is release-gated; `COMPATIBILITY.md` stays DRAFT; the version-gate hooks are outstanding (second-site validation waived for 1.0, 2026-10-13). No push, merge, or release is needed or
 authorized for 9B, and further commits need explicit approval. Per-item status: `context/todo.md`; full sequence:
 `docs/superpowers/plans/2026-09-05-v1.0-major-review-remediation.md`.
@@ -261,7 +274,7 @@ Each file gets one clear role; keep this table current.
 | `dev/features/dynavlan.md` | Technical design: architecture, partial backend seam, apply/rollback state machine, module decomposition, systemd/install layout |
 | `dev/features/dynavlan-tests.md` | Test plan: unit assert cases, `--dry-run` verification, hardware integration checklist |
 | `docs/dynavlan-PRD.md` | Product requirements: authoritative FR/NFR/AC with severity+impact tags |
-| `COMPATIBILITY.md` | The 1.x compatibility contract (DRAFT until 1.0.0): config keys, YAML shape, CLI flags, exit codes |
+| `COMPATIBILITY.md` | The 1.x compatibility contract (final text, effective with the 1.0.0 tag): config keys, YAML shape, CLI flags, exit codes |
 | `docs/exit-codes.md` | Exit-code inventory by mode and the frozen table |
 | `docs/hardware-validation.md` | Validated hardware, the console-backed validation record, and the pending final-build pass |
 | `docs/positioning-brief.md` | Positioning and audience notes (not behavior) |

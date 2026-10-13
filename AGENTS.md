@@ -20,6 +20,7 @@ Single bash script, no build step. Dev loop:
 
 ```bash
 bash tests/unit.sh          # Layer-1 unit suite; run before every commit (enforces the FR-38 version/build identity contract, §1k/1l)
+bash githooks/install.sh    # once per clone: FR-38 version-gate hooks (refuses to replace a foreign hook)
 bash -n dynavlan            # syntax-check the script
 shellcheck -s bash <file>  # ShellCheck 0.11.0 is installed (Homebrew) and in use: run it on every shell file a change touches
 ./dynavlan --version        # print ver + build id; works with no root and no valid config
@@ -98,7 +99,8 @@ A box must always be able to answer "what code is running here" (incident record
 
 1. **Bump `ver=`** for any behavior, output, config, or generated-YAML change.
 2. **Never touch `build=`.** `install.sh` stamps it by matching `/^build=/`; it must stay a single, unindented, literal assignment at column 0 (`tests/unit.sh` §1l enforces this).
-3. **Every deploy to a box:** run `dynavlan --version` first. A `-dirty` suffix means the tree had uncommitted changes and the build matches no commit.
+3. **Commit-time guard:** the `githooks/` hooks refuse a script change without a higher `ver=`. For a reviewed behavior-neutral change (comments only), add one `Version-Bump: none (<reason>)` trailer instead; the trailer is a declaration that review must check, not proof.
+4. **Every deploy to a box:** run `dynavlan --version` first. A `-dirty` suffix means the tree had uncommitted changes and the build matches no commit.
 
 ## Releases
 

@@ -4,12 +4,16 @@ Owns: open tasks and their status. Does NOT hold permanent facts or decisions (t
 Maintain: update whenever a task is added, changes state, or completes.
 Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 
-## Current state (2026-10-08)
+## Current state (2026-10-12)
+
+Active handoff: `context/index.md` CURRENT STATE. Runtime and hardware review work is closed with accepted limitations; `main`/`origin` at `503621b`; box at `0.4.22 (build 01e9f98)`; the uncommitted 1.0.0 candidate has taken Codex's local corrections (installer fixes, doc wording; hook tests 37/0) and awaits Codex closure, then one operator approval for R1-R6. HV-31 is release-gated. Everything below this paragraph through the group table is dated history.
+
+### History (2026-10-08 .. 2026-10-13, superseded by the paragraph above)
 
 The v1.0 major review is underway on `release/1.0.0-review`. Groups 1, 3, 2a, 2, 4, 5, 6, 7 and 8 are implemented,
 Codex-approved locally and committed locally (nothing pushed, merged or released; the retained `0.4.20 (build d9b3618)` package was deployed to the reference box for the 2026-10-09 first hardware batch). `ver=0.4.20` committed (Group 8, `6eefdd1`).
 Unit suite at the committed Group 8/9A gate: 800 tests, 0 failures. Group 8 bumped `ver=` to 0.4.20 (output wording only).
-2026-10-13: hardware batch 3 on `0.4.22 (build 01e9f98)` passed every run case (HV-02, HV-20..25, HV-41 recheck, HV-60/61, HV-90 and the HV-61 default-route refusal); C1 positive refusal accepted on the HV-61 shared-guard refusal (switch-induced `--boot` not exercised); reinstall posture documented; box at its 14-VLAN baseline on 0.4.22 (`01e9f98`). Review and hardware work for the v1.0 review is closed (finding matrix in docs/hardware-validation.md). Remaining for 1.0: merge/push decisions, HV-31 with an authorized release, Gate 4 version-gate hooks and the `COMPATIBILITY.md` freeze (docs/v1.0-definition.md).
+2026-10-13: hardware batch 3 on `0.4.22 (build 01e9f98)` passed every run case (HV-02, HV-20..25, HV-41 recheck, HV-60/61, HV-90 and the HV-61 default-route refusal); C1 positive refusal accepted on the HV-61 shared-guard refusal (switch-induced `--boot` not exercised); reinstall posture documented; box at its 14-VLAN baseline on 0.4.22 (`01e9f98`). Review and hardware work for the v1.0 review is closed (finding matrix in docs/hardware-validation.md). Merged and pushed (503621b). 1.0.0 candidate prepared locally (uncommitted, 2026-10-12): `ver=1.0.0` (script otherwise identical to `01e9f98`), version-gate hooks in `githooks/` with tests (919/0), `COMPATIBILITY.md` final text effective with the 1.0.0 tag (supported platforms and limitations added), README and v1.0 definition updated. Remaining: Codex review, then one operator approval for hook install, commit, merge, push, v1.0.0 release and console-backed HV-31.
 2026-10-12: the isolated pre-try validation fix (`ver=0.4.21`, 871 tests, 0 failures) is committed as `72d9eea`; its clean package runs on the appliance, and its HV-01 restored the prior owned file and runtime files: D2 CLOSED, retained kernel link accepted as a limitation (context/decisions.md 2026-10-12). Hardware batch 2 (runbook steps 4-6) ran the same day: 13 cases PASS, HV-41 FAIL (fails safe), fixed locally in `ver=0.4.22` (uncommitted; hardware recheck pending), box restored (docs/hardware-validation.md).
 
 | Group | Scope | Commit |
@@ -33,7 +37,7 @@ real authorized release. Evidence and dispositions: `docs/superpowers/plans/2026
 the remediation plan, and `docs/hardware-validation.md` ("Pending: final-build pass").
 
 ### Gate-4 freeze - remaining before the 1.0.0 tag
-- [ ] Version-gate git hooks (pre-commit `ver=` bump + `build=` column-0 invariant, FR-38)
+- [ ] Version-gate git hooks (FR-38: `pre-commit` checks the `ver=`/`build=` structure, `commit-msg` requires a raised `ver=` or one reviewed trailer) - implemented locally 2026-10-12 (`githooks/`, tests 1ax), awaiting commit
 - [x] YAML "exactly one comment line at line 1" unit tripwire (done 2026-10-08, Group 7): the `1au` exact-output
       tests run the real `backend_generate_config` and pin the full text including the single header line
 - [x] Move the `VLAN_LIMIT=0` fixed-`TRY_TIMEOUT`/untested-at-scale caveat into `dynavlan.conf` (done 2026-10-08, Group 8)
@@ -283,7 +287,7 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
       Path: v0.4.0 -> APT + validation (parallel) -> freeze + tag 1.0.0 (last by construction).
       OUT OF SCOPE for 1.0 (documented limitations): IPv6, exhaustive vendor coverage,
       per-VLAN MAC (G-4, no reserved key - PER_VLAN_MAC removed in 0.4.3), automatic config-drift detection.
-- [ ] Git hooks for version gate enforcement (see open_questions.md, designed but not built)
+- [ ] Git hooks for version gate enforcement - implemented locally 2026-10-12 (`githooks/`), awaiting commit
 - [ ] IPv6 health-check arm (deferred from FR-14a; required before any future IPv6 route acceptance)
 - [ ] Non-Meraki switch validation: MET for sniff-primary (proven on a UniFi trunk, v0.3.0 validation 2026-07-30); residual is broader vendor LLDP VLAN-table coverage and silent-VLAN gaps, which vary by vendor
 - [ ] G-4: per-VLAN MAC derivation (post-1.0, low priority; reserved PER_VLAN_MAC key removed in 0.4.3, any implementation adds its own key)

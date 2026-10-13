@@ -2,7 +2,7 @@
 
 A self-configuring VLAN provisioner for headless Linux appliances. Built for monitoring and discovery platforms, but a general dynamic-VLAN tool at its core. dynavlan detects the active tagged VLANs on every trunk a box is plugged into, brings each one up with DHCP (address only, fully route/DNS-isolated by default), and restarts the services you nominate so any agent that enumerates interfaces at startup picks up the new subnets. No SSH, no hand-edited YAML.
 
-> **v0.4.11**, hardware-validated on a Protectli/igb appliance with Meraki and UniFi switches. Full matrix and supported-hardware list: [Hardware validation](docs/hardware-validation.md).
+> **1.0.0.** Its runtime is the hardware-validated `0.4.22` build (`01e9f98`); 1.0.0 changes only the version number, developer tooling and docs. Validated on one reference Protectli/igb appliance with Meraki and UniFi switches. Compatibility promise for 1.x: [COMPATIBILITY.md](COMPATIBILITY.md). Full matrix: [Hardware validation](docs/hardware-validation.md).
 
 ## The problem
 
@@ -40,7 +40,7 @@ dynavlan also restarts those targets when a new IPv4 subnet simply *appears* on 
 
 ## Requirements
 
-- Ubuntu (or any distro) using **netplan with the systemd-networkd renderer**
+- Ubuntu (or any distro) using **netplan with the systemd-networkd renderer**. Validated on Ubuntu 22.04 LTS Server; other netplan/systemd-networkd systems are expected to work but untested; the NetworkManager renderer (the usual Desktop setup) is not supported. Details: [COMPATIBILITY.md](COMPATIBILITY.md#supported-platforms).
 - **netplan >= 0.106** (validated baseline; refuses to run below it, and capability-probes `netplan try` - no silent fallback to an un-revertable `netplan apply`). netplan only grew a `--version` flag in 1.0, so on the 0.10x line the version is read from the package database (`dpkg-query`); a netplan 0.10x box with no dpkg cannot be version-checked and is refused.
 - root
 - `tcpdump` when sniff detection is enabled (default), `lldpd`/`lldpctl` for LLDP detection
@@ -134,6 +134,13 @@ dynavlan is built for boxes that may be remote, headless, or unattended, where a
 
 A bad apply can drop an SSH session, so if possible, run the first `--boot` with an out-of-band fallback (serial console, IPMI, or physical access). If that is not available, `--dry-run` previews the change without applying it, and exits non-zero if the candidate config fails validation, so it doubles as a scripted pre-flight check.
 
+## Limitations
+
+- IPv4 only; IPv6 provisioning is post-1.0.
+- Validated on one reference box (two switch vendors); a second independent site is post-1.0 evidence.
+- Even after a successful revert restores the prior configuration, a VLAN link that only the reverted change created can stay, with its DHCP address and route, until it is removed by hand or by a reboot. A stop after the change was accepted keeps the change, and an interrupted or failed run does not by itself prove a completed revert. See the deployment guide, section 5.
+- The full list is in [COMPATIBILITY.md](COMPATIBILITY.md).
+
 ## Report your setup
 
 dynavlan makes no vendor assumptions: it reads live 802.1Q tags off the wire (primary) and LLDP where a switch advertises the VLAN table (supplement). Detection is validated on Meraki and UniFi edge switches; the core switch and upstream firewall/router do not affect detection (LLDP is single-hop, so only the directly-attached edge switch matters, and 802.1Q tagging is a standard).
@@ -158,7 +165,7 @@ No MACs, hostnames, or subnets are needed. A "didn't work" report is just as use
 | `dev/features/dynavlan-tests.md` | Test plan: unit asserts, `--dry-run`, hardware integration checklist |
 | `dynavlan.conf` | Config reference (every key documented at its default) |
 | `docs/deployment-guide.md` | Deployment guide: install, configure, first attended run, operation, removal |
-| `COMPATIBILITY.md` | The 1.x compatibility contract (DRAFT until 1.0.0 is tagged): config keys, generated YAML, CLI flags, exit codes |
+| `COMPATIBILITY.md` | The 1.x compatibility contract, effective with the 1.0.0 tag: config keys, generated YAML, CLI flags, exit codes |
 | `docs/exit-codes.md` | Exit-code inventory by mode and the frozen table |
 | `docs/hardware-validation.md` | Validated hardware and the console-backed validation record |
 

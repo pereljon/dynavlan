@@ -4171,6 +4171,28 @@ fi
 unset _lc_out _lc_rc _lc_sum _lc_t _lc_f
 
 # ---------------------------------------------------------------------------
+# 1ax. Version-gate git hooks (Gate 4): see tests/hooks.sh. The real githooks/ run
+#      through `git commit` in disposable repos; counts are folded in here.
+# ---------------------------------------------------------------------------
+
+_hk_out=$(bash "${here}/hooks.sh" 2>&1)
+_hk_rc=$?
+printf '%s\n' "$_hk_out" | grep -v '^[0-9]* tests, [0-9]* failures$' | grep -v '^$'
+_hk_sum=$(printf '%s\n' "$_hk_out" | grep '^[0-9]* tests, [0-9]* failures$' | tail -1)
+_hk_t=${_hk_sum%% tests*}
+_hk_f=${_hk_sum#*, }
+_hk_f=${_hk_f%% failures*}
+if [ -z "$_hk_sum" ]; then
+	tests=$((tests + 1))
+	fails=$((fails + 1))
+	printf 'FAIL - %s\n       tests/hooks.sh produced no summary (rc=%s)\n' "1ax hooks suite ran to completion" "$_hk_rc"
+else
+	tests=$((tests + _hk_t))
+	fails=$((fails + _hk_f))
+fi
+unset _hk_out _hk_rc _hk_sum _hk_t _hk_f
+
+# ---------------------------------------------------------------------------
 
 printf '\n%s tests, %s failures\n' "$tests" "$fails"
 [ "$fails" -eq 0 ]

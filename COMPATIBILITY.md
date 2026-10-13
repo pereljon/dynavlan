@@ -1,7 +1,7 @@
 # dynavlan compatibility contract
 
-**Status: DRAFT.** This contract takes effect when `1.0.0` is tagged. Until then the
-surface below is still free to change. The policy is the approved one from
+**Status: final text, effective with the `1.0.0` tag.** It binds every release from `1.0.0`
+on; a build before that tag is not covered. The policy is the approved one from
 [`docs/v1.0-definition.md`](docs/v1.0-definition.md) (Gate 4); this file is where it
 graduates into the standalone, README-linked promise.
 
@@ -119,7 +119,7 @@ Frozen invariants:
 
 ### 3. CLI flags
 
-One mode per invocation. `-V` is the only short alias.
+One mode per invocation. `-V` and `-h` are the only short aliases.
 
 | Flag | Meaning |
 |------|---------|
@@ -148,6 +148,21 @@ be added later as a free minor addition.
 Full per-mode inventory, dispositions, and the rationale for keeping a reverted apply at
 `1` (not `0`): [`docs/exit-codes.md`](docs/exit-codes.md).
 
+## Supported platforms
+
+Not part of the frozen surface; stated so the promise has a defined scope.
+
+- **Validated:** Ubuntu 22.04 LTS (Server) with netplan 0.107.1 and the systemd-networkd
+  renderer, on the reference box.
+- **Expected to work, not tested:** any Linux whose networking is netplan >= 0.106 driving the
+  systemd-networkd renderer, with systemd, root, `tcpdump` and (for LLDP) `lldpd`. dynavlan
+  checks the netplan version at start and refuses below 0.106. netplan >= 1.0 reports its
+  own version; on the 0.10x line the version comes from the package database
+  (`dpkg-query`), so a 0.10x system without dpkg cannot be checked and is refused. The
+  `.deb` and the apt repository need a dpkg/apt system; `install.sh` installs dependencies only through apt.
+- **Not supported:** netplan with the NetworkManager renderer (the usual Ubuntu Desktop
+  setup), and systems that do not manage networking with netplan.
+
 ## Documented limitations (out of scope for 1.0)
 
 Stated plainly, not silently absent (detail in
@@ -157,6 +172,17 @@ Stated plainly, not silently absent (detail in
 - **One validated non-Meraki vendor** (UniFi), not a broad matrix.
 - **No per-VLAN MAC derivation** (the reserved key was removed, not frozen).
 - **No automatic config-drift detection** on boot/rescan.
+- **Validated on one reference box.** 1.0 is hardware-validated on one Protectli/igb
+  appliance with Meraki and UniFi switches; validation on a second independent site was
+  waived for 1.0 and is post-1.0 evidence.
+- **A completed revert restores configuration, not all kernel state.** Even after a
+  successful revert restores the prior configuration, a VLAN link that only the reverted
+  change created can stay with its DHCP address and connected route, and its VLAN reads as
+  managed elsewhere until it is removed by hand or by a reboot (FR-43; recovery steps in the
+  deployment guide, section 5). A stop after the change was accepted keeps the change, and
+  an interrupted or failed run does not by itself prove that a revert completed: exit 1 can
+  report uncertain recovery. Hardware validation covered a stop during the confirmation
+  window (HV-01); timeout, health-failure and routed-mode reverts were not hardware-tested.
 - **`VLAN_LIMIT=0` (unlimited) is frozen semantics but unvalidated at scale.** A large
   owned set stresses the fixed `TRY_TIMEOUT` (30s) apply window, which is not scaled by
   VLAN count and not hardware-validated at high counts. `0` opts out of the guard; the
@@ -164,8 +190,11 @@ Stated plainly, not silently absent (detail in
 
 ## Enforcement
 
-The policy is documentation plus review discipline. It will be reinforced by the FR-38
-version/build identity contract's version-gate git hooks once Gate 4 lands them (they are
-designed but not yet built): a change that alters behavior cannot silently skip the `ver=`
-bump that signals it, so a compatibility-relevant change stays visible in the version
-history. Until those hooks exist, the `ver=` bump is enforced by review discipline alone.
+The policy is documentation plus review discipline, reinforced at commit time by the FR-38
+version-gate git hooks in `githooks/` (installed per clone with `bash githooks/install.sh`).
+`pre-commit` refuses a staged `dynavlan` without exactly one valid `ver=` line and exactly one
+unindented `build="source"` line; `commit-msg` refuses a change to `dynavlan` that does not
+raise `ver=`, unless the commit carries one reasoned `Version-Bump: none (<reason>)` trailer,
+and never accepts a lower version. The hooks guard against accidental omissions: the
+trailer is a reviewed declaration, not machine proof that a change is behavior-neutral, so
+whether a change needed a version bump is still a review decision.

@@ -4,6 +4,21 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ## Unreleased
 
+## [1.0.0] - 2026-10-12
+
+The 1.x compatibility contract (`COMPATIBILITY.md`) takes effect with this release. The runtime
+is the hardware-validated 0.4.22 build (`01e9f98`); 1.0.0 changes only the version number,
+developer tooling and documentation. Validated on one reference box; second-site validation was
+waived for 1.0 (`docs/v1.0-definition.md`).
+
+### Added
+
+- Version-gate git hooks (`githooks/`, installed per clone with `bash githooks/install.sh`):
+  `pre-commit` checks the staged script's `ver=`/`build=` lines and `commit-msg` requires a
+  higher `ver=` for a script change unless the commit carries one reasoned
+  `Version-Bump: none (<reason>)` trailer. They guard against accidental omissions; they do not
+  prove a change is behavior-neutral.
+
 ### Changed
 
 - `-h`/`--help`, when explicitly requested, now exits `0` (requested help is success)

@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+#
+# Version-gate hook (accidental-omission guard, not proof): a commit that
+# changes dynavlan must raise ver=, or carry one trailer
+#   Version-Bump: none (reason)
+# for a reviewed behavior-neutral change. A lower ver= is never accepted.
+# The structure check duplicates pre-commit so that this hook stands alone.
+
+msgfile=$1
+
+die() {
+	printf '[commit-msg] BLOCKED: %s\n' "$*" >&2
+	exit 1
+}
+
+git cat-file -e :dynavlan 2>/dev/null || exit 0
+staged=$(git show :dynavlan) || die "cannot read the staged dynavlan"
+
+n=$(printf '%s\n' "$staged" | grep -c -E '^ver="[0-9]+\.[0-9]+\.[0-9]+"$')
+a=$(printf '%s\n' "$staged" | grep -c -E '^[[:space:]]*ver=')
+if [ "$n" -ne 1 ] || [ "$a" -ne 1 ]; then
+	die "dynavlan needs exactly one line ver=\"X.Y.Z\" at column 0 and no other ver= line"
+fi
+n=$(printf '%s\n' "$staged" | grep -c -x 'build="source"')
+a=$(printf '%s\n' "$staged" | grep -c -E '^[[:space:]]*build=')
+if [ "$n" -ne 1 ] || [ "$a" -ne 1 ]; then
+	die "dynavlan needs exactly one line build=\"source\" at column 0 and no other build= line"
+fi
+
+git rev-parse --verify -q HEAD >/dev/null || exit 0
+git cat-file -e HEAD:dynavlan 2>/dev/null || exit 0
+git diff --cached --quiet -- dynavlan && exit 0
+
+get_ver() {
+	grep -E '^ver="[0-9]+\.[0-9]+\.[0-9]+"$' | sed -e 's/^ver="//' -e 's/"$//'
+}
+new=$(printf '%s\n' "$staged" | get_ver)
+old=$(git show HEAD:dynavlan | get_ver | head -n 1)
+[ -n "$old" ] || exit 0
+
+IFS=. read -r n1 n2 n3 <<<"$new"
+IFS=. read -r o1 o2 o3 <<<"$old"
+cmp=0
+for pair in "$n1 $o1" "$n2 $o2" "$n3 $o3"; do
+	set -- $pair
+	if [ $((10#$1)) -gt $((10#$2)) ]; then
+		cmp=1
+		break
+	elif [ $((10#$1)) -lt $((10#$2)) ]; then
+		cmp=-1
+		break
+	fi
+done
+
+[ "$cmp" -gt 0 ] && exit 0
+[ "$cmp" -lt 0 ] && die "ver= went down ($old -> $new); a Version-Bump trailer cannot allow that"
+
+count=$(grep -v '^#' "$msgfile" | grep -c -E '^Version-Bump: none \(.*[^[:space:]].*\)$')
+[ "$count" -eq 1 ] && exit 0
+die "dynavlan changed but ver= is still $old. Raise ver=, or for a reviewed behavior-neutral change add exactly one line 'Version-Bump: none (reason)' to the message. This is a guard against accidental omission, not proof."

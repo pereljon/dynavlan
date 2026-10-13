@@ -18,7 +18,7 @@ has actually been validated on, not a hardware requirement.
 | Monitoring agent (restart hook) | Domotz snap |
 
 Any netplan/systemd-networkd box on any switch vendor should work; the above is the
-maintainer's validation bed. Latest completed sign-off: v0.4.11, 2026-08-06 (below). That pass predates every change of the v1.0 review (`ver=` 0.4.12 to 0.4.22), which is NOT yet hardware-validated apart from D2 (HV-01 on 0.4.21, Group 0 record below) and batches 2 and 3 (below): see "Pending: final-build pass" below.
+maintainer's validation bed. Latest completed sign-off: the v1.0 final-build pass on `0.4.22` (build `01e9f98`), 2026-10-12/13: HV-01 on 0.4.21 (Group 0 record) and batches 2 and 3 below, with HV-31 still release-gated (see "Pending: final-build pass"). The v0.4.11 pass of 2026-08-06 is kept below for history.
 
 ---
 

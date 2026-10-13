@@ -182,5 +182,7 @@ The core also calls `netplan`, `ip` and the owned file directly (version/`try` p
 | `dynavlan-rescan.service` | Timer-invoked oneshot (`--rescan`) |
 | `dynavlan.timer` | OnBootSec/OnActiveSec/OnUnitActiveSec → rescan service; the `--reconfigure` drop-in resets the monotonic list and restates `OnActiveSec` + `OnUnitActiveSec`, so it intentionally replaces the base `OnBootSec` with `OnActiveSec` |
 | `install.sh` | Root installer: stamps the build id into the script (FR-38, awk + verify + `bash -n`), script/config/units, deps, persistent journald, enables service+timer for NEXT boot (never applies); ONE EXIT trap (`cleanup`) does temp-file removal and timer restore |
-| `tests/unit.sh` | Layer-1 unit suite (sections 1a-1aw): pure helpers plus real functions run with stubbed system commands; sources the script and folds in `tests/lifecycle.sh` (§1aq) |
+| `tests/unit.sh` | Layer-1 unit suite (sections 1a-1ax): pure helpers plus real functions run with stubbed system commands; sources the script and folds in `tests/lifecycle.sh` (§1aq) |
 | `tests/lifecycle.sh` | Package maintainer-script and `install.sh` lifecycle tests against fake `systemctl`/`dpkg`; run from `unit.sh` §1aq |
+| `tests/hooks.sh` | Version-gate hook tests: the real `githooks/` hooks and installer through real `git commit` in disposable repos; run from `unit.sh` §1ax |
+| `githooks/pre-commit`, `githooks/commit-msg`, `githooks/install.sh` | FR-38 commit-time guards: staged `ver=`/`build=` structure; a script change needs a higher `ver=` or one `Version-Bump: none (<reason>)` trailer; copy-installer that resolves the hooks dir via git, changes no git config and refuses foreign hooks or a set `core.hooksPath` |
