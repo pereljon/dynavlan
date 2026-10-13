@@ -18,7 +18,7 @@ has actually been validated on, not a hardware requirement.
 | Monitoring agent (restart hook) | Domotz snap |
 
 Any netplan/systemd-networkd box on any switch vendor should work; the above is the
-maintainer's validation bed. Latest completed sign-off: v0.4.11, 2026-08-06 (below). That pass predates every change of the v1.0 review (`ver=` 0.4.12 to 0.4.21), which is NOT yet hardware-validated apart from D2 (HV-01 on 0.4.21, Group 0 record below) and batch 2 (below): see "Pending: final-build pass" below.
+maintainer's validation bed. Latest completed sign-off: v0.4.11, 2026-08-06 (below). That pass predates every change of the v1.0 review (`ver=` 0.4.12 to 0.4.22), which is NOT yet hardware-validated apart from D2 (HV-01 on 0.4.21, Group 0 record below) and batches 2 and 3 (below): see "Pending: final-build pass" below.
 
 ---
 
@@ -167,18 +167,35 @@ Console-backed, timer stopped, every config and record variant restored and chec
 
 The attended `--boot` removed the temporary VLAN after it left the wire; detection ignored the box's own outbound frames on it.
 
+## Final-build pass, batch 3 (2026-10-12/13, `0.4.22 (build 01e9f98)`)
+
+Clean package from `01e9f98` (sha256 `a7e113da...b3f7faa4`); install.sh lanes ran from a clean clone at the same commit. Console-backed with three reboots; ended equal to its starting state (config, owned YAML body, base Netplan files, timer drop-in, units, 14 VLANs, defaults), with the owned YAML header now written by 0.4.22.
+
+| Case | Result |
+|------|--------|
+| HV-21 normal upgrade | PASS: `dpkg -i` 0.4.21 -> 0.4.22 from enabled/active returned to enabled/active, no reconcile during the swap |
+| HV-41 LLDP detector failure (recheck) | PASS: with lldpd stopped and `DETECT_METHOD=lldp`, `--status` reports detection unavailable and exits 1, `--dry-run` preserves every owned VLAN; with lldpd restored, `--status` exits 0 |
+| HV-61 default-route refusal | PASS via a controlled route override (a temporary metric-5 default through owned `enp1s0.100`; routed mode cannot make a VLAN the default because dynavlan refuses a VLAN metric at or below the uplink's): `--teardown` refused before any disk or link change |
+| C1 positive refusal (Phase 4.1) | NOT EXERCISED: the switch controller kept the temporary VLAN excluded on the box's port after the intended port settings were applied twice, so it never reached the wire; per the batch rules no other switch method was tried |
+| HV-60 remove and purge | PASS: remove keeps the conffile, removes the script, units and wants links, and makes no Netplan or link call; after a reboot no unit invokes the missing script and the retained owned YAML recreates the VLANs. Purge removes the conffile and the timer drop-in. Reinstalling over the removed state leaves both units disabled (no prior-state record), so the operator re-enables them |
+| HV-61 teardown | PASS: refuses with the timer enabled, with it active, and with the run lock held past 300 s; the real teardown removes every owned VLAN through `netplan try` with base files and defaults unchanged; re-enabling and an attended `--boot` recreate the set |
+| HV-20 direct upgrades | PASS: enabled/active returns to enabled/active, disabled/inactive stays so, no reconcile during the swap, build matches the clone |
+| HV-22 direct installer | PASS: with the timer unstoppable, `install.sh` exits 1 before replacing the script |
+| HV-23 restoration failure | PASS: `install.sh` exits 1, reports that the timer could not be restarted and prints no completion line |
+| HV-25 config migration | PASS: `PER_VLAN_MAC=false` is commented out once, a second upgrade changes nothing, the rest of the config is byte-identical |
+| HV-21 manual-to-package migration | PASS: the first `dpkg -i` over a disabled/inactive manual install removes the `/etc` unit copies, keeps both units disabled and the timer inactive; after a reboot neither unit was enabled or started |
+| HV-02 pristine install | PASS: from a state with no package, units, config, record or process, `dpkg -i` enables both units for the next boot and leaves the timer inactive with no run; after a reboot the boot reconcile ran under 0.4.22 and the timer runs on schedule |
+| HV-90 final observation | PASS: a real timer rescan reported no changes; `--status` and `--dry-run` clean |
+
 ## Pending: final-build pass
 
-The rest of the console-backed pass on the final build is still to run (HV-01/D2 and batch 2 are done, see above). Nothing below has passed on
+The console-backed pass on the final build is complete apart from the rows below (HV-01/D2 and batches 2 and 3 are done, see above). Nothing below has passed on
 hardware; the unit suite and local lifecycle tests do not close these. Historical results
 above stay tied to the builds they were run on.
 
 | Area | Cases | Relates to |
 |------|-------|--------|
-| Pristine package install, manual-to-package migration | HV-02, HV-21 | D6 |
-| Installer posture, restoration failure, historical config migration | HV-20, HV-23, HV-25 | D8, D9 |
-| LLDP detector failure (failed in batch 2; fixed locally in 0.4.22, hardware recheck pending) | HV-41 | D4 |
-| Package remove/purge, attended teardown | HV-60, HV-61 | D7 |
+| C1 positive refusal (not exercised in batch 3: the test VLAN never reached the wire) | Phase 4.1 | C1 |
 | Published package reaches the box | HV-31 | D3 (only an authorized release can prove it) |
 
 Before the pass: confirm the running build with `dynavlan --version` (a `-dirty` suffix or
