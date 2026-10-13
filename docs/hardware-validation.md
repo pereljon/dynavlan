@@ -18,7 +18,7 @@ has actually been validated on, not a hardware requirement.
 | Monitoring agent (restart hook) | Domotz snap |
 
 Any netplan/systemd-networkd box on any switch vendor should work; the above is the
-maintainer's validation bed. Latest completed sign-off: the v1.0 final-build pass on `0.4.22` (build `01e9f98`), 2026-10-12/13: HV-01 on 0.4.21 (Group 0 record) and batches 2 and 3 below, with HV-31 still release-gated (see "Pending: final-build pass"). The v0.4.11 pass of 2026-08-06 is kept below for history.
+maintainer's validation bed. Latest completed sign-off: the v1.0 final-build pass on `0.4.22` (build `01e9f98`), 2026-10-12/13: HV-01 on 0.4.21 (Group 0 record) and batches 2 and 3 below, and HV-31 on the published v1.0.0 (2026-10-13 UTC, see "HV-31"). The v0.4.11 pass of 2026-08-06 is kept below for history.
 
 ---
 
@@ -197,7 +197,7 @@ Hardware evidence is on `0.4.20`-`0.4.22` from the records above; "local" means 
 |---------|-------------|----------|--------|
 | D1 pending-delete default guard | Group 1 (`bf59ab0`) | local; shared default guard shown live in HV-61 | closed |
 | D2 stop during `netplan try` | Groups 2a, `72d9eea` | HV-01 on 0.4.21 | closed; retained candidate link accepted (FR-43) |
-| D3 APT publication | Group 3 (`34bed4e`) | local; HV-31 needs a real release | open until a release |
+| D3 APT publication | Group 3 (`34bed4e`) | HV-31 on the published v1.0.0 | closed |
 | D4 status/dry-run link mutations disclosed | Group 4 | HV-40 | closed |
 | D5 detector failure reported as `[none]` | Group 4, `01e9f98` | HV-41 on 0.4.22, HV-44 | closed |
 | D6 fresh install vs migration | Group 2 | HV-02, HV-21 | closed |
@@ -228,16 +228,34 @@ Hardware evidence is on `0.4.20`-`0.4.22` from the records above; "local" means 
 
 Open low-severity wording, recorded and not fixed: teardown after a default-route refusal also prints "teardown not completed (the apply was not accepted or ended uncertain)"; HV-23 repeats its restart error 3-4 times.
 
-## Pending: final-build pass
+## HV-31: v1.0.0 published package reaches the box (2026-10-13 UTC)
 
-The console-backed pass on the final build is complete apart from the row below (HV-01/D2 and batches 2 and 3 are done, see above). Nothing below has passed on
-hardware; the unit suite and local lifecycle tests do not close these. Historical results
-above stay tied to the builds they were run on.
+The final-build pass is complete. Release `v1.0.0` (tag at `633f35e`) was published on
+2026-10-13 05:04 UTC; the release workflow's `build-deb` and `publish-apt` jobs both succeeded.
+The release asset `dynavlan_1.0.0_all.deb` (sha256
+`f3365acd9e61b9e4dbec0d478c592301fdd48913ac2502bd34f5f60bb6dd1aa1`) has the same payload,
+control files, maintainer scripts and modes as a clean local build of `633f35e`; only the
+archive compression differs. The script matches the commit except `build="633f35e"`. The
+APT repository's `InRelease` has a good signature from the repository key
+(`639F373F...EC9D`, signing subkey `5BAF93E3...4D24`), its `Packages` hash matches, and
+`Packages` lists 1.0.0 with the release asset's SHA256; the pool file has the same hash.
 
-| Area | Cases | Relates to |
-|------|-------|--------|
-| Published package reaches the box | HV-31 | D3 (only an authorized release can prove it) |
+Run console-backed from an authenticated root shell on the serial console (login on
+`ttyS0`). Recovery was staged first: the deployed 0.4.22 package (`01e9f98`, sha256
+`a7e113da...b3f7faa4`, script and unit hashes equal to the installed copies) and restore
+steps in `~/hv-r1/` on the box, and a copy of `/etc/dynavlan.conf`.
 
-Before the pass: confirm the running build with `dynavlan --version` (a `-dirty` suffix or
-a wrong build id means stop), and keep a console open. A teardown or any destructive case
-needs a recorded way back to the baseline.
+| Step | Result |
+|------|--------|
+| Baseline | `0.4.22 (build 01e9f98)`; 14 VLANs; defaults `enp1s0` metric 10, `enp2s0` metric 20; service enabled, timer enabled and active with its `interval.conf` drop-in; a timer rescan reported no changes |
+| `apt-get update`, `apt-cache policy dynavlan` | update rc 0; installed 0.4.22, candidate 1.0.0 from `pereljon.github.io/dynavlan stable/main` |
+| `apt-get install --only-upgrade -s dynavlan=1.0.0` | only `dynavlan` upgraded, nothing installed or removed |
+| `apt-get install -y --only-upgrade dynavlan=1.0.0` (conffile kept) | rc 0; the downloaded archive's sha256 equals the release asset |
+| Identity | `dynavlan 1.0.0 (build 633f35e)`; `dpkg -V dynavlan` clean; conffile, owned netplan file and unit files unchanged from the baseline |
+| Posture | service enabled, rescan unit inactive, timer enabled and active with `interval.conf`; after the timer's post-upgrade rescan, next elapse 05:19:26 UTC (finite) |
+| Rescans | a manual rescan and the timer's rescan on 1.0.0: "no changes ... nothing to apply", rc 0 |
+| Network | 14 VLANs, both default routes unchanged; `--status` rc 0, both trunks 7 tags, no ignored/out-of-range/managed-elsewhere |
+
+**HV-31 PASS; D3 is closed** on published-and-installed evidence. No recovery was needed.
+While a rescan is running, systemd shows no next elapse for the timer; it is finite again once
+the rescan ends (seen before and after the upgrade).

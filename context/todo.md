@@ -4,9 +4,9 @@ Owns: open tasks and their status. Does NOT hold permanent facts or decisions (t
 Maintain: update whenever a task is added, changes state, or completes.
 Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 
-## Current state (2026-10-12)
+## Current state (2026-10-13 UTC)
 
-Active handoff: `context/index.md` CURRENT STATE. Runtime and hardware review work is closed with accepted limitations; `main`/`origin` at `503621b`; box at `0.4.22 (build 01e9f98)`; the uncommitted 1.0.0 candidate has taken Codex's local corrections (installer fixes, doc wording; hook tests 37/0) and awaits Codex closure, then one operator approval for R1-R6. HV-31 is release-gated. Everything below this paragraph through the group table is dated history.
+Active handoff: `context/index.md` CURRENT STATE. **v1.0.0 released** (tag at `633f35e`, GitHub release and signed APT repository verified). HV-31 passed (console-backed apt upgrade 0.4.22 -> 1.0.0), so D3 is closed; the box runs `1.0.0 (build 633f35e)` at its 14-VLAN baseline. The HV-31 records await a docs-only commit approval. Everything below this paragraph through the group table is dated history.
 
 ### History (2026-10-08 .. 2026-10-13, superseded by the paragraph above)
 
@@ -37,14 +37,14 @@ real authorized release. Evidence and dispositions: `docs/superpowers/plans/2026
 the remediation plan, and `docs/hardware-validation.md` ("Pending: final-build pass").
 
 ### Gate-4 freeze - remaining before the 1.0.0 tag
-- [ ] Version-gate git hooks (FR-38: `pre-commit` checks the `ver=`/`build=` structure, `commit-msg` requires a raised `ver=` or one reviewed trailer) - implemented locally 2026-10-12 (`githooks/`, tests 1ax), awaiting commit
+- [x] Version-gate git hooks (FR-38: `pre-commit` checks the `ver=`/`build=` structure, `commit-msg` requires a raised `ver=` or one reviewed trailer) (done 2026-10-12: `633f35e`, tests 1ax, installed in this clone)
 - [x] YAML "exactly one comment line at line 1" unit tripwire (done 2026-10-08, Group 7): the `1au` exact-output
       tests run the real `backend_generate_config` and pin the full text including the single header line
 - [x] Move the `VLAN_LIMIT=0` fixed-`TRY_TIMEOUT`/untested-at-scale caveat into `dynavlan.conf` (done 2026-10-08, Group 8)
 - [x] Decide `--help` exit code (done 2026-08-07): changed to `0`, requested help is success;
       no-mode/unknown stay `2`. ver 0.4.13, §1l-bis tripwires. (`context/open_questions.md`)
 - [x] README cross-link to `COMPATIBILITY.md` (done 2026-10-08, Group 8; the file stays DRAFT until 1.0.0)
-- [ ] Full major (X.0.0) review with >=1 non-Opus reviewer, after the surface is final. Scope +
+- [x] Full major (X.0.0) review with >=1 non-Opus reviewer, after the surface is final (done 2026-10-13: Codex review closed, finding matrix in docs/hardware-validation.md). Scope +
       re-litigation policy decided 2026-09-05 (`context/decisions.md`): covers `install.sh`, Debian
       maintainer scripts, systemd units, and release workflows alongside `dynavlan`/`tests/unit.sh`,
       not the script alone; four first-pass focus subjects identified (detection failure-state
@@ -257,7 +257,7 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 ## Next steps (not started)
 
 - [x] Test .deb build end-to-end (done 2026-08-03): installed the v0.3.0 release .deb on the Domotz box (Ubuntu 22.04), console-backed. Validated install.sh->.deb migration (old /etc/systemd/system units removed, /lib copies live), FR-38 build id (`814bcd1`, was `unknown`), conffile preserved, reboot + boot `--boot` apply (no-change, no revert), and real `domotzpro-agent-publicstore` snap restart. Box now dpkg-managed. Apply->netplan-try->revert path not exercised (no config diff); already hw-validated for v0.3.0.
-- [ ] v1.0 release. DEFINED 2026-08-03 (spec: local-only
+- [x] v1.0 release (done 2026-10-13 UTC: tag `v1.0.0` at `633f35e`, GitHub release, signed APT repository, HV-31 PASS on the reference box). DEFINED 2026-08-03 (spec: local-only
       `docs/superpowers/specs/2026-08-03-v1.0-definition-design.md`; decision in
       context/decisions.md 2026-08-03). Four gates; Gates 1, 2 and 4 required before the 1.0.0 tag (Gate 3 waived 2026-10-13):
       (1) [x] DONE 2026-08-04: carrier-down VLAN removal shipped as v0.4.0 (see the v0.4.0 milestone above);
@@ -287,7 +287,7 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
       Path: v0.4.0 -> APT + validation (parallel) -> freeze + tag 1.0.0 (last by construction).
       OUT OF SCOPE for 1.0 (documented limitations): IPv6, exhaustive vendor coverage,
       per-VLAN MAC (G-4, no reserved key - PER_VLAN_MAC removed in 0.4.3), automatic config-drift detection.
-- [ ] Git hooks for version gate enforcement - implemented locally 2026-10-12 (`githooks/`), awaiting commit
+- [x] Git hooks for version gate enforcement (done 2026-10-12, `633f35e`)
 - [ ] IPv6 health-check arm (deferred from FR-14a; required before any future IPv6 route acceptance)
 - [ ] Non-Meraki switch validation: MET for sniff-primary (proven on a UniFi trunk, v0.3.0 validation 2026-07-30); residual is broader vendor LLDP VLAN-table coverage and silent-VLAN gaps, which vary by vendor
 - [ ] G-4: per-VLAN MAC derivation (post-1.0, low priority; reserved PER_VLAN_MAC key removed in 0.4.3, any implementation adds its own key)

@@ -5,17 +5,16 @@ Read these live-state files first on every session, in order:
 2. context/open_questions.md - unresolved questions
 3. context/decisions.md - decisions already made (do not re-litigate)
 
-CURRENT STATE (2026-10-12) - this paragraph supersedes every dated STATE and NEXT ACTION paragraph below,
-which are kept as history. The v1.0 major review's runtime and hardware work is CLOSED with accepted
+CURRENT STATE (2026-10-13 UTC) - this paragraph supersedes every dated STATE and NEXT ACTION paragraph
+below, which are kept as history. **v1.0.0 is RELEASED.** The v1.0 major review is closed with accepted
 limitations (D2 retained link, C1 on the shared guard, Gate 3 waived; finding matrix in
-docs/hardware-validation.md). `main`, `origin/main` and `release/1.0.0-review` are at `503621b`. The
-reference box runs `0.4.22 (build 01e9f98)` at its 14-VLAN baseline. The uncommitted 1.0.0 candidate on
-`release/1.0.0-review` (`ver=1.0.0`, script otherwise identical to `01e9f98`; version-gate hooks in
-`githooks/`; `COMPATIBILITY.md` final text effective with the 1.0.0 tag) is taking Codex's local
-corrections (installer executable-bit and empty `core.hooksPath` fixes, doc wording). NEXT: Codex
-closure, then ONE explicit operator approval for R1-R6 (hook install, commit, ff-only merge, push,
-v1.0.0 tag and release, console-backed HV-31). Nothing in R1-R6 is authorized yet. HV-31/D3 stays
-release-gated.
+docs/hardware-validation.md). The release commit `633f35e` (version-gate hooks, `ver=1.0.0`, script
+otherwise identical to the hardware-validated `01e9f98`, `COMPATIBILITY.md` in effect) is on `main`,
+`origin/main` and `release/1.0.0-review`; tag `v1.0.0` points at it, the GitHub release carries
+`dynavlan_1.0.0_all.deb`, and the signed APT repository serves it. The version-gate hooks are installed
+in this clone. HV-31 passed on the reference box (apt upgrade 0.4.22 -> 1.0.0, console-backed), so D3 is
+closed; the box runs `1.0.0 (build 633f35e)` at its 14-VLAN baseline. The HV-31 records are a separate
+docs-only change that needs its own commit approval. NEXT: post-1.0 backlog in context/todo.md.
 
 STATE (2026-08-03): dynavlan v0.3.0 released and hardware-validated (restart-on-new-subnet, FR-40:
 restart the nominated agent when a new IPv4 subnet appears on any interface, not only on a tagged-VLAN
