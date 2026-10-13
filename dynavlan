@@ -1147,7 +1147,8 @@ run_detection() { # sets DETECTED_TRUNKS, DETECT_INVALID (sampled ifaces whose d
 
 # ---------------------------------------------------------------------------
 # Backend seam (§4) - netplan implementation, the only backend today.
-# The core never touches netplan except through these backend_* functions.
+# Most netplan access goes through these backend_* functions, but the seam is
+# partial: design §4 lists the core's direct netplan, ip and /sys dependencies.
 # ---------------------------------------------------------------------------
 
 backend_owned_vlans() { # iface.id tokens currently in OUR file (the known-set, FR-20)
