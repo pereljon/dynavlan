@@ -4,6 +4,10 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ## Unreleased
 
+### Changed
+
+- The package description (`debian/control`) is rewritten in plain language. No behavior change.
+
 ## [1.0.0] - 2026-10-12
 
 The 1.x compatibility contract (`COMPATIBILITY.md`) takes effect with this release. The runtime

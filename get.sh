@@ -12,7 +12,7 @@
 # dpkg refuses that unmanaged fallback instead of overlaying it.
 #
 # Or to install a specific version via the tarball path:
-#   curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v0.2.1
+#   curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v1.0.0
 
 set -euo pipefail
 

@@ -36,14 +36,14 @@ The first hardware batch ran on 2026-10-09 (upgrade to `0.4.20 (build d9b3618)`,
 real authorized release. Evidence and dispositions: `docs/superpowers/plans/2026-09-07-group0-d2-report-for-codex.md`,
 the remediation plan, and `docs/hardware-validation.md` ("Pending: final-build pass").
 
-### Gate-4 freeze - remaining before the 1.0.0 tag
+### Gate-4 freeze (complete; released as 1.0.0)
 - [x] Version-gate git hooks (FR-38: `pre-commit` checks the `ver=`/`build=` structure, `commit-msg` requires a raised `ver=` or one reviewed trailer) (done 2026-10-12: `633f35e`, tests 1ax, installed in this clone)
 - [x] YAML "exactly one comment line at line 1" unit tripwire (done 2026-10-08, Group 7): the `1au` exact-output
       tests run the real `backend_generate_config` and pin the full text including the single header line
 - [x] Move the `VLAN_LIMIT=0` fixed-`TRY_TIMEOUT`/untested-at-scale caveat into `dynavlan.conf` (done 2026-10-08, Group 8)
 - [x] Decide `--help` exit code (done 2026-08-07): changed to `0`, requested help is success;
       no-mode/unknown stay `2`. ver 0.4.13, §1l-bis tripwires. (`context/open_questions.md`)
-- [x] README cross-link to `COMPATIBILITY.md` (done 2026-10-08, Group 8; the file stays DRAFT until 1.0.0)
+- [x] README cross-link to `COMPATIBILITY.md` (done 2026-10-08, Group 8; final text in effect from 1.0.0)
 - [x] Full major (X.0.0) review with >=1 non-Opus reviewer, after the surface is final (done 2026-10-13: Codex review closed, finding matrix in docs/hardware-validation.md). Scope +
       re-litigation policy decided 2026-09-05 (`context/decisions.md`): covers `install.sh`, Debian
       maintainer scripts, systemd units, and release workflows alongside `dynavlan`/`tests/unit.sh`,

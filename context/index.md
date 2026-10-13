@@ -13,8 +13,9 @@ otherwise identical to the hardware-validated `01e9f98`, `COMPATIBILITY.md` in e
 `origin/main` and `release/1.0.0-review`; tag `v1.0.0` points at it, the GitHub release carries
 `dynavlan_1.0.0_all.deb`, and the signed APT repository serves it. The version-gate hooks are installed
 in this clone. HV-31 passed on the reference box (apt upgrade 0.4.22 -> 1.0.0, console-backed), so D3 is
-closed; the box runs `1.0.0 (build 633f35e)` at its 14-VLAN baseline. The HV-31 records are a separate
-docs-only change that needs its own commit approval. NEXT: post-1.0 backlog in context/todo.md.
+closed; the box runs `1.0.0 (build 633f35e)` at its 14-VLAN baseline. The HV-31 records are committed
+(`d08c5a2`). Post-release docs pass (2026-10-12): README, package description, COMPATIBILITY.md
+and the user docs rewritten for readability, and stale 1.0 status text corrected. NEXT: post-1.0 backlog in context/todo.md.
 
 STATE (2026-08-03): dynavlan v0.3.0 released and hardware-validated (restart-on-new-subnet, FR-40:
 restart the nominated agent when a new IPv4 subnet appears on any interface, not only on a tagged-VLAN
@@ -273,11 +274,11 @@ Each file gets one clear role; keep this table current.
 | `dev/features/dynavlan.md` | Technical design: architecture, partial backend seam, apply/rollback state machine, module decomposition, systemd/install layout |
 | `dev/features/dynavlan-tests.md` | Test plan: unit assert cases, `--dry-run` verification, hardware integration checklist |
 | `docs/dynavlan-PRD.md` | Product requirements: authoritative FR/NFR/AC with severity+impact tags |
-| `COMPATIBILITY.md` | The 1.x compatibility contract (final text, effective with the 1.0.0 tag): config keys, YAML shape, CLI flags, exit codes |
-| `docs/exit-codes.md` | Exit-code inventory by mode and the frozen table |
-| `docs/hardware-validation.md` | Validated hardware, the console-backed validation record, and the pending final-build pass |
+| `COMPATIBILITY.md` | The 1.x compatibility contract (in effect from 1.0.0): config keys, YAML shape, CLI flags, exit codes, integration identifiers |
+| `docs/exit-codes.md` | The frozen exit-code table and the exits of each mode |
+| `docs/hardware-validation.md` | Validated hardware, the 1.0.0 validation status, and the dated console-backed validation passes |
 | `docs/positioning-brief.md` | Positioning and audience notes (not behavior) |
-| `docs/v1.0-definition.md` | Authoritative 1.0 definition: maturity bar, release gates, compatibility policy, out-of-scope |
+| `docs/v1.0-definition.md` | The 1.0 definition as shipped: maturity bar, release gates, out-of-scope (its policy section is superseded by `COMPATIBILITY.md`) |
 | `docs/deployment-guide.md` | Deployment guide: install, configure, first attended run, operation, removal |
 | `README.md` | Landing page: what the project is and where the docs are |
 | `CHANGELOG.md` | What changed per release |

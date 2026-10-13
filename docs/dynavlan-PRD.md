@@ -1,6 +1,11 @@
 # dynavlan - Product Requirements Document (v3.7)
 
-Status: Draft v3.7, design-locked and hardware-validated 2026-07-14; implemented 2026-07-21..23 with three review rounds folded in; corrected against live hardware 2026-07-25; all-trunks redesign implemented 2026-07-29 (v0.2.0); restart-on-new-subnet implemented and hardware-validated 2026-07-30, released as v0.3.0; carrier-down VLAN removal implemented 2026-08-03, hardware-validated 2026-08-04, released as v0.4.0.
+Status: v3.7, shipped as dynavlan 1.0.0 (2026-10-13). From 1.0.0, `COMPATIBILITY.md` governs changes to the frozen surfaces (config keys, generated YAML, CLI flags, exit codes), and `docs/exit-codes.md` lists the exits of each mode.
+
+History: design-locked and hardware-validated 2026-07-14; implemented 2026-07-21..23 with three review rounds folded in; corrected against live hardware 2026-07-25; all-trunks redesign implemented 2026-07-29 (v0.2.0); restart-on-new-subnet implemented and hardware-validated 2026-07-30, released as v0.3.0; carrier-down VLAN removal implemented 2026-08-03, hardware-validated 2026-08-04, released as v0.4.0.
+
+### Changes for 1.0.0 (2026-10-12/13)
+The released 1.0.0 runtime adds two fixes made after the review edit below: candidate validation in an isolated scratch root before `netplan try` (so a revert cannot restore the candidate's generated files), and an LLDP connection error now fails the LLDP sample instead of reading as an empty trunk. The FR-38 build identity gains commit-time git hooks (`githooks/`) that refuse a script change without a higher `ver=`.
 
 ### Changes in the v1.0 review (2026-10-08, behavior unchanged by this edit)
 NEW FR-42 (`--teardown`) and FR-43 (service stop during apply) record behavior implemented in the review (`ver=` 0.4.15 to 0.4.20); NEW AC-17/AC-18. Wording corrected to match the code, with no behavior change: FR-0 (prerequisites differ by mode), FR-18 (an empty pre-apply snapshot passes unconditionally; only the interface is snapshotted), FR-21a (the timer drop-in replaces `OnBootSec` with `OnActiveSec`), FR-25 template comment (`RESET_ON_BOOT=false` skips detection-diff removals only), FR-26 (restarts also follow FR-40), FR-32/33 (discovery logging is aggregate; `debug` adds nothing), FR-39 (reapply re-renders the owned set), and the config template (`RESTART_ON_NEW_SUBNET`, value grammar). The review's findings and dispositions are in the maintainers' working notes; the hardware status is in `docs/hardware-validation.md`.
