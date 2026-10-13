@@ -1,189 +1,189 @@
-# CODEMAP - where things live
+# CODEMAP: where things live
 
 Owns: a one-line purpose for each function of the `dynavlan` script, for locating code. Does NOT hold logic flow (dev/SKELETON.md), design (dev/features/dynavlan.md), or requirements (docs/dynavlan-PRD.md). Line numbers drift; section anchors and ordering are stable.
-Maintain: add/update a row when a function lands or changes purpose; keep each purpose to one line.
+Maintain: add or update a row when a function lands or changes purpose. Keep each purpose to one sentence of about 25 words. Put flow and sequence detail in dev/SKELETON.md.
 
-Everything lives in the single `./dynavlan` script (installs to /usr/local/sbin/dynavlan), sourceable for tests (`main` guarded by BASH_SOURCE). Sections appear in this order in the file.
+Everything lives in the single `./dynavlan` script, which installs to /usr/local/sbin/dynavlan. Tests can source it, because `main` is guarded by `BASH_SOURCE`. Sections appear in this order in the file.
 
 ## Pure helpers (side-effect-free; unit-tested in tests/unit.sh)
 
 | function | one-line purpose | tests |
 |----------|------------------|-------|
-| `emit_set` | Print ids as a sorted de-duplicated space-separated set (shared by all set producers) | (via others) |
-| `parse_vlan_ignore` | Expand VLAN_IGNORE comma/whitespace list of canonical ids and low-high ranges into a set; a bad token, a leading zero, or an empty comma element at the start/middle/end = non-zero (refuse); spaces around a comma are accepted | 1a, 1as |
-| `boot_removals` | Owned ids absent from BOTH boot passes; both-empty = remove nothing (zero-detection guard) | 1d |
-| `carrier_removals` | FR-41: full owned-on-trunk set if BOTH carrier samples are "down", else empty (dead-trunk full teardown, not a diff) | 1r |
-| `health_check_eval` | PASS iff the snapshot iface still holds a post-apply default AT the minimum metric (iface only; "" snap = PASS); order-independent for equal-metric multi-uplink (P3) | 1c |
-| `vlan_guard` | Count gate verdict: OVER (> limit, 0 = unlimited) / WARN (> warn) / OK | 1f |
-| `limit_fill` | Lowest-N subset of additions for fill mode by NUMERIC vlan id, iface tie-break (deterministic across a fleet; M7) | 1f |
-| `assign_route_metrics` | FR-37 iface.id:metric map: kept tokens verbatim + next-free ascending metric for new tokens (lexical full-`iface.id` token order within the batch via `emit_tokens`, e.g. `enp1s0.10` before `enp1s0.2`; the only mode) | 1g |
-| `map_filter` | Keep only listed tokens' entries of a token:metric map (drops removed VLANs' metrics) | 1g |
-| `map_ids` | Tokens (keys) of a token:metric map, as a sorted set | 1g |
-| `plan_route_metrics` | THE FR-37 assignment decision point: owned map + target + additions -> full token:metric map; assigns for target tokens LACKING a metric (not additions). Every caller must use this | 1g |
-| `metric_conflict` | CONFLICT if any assigned metric <= uplink default's metric (tie counts), else OK | 1g |
-| `compute_candidates` | detected ∩ [MIN,MAX] − ignore − managed-elsewhere − owned (per-trunk bare-id math; caller tags the result to iface.id) | 1b |
-| `ids_in_ignore` / `ids_out_of_range` | M8 `--status` display: detected ids that fall in `VLAN_IGNORE` / outside `[MIN,MAX]`, for the per-trunk excluded/ignored report (FR-35) | 1ah |
-| `ipv4_network` | Network address for an IPv4 ADDR+PREFIX, dotted-quad (FR-40 subnet-token keying, so a same-pool renewal maps to an identical token) | 1q |
+| `emit_set` | Prints ids as a sorted, de-duplicated, space-separated set; every set producer uses it. | (via others) |
+| `parse_vlan_ignore` | Expands `VLAN_IGNORE` ids and `low-high` ranges into a set, accepting spaces around commas; a bad token, leading zero, or empty element returns non-zero. | 1a, 1as |
+| `boot_removals` | Returns owned ids absent from both boot passes; if both passes are empty, it removes nothing (zero-detection guard). | 1d |
+| `carrier_removals` | Returns the trunk's full owned set when both carrier samples are `down`, else nothing (FR-41). | 1r |
+| `health_check_eval` | Returns `PASS` if the snapshot iface still holds a default route at the minimum post-apply metric, in any listing order (P3); an empty snapshot passes. | 1c |
+| `vlan_guard` | Returns the count-gate verdict: `OVER` (above the limit; 0 means unlimited), `WARN` (above the warn level), or `OK`. | 1f |
+| `limit_fill` | Selects the lowest-N additions for `fill` mode, by numeric VLAN id with the iface as tie-break (M7). | 1f |
+| `assign_route_metrics` | Builds the FR-37 token-to-metric map: kept tokens unchanged, new tokens get next-free ascending metrics in lexical token order. | 1g |
+| `map_filter` | Keeps only the listed tokens' entries of a token-to-metric map, which drops removed VLANs' metrics. | 1g |
+| `map_ids` | Returns the tokens (keys) of a token-to-metric map as a sorted set. | 1g |
+| `plan_route_metrics` | The single FR-37 metric decision point, which every caller must use; it assigns metrics to target tokens that lack one. | 1g |
+| `metric_conflict` | Returns `CONFLICT` if any assigned metric is less than or equal to the uplink default's metric, else `OK`. | 1g |
+| `compute_candidates` | Computes per-trunk bare-id candidates: detected ∩ [MIN,MAX] − ignore − managed-elsewhere − owned; the caller tags the result. | 1b |
+| `ids_in_ignore` / `ids_out_of_range` | Return the detected ids inside `VLAN_IGNORE` or outside `[MIN,MAX]`, for the per-trunk `--status` report (M8, FR-35). | 1ah |
+| `ipv4_network` | Returns the dotted-quad network address for an IPv4 address and prefix, so a same-pool renewal keeps its FR-40 subnet token. | 1q |
 
 ## Token helpers (iface.id canonical key, spec section 3; pure except `tag_tokens` and `ifaces_without_carrier`)
 
-Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two trunks sharing a VLAN id never alias. Split is always on the LAST dot.
+Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two trunks that share a VLAN id never alias. A token always splits on its last dot.
 
 | function | one-line purpose |
 |----------|------------------|
-| `emit_tokens` | Sorted (lexical) de-duplicated space-separated token set (the token-domain counterpart of `emit_set`) |
-| `sort_tokens_by_id` | Deduped token set ordered by NUMERIC vlan id then iface (`sort -t. -k2,2n -k1,1`); the fill-selection order (M7) |
-| `tok_iface` | Token -> its iface part (strip trailing `.id`) |
-| `tok_id` | Token -> its id part (strip leading `iface.`) |
-| `tag_tokens` | NOT pure (calls `log warning` on a dropped name): IFACE + bare-id set -> `iface.id` tokens; DROPS any name > 15 chars (IFNAMSIZ, H6) with a warning - the sole choke point, so all modes see a legal set |
-| `untag_tokens` | Token set -> bare-id set (strips the iface part; used when a caller needs ids on one trunk) |
-| `tokens_for_iface` | Token set filtered to one iface's tokens |
-| `drop_iface_tokens` | Token set minus every token on any listed iface (tests 1w). Used to discard additions on a trunk confirmed carrier-down, since additions are computed from tags sniffed before the carrier verdict |
-| `ifaces_without_carrier` | NOT pure (reads live carrier via `has_carrier`): addition tokens -> subset of their ifaces that lack carrier NOW (tests 1ad, M4). Single sample. do_boot/do_rescan/do_dryrun fold its result into the drop set so a newly-detected but not-yet-owned trunk that dies in the detection->apply window doesn't get stanzas on a dead parent (the owned-only removal path misses it) |
-| `distinct_ifaces` | Token set -> sorted set of the distinct ifaces present (drives the per-trunk loop in do_boot/do_rescan/do_dryrun) |
+| `emit_tokens` | Prints a sorted (lexical), de-duplicated token set; the token counterpart of `emit_set`. |
+| `sort_tokens_by_id` | Orders a de-duplicated token set by numeric VLAN id, then iface (`sort -t. -k2,2n -k1,1`); the fill order (M7). |
+| `tok_iface` | Returns a token's iface part by stripping the trailing `.id`. |
+| `tok_id` | Returns a token's id part by stripping the leading `iface.`. |
+| `tag_tokens` | The only `iface.id` constructor; it drops, with a logged warning, any name over 15 characters (`IFNAMSIZ`, H6), so it is not pure. |
+| `untag_tokens` | Converts a token set to a bare-id set, for callers that need ids on one trunk. |
+| `tokens_for_iface` | Filters a token set to one iface's tokens. |
+| `drop_iface_tokens` | Removes every token on the listed ifaces; boot and rescan use it to drop additions on carrier-down trunks (tests 1w). |
+| `ifaces_without_carrier` | Returns the ifaces of addition tokens that lack carrier now, from one live sample; not pure (tests 1ad, M4). |
+| `distinct_ifaces` | Returns the sorted distinct ifaces in a token set; it drives the per-trunk loop in `do_boot`, `do_rescan` and `do_dryrun`. |
 
 ## Set utilities
 
 | function | one-line purpose |
 |----------|------------------|
-| `set_minus` / `set_union` / `count_ids` | Space-separated sorted id-list operations |
-| `in_list` / `is_uint` | Membership and canonical-decimal check (`0` or `[1-9][0-9]*`; a multi-digit leading zero is refused, not read as octal) used by config validation (1as) |
+| `set_minus` / `set_union` / `count_ids` | Operate on space-separated sorted id lists. |
+| `in_list` / `is_uint` | Test list membership and canonical decimals (`0` or `[1-9][0-9]*`, never octal) for config validation (1as). |
 
 ## Logging + config
 
 | function | one-line purpose |
 |----------|------------------|
-| `level_num` / `log` | Leveled logging to stderr → journald (identifier `dynavlan`), gated by LOG_LEVEL |
-| `usage` | One-line usage to stderr |
-| `version_string` | Pure: `<ver> (build <id>)`; empty build renders `unknown`, never `(build )` (FR-38) | 1k |
-| `config_body_differs` | Pure: SAME/DIFFERENT for two configs ignoring exactly line 1 (the version/build header) (FR-39) | 1m |
-| `load_config` | Defaults, then parse /etc/dynavlan.conf via `config_load_file` (root-owned, not group/other-writable, else refuse), then strict-validate every key |
-| `config_load_file` | H2: parse the config declaratively (never source); honor only allowlisted KEY=value lines, refuse any unknown/protected key or non-assignment line, assign inert literals via `printf -v` (no code execution, no internal-var override) |
-| `config_allowed_key` | H2: membership test of a key against `CONFIG_KEYS`, the exact documented config surface |
-| `config_normalize_value` | H2: strip a config value's inline comment, surrounding quotes, and outer whitespace, keeping internal spaces (unquoted lists preserved, not truncated). A quoted value needs a matching closing quote then only whitespace and an optional comment; otherwise it returns 1 and `config_load_file` refuses, naming the key (1as) |
+| `level_num` / `log` | Log by level to stderr, which journald stores under the identifier `dynavlan`, filtered by `LOG_LEVEL`. |
+| `usage` | Prints the one-line usage to stderr. |
+| `version_string` | Returns `<ver> (build <id>)`, rendering an empty build as `unknown`, never `(build )`; pure (FR-38). | 1k |
+| `config_body_differs` | Returns `SAME` or `DIFFERENT` for two configs, ignoring only line 1, the version and build header; pure (FR-39). | 1m |
+| `load_config` | Sets defaults, parses /etc/dynavlan.conf through `config_load_file` after an ownership and permission check, then validates every key strictly. |
+| `config_load_file` | Parses the config declaratively against the allowlist, never by `source`, and assigns values as inert literals with `printf -v` (H2). |
+| `config_allowed_key` | Tests whether a key is in `CONFIG_KEYS`, the exact documented config surface (H2). |
+| `config_normalize_value` | Strips a value's inline comment, quotes and outer whitespace, keeping internal spaces; returns 1 on an unmatched quote or trailing text, so `config_load_file` refuses (H2, 1as). |
 
 ## Preconditions (FR-0)
 
 | function | one-line purpose |
 |----------|------------------|
-| `parse_version` | Pure: first `N.N[.N]` in a version string, empty when none (handles dpkg epoch/revision) |
-| `netplan_version` / `version_ge` | Probe netplan version (`netplan --version` on 1.x, else dpkg-query on 0.10x) and compare against MIN_NETPLAN (sort -V) |
-| `have_cmd` | `command -v CMD` presence test (stubbable seam for the dependency probes) |
-| `tcpdump_supports_inbound` | tcpdump `-Q in` support (FR-5a, probed via `-d`, non-mutating) |
-| `check_detect_deps` | M8: non-mutating DETECTION dependency gate (netplan>=min + tcpdump/`-Q in`/lldpctl per DETECT_METHOD); NOT root, NOT `netplan try`. Shared by `check_preconditions` and `do_status` |
-| `check_preconditions` | root; `check_detect_deps`; non-mutating `netplan try` capability probe (apply-only) |
+| `parse_version` | Returns the first `N.N[.N]` in a version string, or empty; handles a dpkg epoch and revision; pure. |
+| `netplan_version` / `version_ge` | Read the netplan version (`netplan --version` on 1.x, else dpkg-query) and compare it with `MIN_NETPLAN` using `sort -V`. |
+| `have_cmd` | Tests `command -v CMD`; a seam that tests stub for the dependency probes. |
+| `tcpdump_supports_inbound` | Tests tcpdump `-Q in` support with a non-mutating `-d` probe (FR-5a). |
+| `check_detect_deps` | The non-mutating detection dependency gate (M8) that `check_preconditions` and `do_status` share; it checks neither root nor `netplan try`. |
+| `check_preconditions` | Checks root, runs `check_detect_deps`, and probes `netplan try` without changing anything (apply modes only). |
 
 ## Discovery + detection (FR-1..5)
 
 | function | one-line purpose |
 |----------|------------------|
-| `discover_phys_ifaces` | Live physical Ethernet NICs from /sys/class/net (device symlink, ARPHRD_ETHER, not wireless, charset `[A-Za-z0-9_-]` - `.` refused as it aliases the VLAN separator, M1) |
-| `iface_key` | IFACE -> injective, shell-identifier-safe key (hex-escapes each non-alnum byte). Backs `tags_var` + the boot carrier stashes so `enp-1`/`enp_1` never collide (M1) |
-| `tags_var` / `iface_tags` | Per-iface tag-stash variable name (via `iface_key`, injective) and its reader (no eval injection surface) |
-| `valid_var` / `iface_valid` | Per-iface detection-validity stash (via `iface_key`) and its reader; `valid`/`invalid` removal-trust verdict parallel to `tags_var` (H1) |
-| `prep_fail_var` | Per-iface prep-failure flag stash; `prep_iface` sets it, `store_detection` folds it into the validity verdict (H1) |
-| `detection_sample_valid` | Pure: METHOD SNIFF LLDP PREP → `valid`/`""`; decides whether a boot sample is trustworthy for REMOVALS. Prep failure invalidates; under `both` only sniff (the primary) must have succeeded, LLDP failure is non-fatal (H1) |
-| `prep_iface` / `has_carrier` | Admin-up + promisc on (records failure via `prep_fail_var`, H1); carrier probe |
-| `detect_sniff` | Passive 802.1Q capture, INBOUND ONLY (`-Q in`, FR-5a: our own egress is not evidence); minimal snaplen, no disk → `"STATUS IDS"` where STATUS is ok\|fail from tcpdump's own exit (`{0,124}`=ok; captured before the grep pipeline so `pipefail`+grep cannot mask a real failure, H1) |
-| `lldp_tagged_vlans` | Pure: tagged VLAN ids from `lldpctl -f keyvalue` text; drops the native VLAN (`pvid=yes`), stateful adjacency parse (FR-7a) |
-| `detect_lldp` | lldpctl-advertised VLAN ids (PVID excluded) → `"STATUS IDS"`, STATUS ok\|fail from lldpctl's exit or its own zero-exit connection diagnostic (H1, HV-41; tests 1aw) |
-| `detect_iface` | Union of enabled methods for one iface → `"SNIFFSTATUS LLDPSTATUS IDS..."` (relays per-method run status for the validity verdict, H1) |
-| `store_detection` | Parse a `detect_iface` line, stash `TAGS_` (ids) + `VALID_` (removal-trust verdict via `detection_sample_valid` + the prep flag); empty/short line defaults to `invalid` (safe: preserves owned VLANs) (H1) |
-| `run_detection` | Orchestrate: prep all, ONE shared carrier deadline, concurrent per-iface detection → `store_detection` sets `TAGS_`/`VALID_` per iface → `DETECTED_TRUNKS` (every carrier-up iface with a non-empty tag set, not a single selected trunk) and `DETECT_INVALID` (every SAMPLED iface whose detector failed, tagged or not, D5) |
+| `discover_phys_ifaces` | Lists live physical Ethernet NICs from /sys/class/net and refuses names containing `.`, the VLAN separator (M1). |
+| `iface_key` | Maps an iface name to an injective, shell-safe key by hex-escaping each non-alphanumeric byte, for the per-iface stashes (M1). |
+| `tags_var` / `iface_tags` | Name and read the per-iface tag stash variable, keyed through `iface_key`, with no eval injection surface. |
+| `valid_var` / `iface_valid` | Name and read the per-iface `valid` or `invalid` removal-trust verdict, parallel to `tags_var` (H1). |
+| `prep_fail_var` | Names the per-iface prep-failure flag that `prep_iface` sets and `store_detection` reads (H1). |
+| `detection_sample_valid` | Decides whether a sample can authorize removals; prep failure invalidates, and under `both` only the sniff must succeed; pure (H1). |
+| `prep_iface` / `has_carrier` | Set an iface admin-up and promiscuous, recording a failure in `prep_fail_var` (H1); test carrier. |
+| `detect_sniff` | Captures inbound 802.1Q frames only (`-Q in`, FR-5a) with a minimal snaplen and returns `"STATUS IDS"` from tcpdump's own exit (H1). |
+| `lldp_tagged_vlans` | Parses `lldpctl -f keyvalue` text into tagged VLAN ids, dropping the native VLAN (`pvid=yes`) by adjacency (FR-7a); pure. |
+| `detect_lldp` | Returns LLDP-advertised VLAN ids as `"STATUS IDS"`; a zero-exit connection diagnostic also counts as `fail` (H1, HV-41; tests 1aw). |
+| `detect_iface` | Returns the union of enabled methods for one iface as `"SNIFFSTATUS LLDPSTATUS IDS..."`, relaying each method's status (H1). |
+| `store_detection` | Parses a `detect_iface` line into the `TAGS_` and `VALID_` stashes; an empty or short line means `invalid` (H1). |
+| `run_detection` | Orchestrates one detection pass and sets `DETECTED_TRUNKS` and `DETECT_INVALID` (D5); see dev/SKELETON.md "Detection". |
 
-## Backend functions (§4 - a partial netplan seam, the only backend)
+## Backend functions (§4: a partial netplan seam, the only backend)
 
-The core also calls `netplan`, `ip` and the owned file directly (version/`try` probes, backup/restore, route snapshots, discovery); see `dev/features/dynavlan.md` §4.
+The core also calls `netplan`, `ip` and the owned file directly (version and `try` probes, backup and restore, route snapshots, discovery); see `dev/features/dynavlan.md` §4.
 
 | function | one-line purpose |
 |----------|------------------|
-| `backend_owned_vlans` | `iface.id` tokens currently in our file (the known-set), parsed from the stanza headers |
-| `backend_owned_metrics` | Persisted `iface.id:metric` map read back from our file (FR-37 discovery-mode state) |
-| `backend_netplan_vlan_tokens` | Every `netplan get network.vlans` stanza as an `iface.id` token, identity taken from that stanza's own `id:`/`link:` fields (never the mapping key, which can be spelled any way - L1); duplicates retained for callers that need overlap counts. Return code reflects the underlying query's own success/failure (0 = query ran, including a genuinely-empty result; non-zero = the query itself failed) - callers gating an ownership/safety decision on its output MUST check this |
-| `backend_list_managed_vlans` | IFACE -> bare VLAN ids managed OUTSIDE our namespace on THAT trunk (reuses `backend_netplan_vlan_tokens` for the netplan half, plus a kernel `ip -d link` scan, minus our own tokens on that iface) |
-| `backend_generate_config` | Write our file atomically (same-dir mktemp 0600, fsync, rename) from a target token set; isolation stanza (incl. `accept-ra: false` in both modes, FR-14a), or routes+metric per FR-37, keyed per token |
-| `backend_validate` | `netplan generate [--root-dir ROOT]`; on failure classify VALIDATE_ERRSRC ours-vs-base (base = freeze) |
-| `backend_stage_netplan_tree` | Copy `/etc/netplan` (required) and `/lib/netplan`, `/run/netplan` (optional) into a scratch root at the same paths; a failed copy of an existing input returns 1; used by apply and `--dry-run` (tests 1av) |
-| `backend_validate_candidate` | Isolated pre-try validation: scratch root under `SCRATCH_DIR`, stage, write the candidate there, `backend_validate "$root"`; always removes the root and restores `NETPLAN_FILE`. rc 0 valid, 1 rejected, 2 setup failure (tests 1av) |
-| `backend_stop_cleanup` | D2 stop-path cleanup: withdraws the unaccepted fifo writer and waits (`TRY_TIMEOUT + STOP_CHILD_MARGIN`) for `netplan try` to revert; tests 1ao |
-| `backend_apply_with_revert` | The accept primitive: netplan try + fifo, apply-evidence + liveness + consecutive-health + window-bound accept; per-change settle floor via `apply_settle_floor`; captures netplan try's exit on both paths (audit); FAIL holds fifo open for try's own revert timer |
-| `backend_remove_vlan` | `ip link delete` of a removed VLAN interface (only ever called after ACCEPT). Returns rc 1 on delete failure so the caller can record a retry (M5) |
+| `backend_owned_vlans` | Returns the `iface.id` tokens in the owned file, parsed from its stanza headers. |
+| `backend_owned_metrics` | Returns the persisted `iface.id:metric` map from the owned file (FR-37 state). |
+| `backend_netplan_vlan_tokens` | Lists every netplan VLAN stanza as a token from its own `id:` and `link:`, never the mapping key (L1), keeping duplicates for overlap counts; rc rules in dev/SKELETON.md. |
+| `backend_list_managed_vlans` | Returns the bare VLAN ids that netplan or the kernel manage outside the owned file on one trunk. |
+| `backend_generate_config` | Writes the owned file atomically from a target token set, with the isolation stanza and `accept-ra: false`, or routes and metrics (FR-14a, FR-37). |
+| `backend_validate` | Runs `netplan generate [--root-dir ROOT]` and, on failure, sets `VALIDATE_ERRSRC` to ours or base (base freezes updates). |
+| `backend_stage_netplan_tree` | Copies `/etc/netplan` and, if present, `/lib/netplan` and `/run/netplan` into a scratch root; returns 1 on a failed copy (tests 1av). |
+| `backend_validate_candidate` | Validates the candidate in an isolated scratch root before `netplan try`; rc 0 valid, 1 rejected, 2 setup failure (tests 1av). |
+| `backend_stop_cleanup` | On a stop request, closes the unaccepted fifo writer and waits up to `TRY_TIMEOUT + STOP_CHILD_MARGIN` for `netplan try` to revert (D2); tests 1ao. |
+| `backend_apply_with_revert` | The accept primitive: runs `netplan try` through a fifo and writes the confirming newline only under the conditions in dev/SKELETON.md. |
+| `backend_remove_vlan` | Runs `ip link delete` on a removed VLAN, only after an accept; returns 1 on failure so the caller records a retry (M5). |
 
 ## Apply support, pending deletes, package lifecycle (core and packaging, not backend)
 
 | function | one-line purpose |
 |----------|------------------|
-| `apply_settle_floor` | C2: returns the settle floor before health sampling - `APPLY_FALLBACK_SETTLE` when a probe iface exists, the larger `APPLY_NOEVIDENCE_SETTLE` for no-addition changes (removal-only/`--reapply`) that have no in-kernel apply signal |
-| `stop_requested` / `stop_trap_on` / `stop_trap_off` / `wait_child_gone` | D2 graceful stop (core): TERM trap inside `apply_change` (sets the stop flag and closes the unaccepted fifo writer; no other cleanup runs in the trap) and bounded `kill -0` child polling; with `backend_stop_cleanup` above; tests 1ao |
-| `pending_deletes` / `write_pending_deletes` / `record_pending_delete` | Pending-delete record in `/run` (tmpfs, reboot-scoped). `apply_change` records a token whose post-ACCEPT `ip link delete` failed. Historical "dynavlan itself removed this" ownership alone is no longer treated as sufficient at drain time - see `drain_pending_deletes` (D1/L7) (M5) |
-| `drain_pending_deletes` | Start of do_boot/do_rescan: before retrying each recorded delete via `backend_remove_vlan`, re-checks CURRENT state and preserves-with-warning instead of deleting if the token is now the box's current default-route interface (D1) or is now defined in current Netplan config under any key, via `backend_netplan_vlan_tokens` (L7). Fails safe on a `backend_netplan_vlan_tokens` query failure: preserves the entire pending record untouched (nothing yet attempted) and returns non-zero. A LATER failure to persist the survivors (the direct `>` writer can truncate/partially rewrite the file) does NOT make the same untouched-record claim - it returns non-zero and logs that a still-failing delete may be forgotten until reboot. Either failure makes `do_boot`/`do_rescan` abort the run. do_dryrun previews the pending set read-only (M5) |
-| `debian/preinst` / `prerm` / `postinst` / `postrm`, `install.sh` | Group 2 lifecycle: capture the prior enabled/active posture into a validated 3-field record (`/run/dynavlan/upgrade-state`; the record carries an `owner=` dpkg-parent pid, and an ownerless record is reused only from an outgoing 0.4.1-0.4.15 `prerm` whose enablement matches the live state) BEFORE anything is stopped or replaced, stop and verify the timer from its LIVE state (never from the record), wait for the run lock (always, even with no timer), restore each unit's enablement independently and only a previously running timer on success or abort, retain the record across a failed `postinst` (dpkg retries configure without rerunning preinst/prerm); tests `tests/lifecycle.sh` (folded into `unit.sh` §1aq) |
+| `apply_settle_floor` | Returns the settle floor before health sampling: `APPLY_FALLBACK_SETTLE` with an addition, else the larger `APPLY_NOEVIDENCE_SETTLE` (C2). |
+| `stop_requested` / `stop_trap_on` / `stop_trap_off` / `wait_child_gone` | Handle a graceful stop (D2): the TERM trap inside `apply_change`, the stop flag, and bounded `kill -0` child polling; tests 1ao. |
+| `pending_deletes` / `write_pending_deletes` / `record_pending_delete` | Read and write the pending-delete record in `/run`, which holds tokens whose post-accept delete failed (M5). |
+| `drain_pending_deletes` | Retries recorded deletes at the start of `do_boot` and `do_rescan`, after re-checking current ownership (D1, L7, M5); see dev/SKELETON.md. |
+| `debian/preinst` / `prerm` / `postinst` / `postrm`, `install.sh` | Preserve each unit's enabled and active posture across install and upgrade (Group 2); see dev/SKELETON.md "Package lifecycle"; tests `tests/lifecycle.sh` (folded into `unit.sh` §1aq). |
 
 ## Health check (FR-18)
 
 | function | one-line purpose |
 |----------|------------------|
-| `default_routes_tokens` | Current default routes as "iface:metric" tokens |
-| `snapshot_default_route` / `snapshot_default_metric` | Iface / metric of the lowest-metric pre-apply default ("" if none) |
-| `default_iface_in_removals` | C1: 0 iff the current default-route iface is non-empty AND an exact token in the removal set (routed-mode-only backstop; drives `apply_change`'s pre-disk refusal and the `do_dryrun` preview; tests 1aa) |
-| `post_apply_health` | Sample routes now and delegate PASS/FAIL to `health_check_eval` |
-| `have_routing` | FR-41 pre-condition: true iff a lowest-metric default route exists, its egress iface has carrier, AND at least one physical NIC has carrier (composes `snapshot_default_route` + `has_carrier` + `discover_phys_ifaces`; tests 1s). The physical clause stops a tun/wireguard default - those report carrier whenever merely up - from making an all-dark box look routable |
+| `default_routes_tokens` | Returns the current IPv4 default routes as `iface:metric` tokens. |
+| `snapshot_default_route` / `snapshot_default_metric` | Return the iface or the metric of the lowest-metric pre-apply default route, or empty if there is none. |
+| `default_iface_in_removals` | Returns 0 if the current default-route iface is an exact removal token; drives the C1 refusal and its dry-run preview (tests 1aa). |
+| `post_apply_health` | Samples the routes now and returns the verdict of `health_check_eval`. |
+| `have_routing` | True if a lowest-metric default route exists, its iface has carrier, and a physical NIC has carrier (FR-41; tests 1s). |
 
 ## Backups (FR-19)
 
 | function | one-line purpose |
 |----------|------------------|
-| `backup_current` | Copy the owned file to BACKUP_DIR before a change; failure = caller refuses to apply |
-| `restore_prior` | Converge disk back to the prior file (or none on first run); failure logs err naming the surviving backup |
-| `prune_backups` | Keep newest BACKUP_KEEP (only ever pruned after ACCEPT) |
+| `backup_current` | Copies the owned file to `BACKUP_DIR` before a change; on failure the caller refuses to apply. |
+| `restore_prior` | Converges disk back to the prior file, or to none on a first run; on failure it logs the surviving backup. |
+| `prune_backups` | Keeps the newest `BACKUP_KEEP` backups, pruning only after an accept. |
 
 ## Change-gated side effects (FR-27/28)
 
 | function | one-line purpose |
 |----------|------------------|
-| `iface_has_lease` | True if the iface has an IPv4 address (`ip -4 addr`); the lease predicate `wait_leases` polls |
-| `wait_leases` | Non-fatal wait for new-VLAN DHCP leases under ONE box-wide `LEASE_SETTLE_SECONDS` deadline (all pending polled together, bounded regardless of count; NOT per-VLAN in series, which stacked to VLAN_LIMIT × the deadline and could outrun the systemd start timeout - H5) |
-| `restart_targets` | Restart RESTART_SNAPS (snap) then RESTART_SERVICES (systemctl); warn-and-continue per target; sets `RESTARTED_THIS_RUN` ONLY when at least one target exists (L10: with no targets nothing was restarted, so it must not mark a subnet seen), so FR-40's growth-check does not double-restart; sets `RESTART_NONE_SUCCEEDED_THIS_RUN` only on a TOTAL failure (nothing restarted), so a partial success still consumes the new-subnet event (M6) |
-| `current_subnets` | FR-40: sorted `iface:network/prefix` tokens from `ip -4 -o addr show scope global`, skipping non-CIDR peer lines and link-local/loopback |
-| `read_seen` / `write_seen` | FR-40: read/write the ephemeral seen-subnet set at `/run/dynavlan/seen` (absent file = empty set) |
-| `maybe_restart_on_new_subnet` | FR-40: if `current_subnets − seen` is non-empty, restart targets once (deduped via `RESTARTED_THIS_RUN`), then grow `seen` to `seen ∪ current` - but if NO target restarted this run (`RESTART_NONE_SUCCEEDED_THIS_RUN`, a total failure), leave the new tokens unseen so the next run retries (M6); with NO restart targets configured the new tokens are also left unseen so a target configured later gets one catch-up restart (L10); gated by `RESTART_ON_NEW_SUBNET` |
+| `iface_has_lease` | True if the iface has an IPv4 address (`ip -4 addr`); the lease test that `wait_leases` polls. |
+| `wait_leases` | Waits, without failing, for new-VLAN DHCP leases under one box-wide `LEASE_SETTLE_SECONDS` deadline that covers all VLANs together (H5). |
+| `restart_targets` | Restarts `RESTART_SNAPS`, then `RESTART_SERVICES`, warning per failure, and sets the flags that the FR-40 check reads (L10, M6). |
+| `current_subnets` | Returns sorted `iface:network/prefix` tokens for global IPv4 addresses, skipping peer, link-local and loopback lines (FR-40). |
+| `read_seen` / `write_seen` | Read and write the runtime seen-subnet set at `/run/dynavlan/seen`; an absent file is an empty set (FR-40). |
+| `maybe_restart_on_new_subnet` | Restarts targets once when a subnet is new, then marks it seen unless no target restarted (FR-40, M6, L10); gated by `RESTART_ON_NEW_SUBNET`. |
 
 ## Apply orchestration + gates
 
 | function | one-line purpose |
 |----------|------------------|
-| `apply_change` / `apply_change_run` | D2 wrapper: installs the TERM trap, calls `apply_change_run`, removes it. `apply_change_run` is the §7 safety chain: snapshot → **C1 default-route removal guard (refuse if snap_iface in removals)** → (FR-37 metric assign + conflict refusal) → isolated validation (`backend_validate_candidate`) → STOP recheck → backup → live generate → apply_with_revert → ACCEPT: prune/deletes/leases/restarts, FAIL: converge disk, nothing else |
-| `log_exclusions` | Warn per detected-but-managed-elsewhere VLAN |
-| `warn_overlap` | FR-11: warn when an owned `(link,id)` tuple (via `backend_netplan_vlan_tokens`, not key-name matching) is also defined under a different key elsewhere; `do_rescan` now calls it before its no-change early return, matching `do_boot` (L1) |
-| `gate_vlan_count` | Orchestrate warn / refuse / fill per VLAN_LIMIT_MODE; removals-only always passes |
+| `apply_change` / `apply_change_run` | `apply_change` wraps the TERM trap (D2) around `apply_change_run`, the safety chain in dev/SKELETON.md "Apply and revert state machine". |
+| `log_exclusions` | Warns once per detected VLAN that is managed elsewhere. |
+| `warn_overlap` | Warns when another netplan key also defines an owned `(link,id)` tuple (FR-11, L1); boot and rescan call it before their no-change return. |
+| `gate_vlan_count` | Applies warn, refuse or fill per `VLAN_LIMIT_MODE`; a change with removals only always passes. |
 
 ## Modes + entrypoint
 
 | function | one-line purpose |
 |----------|------------------|
-| `do_boot` | All-trunks reconcile: `run_detection`'s rc is ignored (it means "saw nothing", not "failed" - there is no probe-error signal), branching on `DETECTED_TRUNKS` instead, so a zero detection blocks additions without blocking FR-41 pruning; per-trunk candidates over every owned-or-detected iface (union); carrier-UP trunks get sniff-based detection-diff removal (`RESET_ON_BOOT`), suppressed when either pass's sample is `invalid` (a capture-method failure, H1); carrier-DOWN trunks get full-set FR-41 pruning (`carrier_removals`, gated on `have_routing` + `REMOVE_ON_CARRIER_LOSS`, a flap preserves); second settle+resample (`need_pass2`) fires for either reason; one unified `apply_change` across the whole box. No relocation branch: a tagless-but-carrier-UP trunk is preserved (detection uncertainty); a carrier-DOWN trunk is pruned once routing is healthy, not preserved |
-| `do_rescan` | Timer reconcile: additions over DETECTED_TRUNKS; FR-41 removal path: carrier-down OWNED trunks are pruned on a routing-gated two-sample settle, fast-path-preserved (settle sleep only when an owned trunk is actually down). `have_routing` is checked twice - before the sleep (whether to settle at all) and again after it (whether to remove), since an uplink lost during the settle would otherwise produce a removal the health check cannot revert |
-| `do_dryrun` | Preview: same per-trunk candidate math (single pass) over owned-or-detected ifaces, plus a would-be FR-41 removal per trunk (single advisory sample, `have_routing`-gated); detection-diff removal only from a TRUSTED sample (S2), the real `gate_vlan_count` (S3: a refusal cancels additions and removals, prints the unchanged owned target, validates nothing, rc 1), no early return on a quiet wire (L9), a read-only guarded pending-delete preview that uses the route snapshot taken BEFORE detection like the real drain (the later snapshot feeds only the C1 preview), throwaway-tree validate (a failed base-tree copy is rc 1, L8), diff + FR-37 metric/conflict preview + C1 default-route-guard preview, per-trunk breakdown printed; never applies; rc is the overall pre-flight status: non-zero on validation FAIL (M3), count-gate refusal, base-tree copy failure, or a failed pending/managed query, 0 otherwise, so `$?` works as a scripted pre-flight |
-| `do_reapply` | FR-39: regenerate the OWNED set (whatever trunks it spans) with this build, apply only if the body differs; NO detection (pins to `distinct_ifaces` of the owned tokens), full owned set lease-waited, count gate bypassed |
-| `render_timer_dropin` | Pure: timer drop-in text for an interval; emits every desired effective trigger (`OnActiveSec` first fire, `OnUnitActiveSec` interval) after the reset that clears the whole monotonic list, so it deliberately replaces the base `OnBootSec` (FR-21a) |
-| `do_reconfigure` | Write the rendered drop-in to `dynavlan.timer.d/interval.conf` + daemon-reload |
-| `config_defaults` | The complete built-in default state, called first by `load_config` and again by `--teardown` when the config is invalid (a clean reset, never a partial parse) |
-| `check_netplan_version` / `check_apply_prereqs` | Shared netplan presence/minimum-version gate; `check_apply_prereqs` = root + `ip` + that + a working `netplan try --help`, WITHOUT the detection tools (used by `--teardown`; `check_preconditions` = detection deps + `netplan try`) |
-| `teardown_unit_file` | `--teardown` helper: true when the named systemd unit file exists under the etc or lib unit dir (a missing unit counts as disabled and inactive) |
-| `teardown_check_posture` / `do_teardown` | Group 6 `--teardown` (attended): under the held run lock, require both units disabled/masked and inactive/failed (indeterminate refuses), drain pending deletes, read the owned set (unreadable or an unrecognized `vlans:` file refuses), then `apply_change "" "" "$owned" ""`; after an accepted apply drain again and print `ip link delete <tok>` + rc 1 for any link still present; a non-accepted apply gives no delete advice (tests 1at) |
-| `do_status` | Report with ONE row per owned-or-detected trunk: carrier, configured, detected, ignored, out-of-range, managed-elsewhere (FR-35/L13); M8: gates the detection pass on `check_detect_deps` and returns non-zero if a prerequisite is missing; D5: returns non-zero and marks detection unavailable/incomplete when `DETECT_INVALID` is non-empty (any sampled iface, partial results still printed); a failed managed-elsewhere query reads `unavailable` and is rc 1; a quiet valid wire is rc 0; each row also carries static `owned-ignored` / `owned-out-of-range` (owned ids outside the current ignore/range policy), printed even when detection is unavailable (Group 5) |
-| `main` | Mode dispatch: `--version` (pre-config, pre-root) → config (`--teardown` falls back to built-in defaults if invalid) → (status/reconfigure) → `--teardown` branch (`check_apply_prereqs`, not the detection tools) → preconditions → dry-run (non-blocking lock try) → boot/rescan under the fd-held flock, followed by `maybe_restart_on_new_subnet` (FR-40) on every boot/rescan exit path except a stop request (D2), which suppresses it |
+| `do_boot` | The boot reconcile across all trunks, with two-pass detection-diff and carrier-down removal; see dev/SKELETON.md "--boot". |
+| `do_rescan` | The timer reconcile: additions over `DETECTED_TRUNKS` plus routing-gated carrier-down pruning (FR-41); see dev/SKELETON.md "--rescan". |
+| `do_dryrun` | Previews a reconcile without applying and returns non-zero on any preflight failure (M3); see dev/SKELETON.md "--dry-run". |
+| `do_reapply` | Regenerates the owned set with this build and applies only if the body differs, with no detection and no count gate (FR-39). |
+| `render_timer_dropin` | Returns the timer drop-in text for an interval, restating `OnActiveSec` and `OnUnitActiveSec` after the reset (FR-21a); pure. |
+| `do_reconfigure` | Writes the rendered drop-in to `dynavlan.timer.d/interval.conf` and runs `daemon-reload`. |
+| `config_defaults` | Sets the complete built-in default state; `load_config` calls it first, and `--teardown` calls it again for an invalid config. |
+| `check_netplan_version` / `check_apply_prereqs` | The shared netplan version gate, and the `--teardown` gate: root, `ip`, netplan and `netplan try --help`, without detection tools. |
+| `teardown_unit_file` | True when the named unit file exists in the etc or lib unit directory; a missing unit counts as disabled and inactive. |
+| `teardown_check_posture` / `do_teardown` | The attended `--teardown` (Group 6) and its unit-posture check; see dev/SKELETON.md "--teardown" (tests 1at). |
+| `do_status` | Prints one row per owned or detected trunk and returns non-zero when detection is unavailable or incomplete (M8, D5); see dev/SKELETON.md. |
+| `main` | Dispatches the mode in the order shown in dev/SKELETON.md "Run lifecycle". |
 
 ## Non-script artifacts
 
 | file | one-line purpose |
 |------|------------------|
-| `dynavlan.conf` | Config template, every key commented at its default |
-| `dynavlan.service` | Boot oneshot (`--boot`), After=networkd, TimeoutStartSec=600 |
-| `dynavlan-rescan.service` | Timer-invoked oneshot (`--rescan`) |
-| `dynavlan.timer` | OnBootSec/OnActiveSec/OnUnitActiveSec → rescan service; the `--reconfigure` drop-in resets the monotonic list and restates `OnActiveSec` + `OnUnitActiveSec`, so it intentionally replaces the base `OnBootSec` with `OnActiveSec` |
-| `install.sh` | Root installer: stamps the build id into the script (FR-38, awk + verify + `bash -n`), script/config/units, deps, persistent journald, enables service+timer for NEXT boot (never applies); ONE EXIT trap (`cleanup`) does temp-file removal and timer restore |
-| `tests/unit.sh` | Layer-1 unit suite (sections 1a-1ax): pure helpers plus real functions run with stubbed system commands; sources the script and folds in `tests/lifecycle.sh` (§1aq) |
-| `tests/lifecycle.sh` | Package maintainer-script and `install.sh` lifecycle tests against fake `systemctl`/`dpkg`; run from `unit.sh` §1aq |
-| `tests/hooks.sh` | Version-gate hook tests: the real `githooks/` hooks and installer through real `git commit` in disposable repos; run from `unit.sh` §1ax |
-| `githooks/pre-commit`, `githooks/commit-msg`, `githooks/install.sh` | FR-38 commit-time guards: staged `ver=`/`build=` structure; a script change needs a higher `ver=` or one `Version-Bump: none (<reason>)` trailer; copy-installer that resolves the hooks dir via git, changes no git config and refuses foreign hooks or a set `core.hooksPath` |
+| `dynavlan.conf` | The config template, with every key commented at its default. |
+| `dynavlan.service` | The boot oneshot (`--boot`), ordered after networkd, with `TimeoutStartSec=600`. |
+| `dynavlan-rescan.service` | The timer-started oneshot (`--rescan`). |
+| `dynavlan.timer` | Starts the rescan service from `OnBootSec`, `OnActiveSec` and `OnUnitActiveSec`; the `--reconfigure` drop-in replaces `OnBootSec` (FR-21a). |
+| `install.sh` | The root installer: stamps the build id (awk, verify, then `bash -n`; FR-38), installs files, dependencies and persistent journald, and enables units for the next boot without applying. |
+| `tests/unit.sh` | The Layer-1 unit suite (sections 1a to 1ay); it sources the script and runs `tests/lifecycle.sh` (§1aq) and `tests/hooks.sh` (§1ax). |
+| `tests/lifecycle.sh` | Tests the maintainer scripts and `install.sh` lifecycle against fake `systemctl` and `dpkg`; run from `unit.sh` §1aq. |
+| `tests/hooks.sh` | Tests the real `githooks/` hooks and installer through real `git commit` runs in disposable repos; run from `unit.sh` §1ax. |
+| `githooks/pre-commit`, `githooks/commit-msg`, `githooks/install.sh` | Check the staged `ver=`/`build=` structure and require a higher `ver=` or a `Version-Bump: none (<reason>)` trailer (FR-38); the installer changes no git config and refuses foreign hooks or `core.hooksPath`. |

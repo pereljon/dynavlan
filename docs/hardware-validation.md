@@ -310,3 +310,14 @@ Preserve-biased behavior confirmed along the way:
 
 - Neither `VLAN_MAX` narrowing nor `VLAN_IGNORE` prunes an already-owned VLAN.
 - `--reapply` no-ops when the on-disk yaml already matches the generated config.
+
+---
+
+## History: first hardware deploy observations (2026-07-25)
+
+These are observations from the first deploys on the reference box, not a validation pass. Each one is the hardware basis for a rule in `dev/SKELETON.md`. The full records are in `context/decisions.md` (2026-07-25 entries).
+
+- **Inbound-only sniff (FR-5a):** a dead `enp1s0.100` stayed "detected" across reboots. The only VID-100 frame in 75 s was one outbound DHCP Request from the box's own MAC.
+- **Native VLAN from LLDP (FR-7a):** LLDP advertised only `vlan-id=100` with `pvid=yes`. The `enp1s0.100` interface that dynavlan built took no lease in 30 s.
+- **Dead rescan timer (FR-21a):** the timer showed `active` and `Result=success`, but `LastTriggerUSec` was empty and `NextElapseUSecMonotonic=infinity`. `systemctl list-timers` showed `n/a` in every column.
+- **IPv6 RA on a VLAN (FR-14a):** `enp1s0.22` held a global SLAAC address from a VLAN RA while every DHCPv4 decline was in force.
