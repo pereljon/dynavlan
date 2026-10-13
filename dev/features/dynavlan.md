@@ -1,16 +1,41 @@
-# dynavlan - Technical Design Doc
+# dynavlan: technical design
 
-Bridges `docs/dynavlan-PRD.md` (what/why) to implementation (how). The PRD's FR/NFR/AC IDs are the source of truth for behavior; this doc defines structure, sequencing, and the seams. Companion test plan: `dev/features/dynavlan-tests.md`.
+Owns: the architecture, structure, sequencing, seams, module decomposition, and systemd and install layout of dynavlan, with the design decisions and their rationale. Does not hold requirements (docs/dynavlan-PRD.md), logic flow and invariants (dev/SKELETON.md), per-function purposes (dev/CODEMAP.md), or dated project history (context/decisions.md).
+Maintain: update when the architecture, a seam, or a design decision changes. To supersede a decision, add a new dated Decision note; do not rewrite the old one.
+
+The PRD's FR, NFR and AC IDs are the source of truth for behavior. This doc uses the terms that dev/SKELETON.md defines in its "Terms" section, with the same meanings. Each section describes the current design first. History and reasons sit in labeled **Decision** and **Rationale** notes. The companion test plan is `dev/features/dynavlan-tests.md`.
+
+Section numbers are stable, because the script and other docs cite them (for example "design §7").
 
 ## 1. Implementation decisions
 
-| Decision | Choice | Rationale |
-|----------|--------|-----------|
-| Language | **bash** | Zero runtime dependency, portable across distros at the shell level (no interpreter-version coupling), natural fit for orchestrating `netplan`/`ip`/`tcpdump`/`lldpctl`. Concurrency footguns (flock/fifo) are contained in a few functions (§7, §9). |
-| Timer interval | **static systemd timer + config-synced drop-in** | systemd timers are static files. `RESCAN_MINUTES` is materialized into `/etc/systemd/system/dynavlan.timer.d/interval.conf` by `dynavlan --reconfigure` (also run at install), followed by `systemctl daemon-reload`. Runtime edits to `RESCAN_MINUTES` require re-running `--reconfigure`. Avoids a self-rescheduling loop or a long-running daemon (PRD chose oneshot+timer). |
-| Two-pass boot removal state | **in-process, within the single `--boot` run** | FR-23: detect, sleep `BOOT_SETTLE_SECONDS`, detect again, remove only VLANs absent from both. Held in shell variables; no persistence, no cross-invocation state (rescan has no detection-diff removal; its only removal path is FR-41 carrier-down pruning). |
-| Network backend | **partial netplan storage/apply seam, netplan the only implementation** | See §4. The `backend_*` functions isolate the owned-file storage, validation, apply and delete operations, but the core also depends directly on netplan (version and `netplan try` probes, base-config queries, the backup/restore of the owned file) and on `ip`/`/sys`. It is not a portability adapter; a second backend would need real refactoring first (that would be speculative now). |
-| Config format | **declaratively-parsed `/etc/dynavlan.conf`** | Commented KEY=value, parsed line-by-line against an allowlist of the documented keys - NEVER `source`d (H2, 2026-08-04). A config line can only set a documented key; an unknown/protected key or non-assignment line refuses to run, and values are inert literals (`printf -v`), so config can neither execute code nor override an internal/safety variable. Matches the PRD schema (§8 there). `COMPATIBILITY.md` is the 1.x contract for the frozen surfaces (config keys, generated YAML, CLI flags, exit codes); `docs/exit-codes.md` is the per-mode exit inventory. |
+| Decision | Choice | Details |
+|----------|--------|---------|
+| Language | bash | Below |
+| Code layout | One self-contained file, no build step | Below |
+| Timer interval | Static systemd timer plus a drop-in synced from config | Below; §11 |
+| Two-pass boot state | Held in process, within one `--boot` run | Below |
+| Network backend | A partial netplan seam; netplan is the only implementation | §4 |
+| Config format | `/etc/dynavlan.conf`, parsed against an allowlist, never sourced (H2) | Below |
+
+**Language: bash.**
+- bash needs no runtime beyond the shell. It does not couple to an interpreter version, so it ports across distros at the shell level.
+- The job is orchestration of `netplan`, `ip`, `tcpdump` and `lldpctl`, which bash does naturally.
+- The concurrency hazards of bash (the run lock and the fifo) stay inside a few functions (§7, §9).
+
+**Code layout: one file.** All script code lives in `./dynavlan`, which installs to `/usr/local/sbin/dynavlan`. Tests source the file, because `main` is guarded by `BASH_SOURCE` (dev/CODEMAP.md). The project AGENTS.md sets the style that follows from this: expanded guards over dense one-liners.
+
+**Timer interval.** systemd timers are static files. `dynavlan --reconfigure` writes `RESCAN_MINUTES` into `/etc/systemd/system/dynavlan.timer.d/interval.conf`, then runs `systemctl daemon-reload`. The install also runs `--reconfigure`. After an edit to `RESCAN_MINUTES`, run `--reconfigure` again.
+
+Rationale: a static timer avoids a self-rescheduling loop and a long-running daemon. The PRD chose a oneshot service plus a timer.
+
+**Two-pass boot state.** Boot detects, sleeps `BOOT_SETTLE_SECONDS`, detects again, and removes only VLANs absent from both passes (FR-23). Shell variables hold both samples. Nothing persists, and no state crosses invocations. Rescan needs no such state, because its only removal path is carrier-down pruning (FR-41).
+
+**Config format.** The config is commented `KEY=value` lines. `config_load_file` parses it line by line against the allowlist of documented keys (H2, 2026-08-04). The file is never sourced. The full rule is in dev/SKELETON.md, "Config is strict and isolated (H2)".
+
+Rationale: a config line can then set only a documented key. It can neither run code nor override an internal or safety variable. The schema matches PRD §8.
+
+`COMPATIBILITY.md` is the 1.x contract for the frozen surfaces: config keys, generated YAML, CLI flags and exit codes. `docs/exit-codes.md` lists the exit codes per mode.
 
 ## 2. Architecture: two layers
 
@@ -19,216 +44,366 @@ Bridges `docs/dynavlan-PRD.md` (what/why) to implementation (how). The PRD's FR/
 |  CORE (distro-agnostic)                                     |
 |  config parse/validate · interface discovery · sniff/lldp  |
 |  detection · filter/exclude/candidates · reconcile logic · |
-|  health-check evaluation · logging · flock · entrypoints   |
+|  health-check evaluation · logging · run lock · entrypoints|
 +-------------------------------------------------------------+
                          | calls (most netplan access, not all: see §4)
                          v
 +-------------------------------------------------------------+
-|  BACKEND FUNCTIONS (partial seam) - netplan implementation  |
+|  BACKEND FUNCTIONS (partial seam): netplan implementation   |
 |  list_managed_vlans · generate_config · validate ·          |
 |  apply_with_revert · remove_vlan · owned_vlans/metrics      |
 +-------------------------------------------------------------+
 ```
 
-The core holds the decision logic. The `backend_*` functions hold most netplan-coupled code, but not all of it: the core still calls `netplan`, `ip` and the owned file directly in the places listed in §4. A future port (NetworkManager, systemd-networkd-direct, ifupdown) would implement the `backend_*` operations and also need those direct dependencies abstracted first.
+The core holds the decision logic. The `backend_*` functions hold most of the netplan-coupled code, but not all of it. The core still calls `netplan`, `ip` and the owned file directly in the places that §4 lists.
 
-## 3. Ownership model (stated abstractly)
+A port to another stack (NetworkManager, systemd-networkd directly, or ifupdown) would implement the `backend_*` operations. It would also need those direct dependencies abstracted first.
 
-dynavlan owns a **namespace** of VLAN definitions and never modifies definitions outside it. Netplan instantiates this as "own `/etc/netplan/90-dynavlan.yaml`, exclude every other file" (FR-13). Future backends: NM = "own `dynavlan-*` connections"; networkd-direct = "own `90-dynavlan.*` unit files". The exclusion logic (FR-10) is "every VLAN managed outside our namespace," queried via the backend.
+## 3. Ownership model
 
-## 4. Backend functions - a partial seam
+dynavlan owns a namespace of VLAN definitions. It never modifies a definition outside that namespace.
 
-Each is a bash function `backend_<op>`; the netplan implementation is the only one. The table gives the capability each function stands for. Further `backend_*` helpers exist (`backend_owned_metrics`, `backend_netplan_vlan_tokens`, `backend_stop_cleanup`); the six rows below are the apply-relevant operations, and the NM/networkd columns are speculative sketches, not designs.
+- **netplan:** the namespace is the owned file, and every other netplan file is excluded (FR-13).
+- **NetworkManager (sketch):** the namespace would be the `dynavlan-*` connections.
+- **networkd-direct (sketch):** the namespace would be the `90-dynavlan.*` unit files.
 
-**Direct dependencies outside the `backend_*` functions** (so the seam is partial): the netplan version gate and the `netplan try --help` probe (`check_netplan_version`, `check_preconditions`, `check_apply_prereqs`); `backup_current`/`restore_prior` operate on the owned file path; the base-tree copy and `netplan generate` handling in `--dry-run`; interface discovery, link up/promisc and carrier reads (`ip`, `/sys`); route snapshots and health (`ip route show default`); and detection tools (`tcpdump`, `lldpctl`).
+Exclusion (FR-10) means "every VLAN managed outside our namespace". The core queries it through the backend. The invariant itself is in dev/SKELETON.md, "One file owned".
 
-| Operation | Contract | netplan impl | NM impl (future) | networkd-direct (future) |
-|-----------|----------|--------------|------------------|--------------------------|
-| `list_managed_vlans` | Bare VLAN IDs managed **outside** our namespace on ONE given trunk (exclusion source; per-trunk, since IDs are scoped to their trunk) | `netplan get network.vlans` ∪ `ip -d link show type vlan`, filtered to that iface, minus our own tokens on it | `nmcli -g … con show` VLANs ∪ `ip link` | parse other `*.netdev` ∪ `ip link` |
-| `owned_vlans` | `iface.id` tokens currently in **our** namespace, across every trunk (known-set) | parse `90-dynavlan.yaml` stanza headers | our `dynavlan-*` connections | our `90-dynavlan.*.netdev` |
-| `generate_config` | Write our namespace to define exactly the given VLAN set (atomic) | atomic write `90-dynavlan.yaml` (FR-16) | `nmcli con add/mod` | write `.netdev`/`.network` |
-| `validate` | Dry validate the pending config; distinguish our-error vs base-error | `netplan generate` (FR-17) | `nmcli con … --check` | `networkctl` verify / `systemd-analyze` |
-| `apply_with_revert` | Apply, run caller's health check, keep if pass else auto-revert | `netplan try` + fifo-drive (FR-18, §9) | **native** `nmcli` checkpoint + rollback timeout | hand-rolled snapshot/apply/timer/revert |
-| `remove_vlan` | Remove a VLAN from our namespace AND tear down the live interface | file edit + `ip link delete` (FR-24) | `nmcli con delete` | rm units + `ip link delete` |
+## 4. Backend functions: a partial seam
 
-**Revert capability varies by backend** (the one genuinely hard portability item): netplan has `try`; NetworkManager has native checkpoints (cleaner); networkd-direct and ifupdown have none and must hand-roll. The core's `apply_with_revert` contract is "apply with a health-gated auto-revert," so the core is agnostic to which.
+Each operation is a bash function named `backend_<op>`. Netplan is the only implementation. The table gives the capability that each operation stands for; operation names drop the `backend_` prefix.
 
-A startup `backend_detect` (reads `/etc/os-release`, probes for `netplan`) is described here as the seam's entry point but is NOT in the script today: the backend is hardcoded to netplan, since it is the only implementation. The stub lands only when a second backend does. No backend-selection config until then.
+The six rows are the operations that matter to an apply. Other `backend_*` helpers exist, such as `backend_owned_metrics`, `backend_netplan_vlan_tokens` and `backend_stop_cleanup` (dev/CODEMAP.md, "Backend functions"). The NetworkManager and networkd-direct columns are sketches, not designs.
 
-## 5. Module / function decomposition (feeds dev/CODEMAP.md when code lands)
+| Operation | Contract | netplan implementation | NM (future) | networkd-direct (future) |
+|-----------|----------|------------------------|-------------|--------------------------|
+| `list_managed_vlans` | Bare VLAN ids managed outside our namespace on one given trunk. This is the exclusion source, per trunk, because ids are scoped to their trunk. | `netplan get network.vlans` ∪ `ip -d link show type vlan`, filtered to that iface, minus our own tokens on it | `nmcli -g … con show` VLANs ∪ `ip link` | parse other `*.netdev` ∪ `ip link` |
+| `owned_vlans` | The tokens currently in our namespace, across every trunk (the known set) | parse the stanza headers of `90-dynavlan.yaml` | our `dynavlan-*` connections | our `90-dynavlan.*.netdev` |
+| `generate_config` | Write our namespace atomically so that it defines exactly the given VLAN set | atomic write of `90-dynavlan.yaml` (FR-16) | `nmcli con add/mod` | write `.netdev` and `.network` |
+| `validate` | Validate the candidate config without applying it; tell our error from a base-file error | `netplan generate` (FR-17) | `nmcli con … --check` | `networkctl` verify or `systemd-analyze` |
+| `apply_with_revert` | Apply, run the caller's health check, keep on a pass, else auto-revert | `netplan try` driven through a fifo (FR-18, §9) | native `nmcli` checkpoint with a rollback timeout | hand-rolled snapshot, apply, timer and revert |
+| `remove_vlan` | Remove a VLAN from our namespace and tear down the live interface | file edit plus `ip link delete` (FR-24) | `nmcli con delete` | remove the units plus `ip link delete` |
 
-| Function | Purpose (one line) |
-|----------|--------------------|
-| `main` | Parse mode flag (`--boot`/`--rescan`/`--dry-run`/`--status`/`--reconfigure`), acquire flock, dispatch |
-| `load_config` | Apply defaults, then parse `/etc/dynavlan.conf` via `config_load_file` (allowlist-only, never sourced - H2), validate all values (refuse-to-run on bad) |
-| `parse_vlan_ignore` | Expand `VLAN_IGNORE` into a set: comma/whitespace-separated canonical ids and `low-high` ranges; an empty comma element at the start, middle or end, or a leading zero, is a refusal (spaces around a comma are fine) |
-| `check_detect_deps` | M8: non-mutating detection dependency gate (netplan>=min + tcpdump/`-Q in`/lldpctl per DETECT_METHOD); NOT root/`netplan try`. Shared by `check_preconditions` + `do_status` |
-| `have_cmd` / `tcpdump_supports_inbound` | `command -v` presence test / tcpdump `-Q in` probe (stubbable seams) |
-| `check_preconditions` | FR-0: root + `check_detect_deps` + `netplan try` capability probe (non-mutating, apply-only) |
-| `discover_phys_ifaces` | Live physical NICs from `/sys/class/net` (device symlink, type==1, exclude lo/wifi/vlan) |
-| `prep_iface` / `has_carrier` | Set iface up + promisc on (all NICs first); then ONE shared carrier deadline (`CARRIER_WAIT_SECONDS` total, not per port). Detection runs ONLY on carrier-up ifaces, and the per-iface sniffs run CONCURRENTLY (one `SNIFF_SECONDS` window total) so detection cost does not scale with port count |
-| `vlan_guard` / `limit_fill` / `gate_vlan_count` | FR-12/FR-36 count gate: pure `vlan_guard(n,warn,limit)` → OK/WARN/OVER and `limit_fill(adds,slots)` → lowest-N subset (tests 1f); `gate_vlan_count` orchestrates warn / refuse / fill per `VLAN_LIMIT_MODE`, over the box-wide combined additions |
-| `plan_route_metrics` / `map_ids` / `assign_route_metrics` / `map_filter` / `metric_conflict` | FR-37 routed mode (tests 1g): `plan_route_metrics` is the single assignment decision point every caller must use (owned map + target + additions -> full map; assigns for target tokens LACKING a metric, not additions); pure metric assignment (kept `iface.id` tokens verbatim + next-free ascending metric for tokens lacking a persisted one, in lexical full-`iface.id` order within the assignment batch across the whole box - the only mode, `VLAN_ROUTE_METRIC_MODE`/`id` mode was dropped), map filtering to surviving tokens, and the uplink-metric conflict guard (CONFLICT if any assigned metric <= uplink metric) |
-| `backend_owned_metrics` / `snapshot_default_metric` | FR-37 state: read the persisted "token:metric" map back from our own YAML; capture the pre-apply uplink default's metric for the conflict guard |
-| `detect_sniff` | Passive 802.1Q capture (`tcpdump`, minimal snaplen, no disk) → VLAN IDs per iface |
-| `detect_lldp` | `lldpctl` advertised VLANs per iface |
-| `detect_iface` / `run_detection` | `detect_iface` unions the enabled methods for one iface; `run_detection` runs it concurrently over every carrier-up iface and sets `DETECTED_TRUNKS` to every iface with a non-empty tag set - all of them, not a single selected trunk. No trunk-selection contest, no hysteresis, no `select_trunk` |
-| `drop_iface_tokens` | Token set minus every token on any listed iface (tests 1w). Discards additions on a trunk confirmed carrier-down: detection filters carrier once and then sniffs for `SNIFF_SECONDS`, so a trunk that dies mid-sniff keeps its tags and would otherwise have new VLANs created on it in the same apply that tears its old ones down |
-| `ifaces_without_carrier` | Addition tokens -> the subset of their ifaces with no carrier NOW (tests 1ad). Single sample (declining an addition is fail-toward-no-change, re-added next rescan; unlike a removal it needs no debounce). do_boot/do_rescan/do_dryrun fold it into the `drop_iface_tokens` set unconditionally, so the drop covers a newly-detected but *not-yet-owned* trunk that died in the detection->apply window (M4). The existing carrier-down *removal* path is owned-only and misses that case |
-| `pending_deletes` / `write_pending_deletes` / `record_pending_delete` / `drain_pending_deletes` | Pending-delete record in `/run/dynavlan/pending-delete` (tests 1ae, M5; D1/L7 re-checks in 1aj). A post-ACCEPT `ip link delete` that fails leaves the stanza already gone from our file, so the live interface (and its subnet) would linger until reboot; `apply_change` records the token and every do_boot/do_rescan retries it via `drain_pending_deletes`. `/run` is tmpfs so the record dies with the interfaces on reboot. The record proves only historical ownership, not current: before each retry, `drain_pending_deletes` re-checks CURRENT state and preserves-with-warning instead of deleting if the token is now the box's current default-route interface (D1) or is now defined in current Netplan configuration under any key, via `backend_netplan_vlan_tokens` (L7); it fails safe on a query failure (preserves the whole record untouched, returns non-zero) rather than deleting on stale/absent evidence; a LATER failure to persist the survivors is a distinct case - the direct writer can truncate/partially rewrite the file, so it returns non-zero and logs that a still-failing delete may be forgotten, not that the record was preserved. Either failure aborts do_boot/do_rescan |
-| `emit_tokens` / `tok_iface` / `tok_id` / `tag_tokens` / `untag_tokens` / `tokens_for_iface` / `distinct_ifaces` | Pure `iface.id` token helpers (tests via the mode functions that use them): convert between the token domain (every set downstream of detection) and the per-trunk bare-id domain `compute_candidates`/`boot_removals` operate in; `distinct_ifaces` drives the per-trunk loop in every mode |
-| `compute_candidates` | Per-trunk: `detected ∩ [MIN,MAX] − VLAN_IGNORE − backend_list_managed_vlans(iface) − owned-ids-on-that-iface`; caller tags the result to `iface.id` |
-| `ids_in_ignore` / `ids_out_of_range` | Pure `--status` display (M8/FR-35): detected ids in `VLAN_IGNORE` / outside `[MIN,MAX]`, per trunk |
-| `carrier_removals` | Pure (FR-41, tests 1r): `OWNED_ON_TRUNK C1 C2 -> owned set if BOTH carrier samples are "down", else empty`. Full-teardown decision for a dead trunk, mirrors `boot_removals`' shape |
-| `have_routing` | FR-41 pre-condition (tests 1s): true iff a lowest-metric default route exists, its egress iface has carrier, AND at least one physical NIC has carrier. False → callers preserve rather than attempt a doomed removal (composes `snapshot_default_route` + `has_carrier` + `discover_phys_ifaces`). The physical-NIC clause is load-bearing: tun/wireguard netdevs report `carrier=1` whenever merely configured up, so a tunnel default would otherwise make an all-dark box look routable. Testing the egress dev against a physical whitelist instead would wrongly reject a VLAN-egress default and would disable FR-41 outright on a genuinely VPN-routed box |
-| `do_boot` | Loops every owned-or-detected trunk; per-trunk two-pass math (additions single-pass, detection-diff removals need absence in both passes on a carrier-UP trunk; `run_detection`'s rc is ignored - it means "saw nothing", not "failed" - so a zero detection blocks additions without blocking FR-41 pruning). Removal-set combination per trunk factored into a pure helper `boot_removals(owned,pass1,pass2)` for unit testing (tests 1d). A second settle+resample (`need_pass2`) also fires when FR-41 carrier-down removal is armed and an owned trunk was already down at pass 1 (independent of `RESET_ON_BOOT`); on sustained two-sample carrier loss with healthy routing (`have_routing`), `carrier_removals` prunes the whole owned set on that trunk. Combines every trunk's tagged additions/removals into one token set, then ONE unified `apply_change` for the whole box |
-| `do_rescan` | Per-trunk additions over `DETECTED_TRUNKS` and, under FR-41, removals: checks carrier on every OWNED iface, and on a fast path incurs the settle sleep only when an owned trunk is actually down, prunes via `carrier_removals` on a sustained loss with healthy routing. Combines into one token set, one unified apply |
-| `apply_change` | Orchestrate the safety sequence (§7) over a token set spanning however many trunks: generate → validate → apply_with_revert → deletes → restarts. Optional 4th arg overrides the lease-wait set (FR-39 reapply waits on the full owned set, having no additions) |
-| `do_reapply` / `config_body_differs` | FR-39: regenerate the owned token set with the running build and apply only if the body differs (line 1, the version/build header, excluded positionally). No detection - pinned to `distinct_ifaces` of the owned tokens, since detecting could silently change which trunks are in scope. Count gate bypassed; blocking lock |
-| `snapshot_default_route` | Capture iface/gw/metric of lowest-metric default route (health-check reference) |
-| `health_check` | PASS iff post-apply default route egresses snapshot iface (or empty→empty); ARP non-fatal |
-| `wait_leases` | Bounded `LEASE_SETTLE_SECONDS` wait for new-VLAN leases; non-blocking on failure |
-| `restart_targets` | Restart `RESTART_SNAPS` (snap) then `RESTART_SERVICES` (systemctl); skip missing/failed; sets `RESTART_NONE_SUCCEEDED_THIS_RUN` on a TOTAL failure only (M6) |
-| `prune_backups` | Keep newest `BACKUP_KEEP` |
-| `log` | Leveled journal logging (identifier `dynavlan`), start/end lines |
-| `do_status` / `do_dryrun` / `do_reconfigure` | Operator entrypoints; both `do_status` and `do_dryrun` report per-owned-trunk carrier state (FR-41), and `do_dryrun` previews a would-be carrier-down removal |
-| `backend_*` | The partial storage/apply seam of §4 |
+**Direct dependencies outside the `backend_*` functions.** These make the seam partial:
+- the netplan version gate and the `netplan try --help` probe (`check_netplan_version`, `check_preconditions`, `check_apply_prereqs`);
+- `backup_current` and `restore_prior`, which operate on the owned file path;
+- the `NETPLAN_FILE` swap in `--dry-run`, which points the generator at the staged tree;
+- interface discovery, link up, promiscuous mode and carrier reads (`ip`, `/sys`);
+- route snapshots and the health check (`ip route show default`);
+- the detection tools (`tcpdump`, `lldpctl`).
+
+**Revert capability varies by backend.** This is the one hard portability item. netplan has `netplan try`. NetworkManager has native checkpoints, which are cleaner. networkd-direct and ifupdown have neither, so a port must hand-roll the revert. The core's `apply_with_revert` contract is "apply with a health-gated auto-revert", so the core does not depend on the mechanism.
+
+**Decision: no `backend_detect` yet.** A startup `backend_detect` would read `/etc/os-release` and probe for `netplan`. It would be the entry point of the seam. The script does not have it, because the backend is hardcoded to netplan, the only implementation. The stub lands with a second backend. Until then there is no backend-selection config.
+
+## 5. Module decomposition
+
+The script is one file, divided into sections. dev/CODEMAP.md gives one row per function, in file order. This table groups the functions by responsibility, so a maintainer can see which module a change touches.
+
+| Module | Functions | Responsibility |
+|--------|-----------|----------------|
+| Entry and dispatch | `main` | Parses the mode flag, takes the run lock, and dispatches to the mode function. |
+| Config | `load_config`, `config_load_file`, `parse_vlan_ignore` | Sets defaults, parses `/etc/dynavlan.conf` against the allowlist (H2), and validates every value. A bad value refuses the run. |
+| Preconditions | `check_preconditions`, `check_detect_deps`, `check_apply_prereqs`, `have_cmd`, `tcpdump_supports_inbound` | Gate a run on root, tools and netplan capability (FR-0, M8). |
+| Discovery and detection | `discover_phys_ifaces`, `prep_iface`, `has_carrier`, `detect_sniff`, `detect_lldp`, `detect_iface`, `run_detection` | Find physical NICs, bring them up in promiscuous mode, and detect tagged VLANs on every carrier-up iface. |
+| Candidate VLANs and tokens | `compute_candidates`, `emit_tokens`, `tok_iface`, `tok_id`, `tag_tokens`, `untag_tokens`, `tokens_for_iface`, `distinct_ifaces`, `drop_iface_tokens`, `ifaces_without_carrier` | Compute per-trunk candidate VLANs as bare ids, convert them to tokens, and drop additions on dead parents. |
+| Removal decisions | `boot_removals`, `carrier_removals`, `have_routing` | Decide detection-diff removals (FR-23) and carrier-down removals (FR-41), with the routing pre-condition. |
+| Count gate | `vlan_guard`, `limit_fill`, `gate_vlan_count` | Warn, refuse, or fill over the box-wide combined additions (FR-12, FR-36). |
+| Routed mode | `plan_route_metrics`, `assign_route_metrics`, `map_ids`, `map_filter`, `metric_conflict`, `backend_owned_metrics`, `snapshot_default_metric` | Assign per-token route metrics and refuse a metric that would beat the uplink (FR-37, §10). |
+| Backend | `backend_*` | The partial storage and apply seam (§4). |
+| Apply orchestration | `apply_change`, `backup_current`, `restore_prior`, `prune_backups` | Take one change through validation, the live write, and accept or revert (§7). |
+| Health check | `snapshot_default_route`, `post_apply_health`, `health_check_eval`, `default_iface_in_removals` | Snapshot the default route before an apply and judge it after (§8). |
+| Pending deletes | `pending_deletes`, `write_pending_deletes`, `record_pending_delete`, `drain_pending_deletes` | Record a failed post-accept delete and retry it on the next run (M5). |
+| Side effects | `wait_leases`, `restart_targets`, `maybe_restart_on_new_subnet`, `current_subnets`, `read_seen`, `write_seen` | Wait for leases and restart targets after an accepted change; run the new-subnet restart (§11a). |
+| Modes | `do_boot`, `do_rescan`, `do_dryrun`, `do_status`, `do_reconfigure`, `do_reapply`, `config_body_differs`, `do_teardown` | One function per mode (§6). |
+| Status display | `ids_in_ignore`, `ids_out_of_range` | List detected ids inside `VLAN_IGNORE` or outside `[MIN,MAX]`, per trunk (M8, FR-35). |
+| Logging | `log` | Leveled logging to the journal under the identifier `dynavlan`, with start and end lines. |
+
+### Design notes on the modules
+
+- **`main`** dispatches `--boot`, `--rescan`, `--dry-run`, `--status`, `--reconfigure`, `--reapply` and `--teardown`. The lock policy per mode is in dev/SKELETON.md, "Run lifecycle".
+- **`parse_vlan_ignore`** accepts canonical ids and `low-high` ranges, separated by commas or whitespace. Spaces around a comma are fine. An empty comma element at the start, middle or end refuses, and so does a leading zero.
+- **`have_cmd` and `tcpdump_supports_inbound`** are the `command -v` presence test and the tcpdump `-Q in` probe. Tests stub them.
+- **Detection cost.** `prep_iface` brings every NIC up first. Then one shared carrier deadline runs, and the sniffs run concurrently in one window. So detection cost does not grow with the port count (dev/SKELETON.md, "Detection").
+- **`detect_sniff`** is a passive 802.1Q capture with a minimal snaplen. It never writes frames to disk. `detect_iface` combines the enabled methods for one iface.
+- **No trunk selection.** `run_detection` sets `DETECTED_TRUNKS` to every iface with a non-empty tag set. There is no trunk contest, no hysteresis, and no `select_trunk` (dev/SKELETON.md, "Every detected trunk is provisioned").
+- **Pure helpers for unit tests.** `boot_removals(owned, pass1, pass2)` holds the per-trunk removal combination (tests/unit.sh §1d). `carrier_removals` mirrors its shape (§1r).
+- **Count gate helpers.** `vlan_guard(n, warn, limit)` returns `OK`, `WARN` or `OVER`. `limit_fill(adds, slots)` returns the lowest-N subset (§1f). `gate_vlan_count` applies the `VLAN_LIMIT_MODE` policy.
+- **Token helpers** convert between the token domain and the per-trunk bare-id domain of `compute_candidates` and `boot_removals`. `distinct_ifaces` drives the per-trunk loop in every mode (tests/unit.sh §1n).
+- **`drop_iface_tokens`** removes every token on the listed ifaces from a token set (§1w).
+  Rationale: detection checks carrier once, then sniffs for `SNIFF_SECONDS`. A trunk that dies during the sniff keeps its tags. Without the drop, one apply would create new VLANs on the trunk while it tears down the old ones.
+- **`ifaces_without_carrier`** returns the ifaces of addition tokens that lack carrier now (§1ad, M4). `do_boot`, `do_rescan` and `do_dryrun` always add them to the `drop_iface_tokens` set.
+  Rationale: one carrier sample is enough here. A declined addition fails toward no change, and the next rescan adds it again; only a removal needs a debounce. The drop covers a newly detected trunk that is not yet owned and dies between detection and apply. The carrier-down removal path covers owned trunks only, so it misses that case.
+- **`apply_change`** takes the change for the whole box, across any number of trunks. An optional fourth argument overrides the set that the lease wait covers. `--reapply` uses it to wait on the full owned set, because it has no additions.
+- **`restart_targets`** restarts `RESTART_SNAPS` with snap, then `RESTART_SERVICES` with systemctl. It skips a missing or failed target. It sets `RESTART_NONE_SUCCEEDED_THIS_RUN` only on a total failure (M6).
+- **`prune_backups`** keeps the newest `BACKUP_KEEP` backups.
+- **`do_status` and `do_dryrun`** report carrier state per owned trunk (FR-41). `do_dryrun` also previews a carrier-down removal.
+- **Pending deletes** live in `/run/dynavlan/pending-delete`. The record and the drain rules are in dev/SKELETON.md, "A failed delete is retried, not forgotten (M5)" (tests/unit.sh §1ae, §1aj).
 
 ## 6. Control flow per mode
 
-**`--boot`** (FR-22/23/41, all-trunks): preconditions → discover/prep every physical iface → detect pass 1 → **`run_detection`'s rc is deliberately ignored.** It has exactly one non-zero return, fired precisely when `DETECTED_TRUNKS` is empty, so it cannot tell a probe failure from a quiet wire; an rc-based abort would fire on the very case FR-41 exists for (every owned trunk unplugged, nothing left to detect) and would log "detection failed" for an ordinary quiet trunk. Boot branches on `DETECTED_TRUNKS` instead: a zero detection makes additions impossible, but a carrier-down owned trunk remains eligible for FR-41 pruning when `REMOVE_ON_CARRIER_LOSS=true` → loop over the UNION of every owned trunk and every newly-detected trunk; per trunk, additions = detected ∩ range − ignore − managed-elsewhere − owned-on-that-trunk, tagged to `iface.id`, AND stash each trunk's pass-1 carrier sample (`_c1_<trunk>`) → **`need_pass2`** = `RESET_ON_BOOT=true` (detection-diff needs it) OR (`REMOVE_ON_CARRIER_LOSS=true` AND some owned trunk already down at pass 1, supplying half the carrier debounce); if neither, boot stays single-pass → when `need_pass2`: sleep `BOOT_SETTLE_SECONDS` once, re-detect ONLY if `RESET_ON_BOOT=true` (a carrier-only resample reads `/sys` + the owned set, never detection, so a fresh sniff here would be pure latency) → per trunk at pass 2: **carrier UP** → detection-diff removal exactly as before, `RESET_ON_BOOT` only (`boot_removals`: owned ids on that trunk absent from BOTH passes; empty detection in either pass preserves). **Carrier DOWN** → FR-41: preserve if the knob is off, or if pass-1 carrier was up (a flap, not sustained), or if `have_routing` is false (no healthy default route - the dead trunk may double as the box's own uplink; this pre-condition is the ONLY gate on that case, since an already-missing uplink makes the pre-apply route snapshot empty and an empty snapshot is a deliberate unconditional health-check PASS); otherwise `carrier_removals` returns the trunk's full owned set → combine every trunk's tagged additions/removals into one token set → count gate (`gate_vlan_count`: FR-12 warn / FR-36 refuse-or-fill, over the combined total; a removals-only change always passes) → if change: ONE unified `apply_change` for the whole box → done. **No relocation branch**: a trunk with no tags but carrier UP is preserved (genuine detection uncertainty); a trunk that goes carrier-DOWN is pruned by FR-41 once routing is confirmed healthy, not preserved - there is still nothing to relocate to, since every other tagged trunk is already independently provisioned on its own merits.
+dev/SKELETON.md, "Reconcile policies", owns the step-by-step flow of each mode. This section keeps the design reasons behind that flow.
 
-**`--rescan`** (FR-21/41, all-trunks): preconditions → discover/prep → detect (single pass) → loop every `DETECTED_TRUNKS` iface, per-trunk additions only, tagged and combined. FR-41 adds removals: if `REMOVE_ON_CARRIER_LOSS=true`, check carrier on every OWNED iface (not just `DETECTED_TRUNKS` - a carrier-down owned trunk reports zero tags and is absent from it entirely). **Fast path preserved**: the settle sleep runs only when at least one owned trunk is actually carrier-down AND `have_routing` is true; an all-up steady state (or a down trunk with no healthy routing, which just logs a preserve warning) costs nothing extra. When triggered: sleep `BOOT_SETTLE_SECONDS` once for every down trunk together, then re-evaluate `have_routing` (the pre-settle check gates whether to sleep at all; this one gates whether to remove, and without it an uplink dropped during the settle - a switch reboot taking both ports - yields a removal applied and ACCEPTED on a box with no routing, since the empty pre-apply snapshot makes the health check an unconditional PASS), re-sample carrier on those trunks, prune (`carrier_removals`) any still down - one recovered during the settle is preserved. Additions and removals combine into one token set → count gate → one unified `apply_change`.
+### --boot (FR-22, FR-23, FR-41)
 
-**`--dry-run`** (FR-34/41, all-trunks): detect + per-trunk candidate math over the union of owned and detected trunks (single pass, boot-mode math), plus a would-be FR-41 removal per trunk (single advisory carrier sample, no debounce since nothing applies; gated on `have_routing` computed once) + `backend_validate` against a throwaway tree → print the combined intended add/remove plus a per-trunk breakdown (now including carrier state) and, when routing is unhealthy, a note that a carrier-down teardown is being suppressed; **never apply, never restart, never delete a link or write the pending/seen records** (detection still raises NICs and leaves promiscuous mode on - disclosed, not restored). Group 4: removals need a trusted sample (S2); the real count gate applies (refusal cancels additions and removals, validates nothing, rc 1); a quiet wire still previews guarded pending retries (pre-detection route snapshot, like the real drain) and validates; a failed base-tree copy is rc 1; rc is the overall pre-flight status. The throwaway tree is a copy of the real `/etc/netplan/` (base files included) with the candidate `90-dynavlan.yaml` overlaid, so `netplan generate` sees base files too and dry-run surfaces an FR-17 base-file-freeze (R-5) rather than hiding it. Lock interaction (round-4): dry-run TRIES the FR-30 flock non-blocking - if free it holds it for the preview (a timer rescan landing mid-preview skips normally and retries next cycle); if already held it does NOT block the operator, warns the preview may reflect mid-change state, and proceeds read-only.
+Flow: dev/SKELETON.md, "--boot (reconcile)". Boot loops over the union of owned and detected trunks, combines every trunk's change into one token set, and makes one `apply_change` call.
 
-**`--teardown`** (FR-42, Group 6/D7): attended removal of owned network state; see `dev/SKELETON.md`. It deliberately reuses `apply_change` with an empty target rather than a shell recipe (a recipe would duplicate backup/restore/health/pending-record logic; an adversarial review found concrete defects in one). Packaging side: `prerm remove` quiesces (verified timer stop, run-lock wait), then `systemctl disable`s the timer and boot service and verifies; `postrm purge` removes the conffile, journald drop-in and `interval.conf`, `rmdir`ing the timer drop-in directory only if empty.
+- **Rationale: boot ignores the return code of `run_detection`.** That code has one non-zero case, which fires only when `DETECTED_TRUNKS` is empty. So it cannot tell a probe failure from a quiet wire. An abort on it would fire on the case FR-41 exists for: every owned trunk unplugged. It would also log "detection failed" for an ordinary quiet trunk.
+- **Rationale: a carrier-only pass 2 runs no sniff.** Boot stashes each trunk's pass-1 carrier sample in a `_c1_<trunk>` variable. A carrier-only resample reads `/sys` and the owned set, never detection. A fresh sniff there would add only latency.
+- **Rationale: `have_routing` is the only gate on a carrier-down trunk.** The dead trunk may also be the box's own uplink. An uplink that is already missing leaves the pre-apply route snapshot empty. An empty snapshot passes the health check unconditionally (AC-12), so the health check cannot catch this case (§7).
+- **Rationale: no relocation branch.** A trunk with carrier up and no tags is preserved, because that is detection uncertainty. A carrier-down trunk is pruned by FR-41 once routing is healthy. There is nothing to relocate to, because every other tagged trunk is already provisioned on its own evidence.
 
-**`--status`** (FR-35/41, all-trunks): print owned vs detected-now for every owned trunk plus every currently-detected trunk, with per-trunk carrier / configured / detected / ignored / out-of-range / managed-elsewhere (M8) and the static `owned-ignored` / `owned-out-of-range` fields (owned ids outside the current ignore/range policy; they need no detection, so they print even when detection prerequisites are unavailable, and the detected-id fields are unchanged). Run history is a `journalctl -t dynavlan` hint (no persisted last-run record; deferred). **M8:** the detection pass is gated on `check_detect_deps` - a missing tool prints `detected trunks: unavailable` and makes `do_status` return non-zero, instead of a false `detected: [none]` exit 0 (a suppressed missing-tool failure was indistinguishable from a quiet wire). The static report (owned/trunks/carrier/config) still prints regardless, since it needs none of those tools.
+### --rescan (FR-21, FR-41)
 
-**`--reconfigure`**: render `dynavlan.timer` drop-in from `RESCAN_MINUTES`, `daemon-reload`.
+Flow: dev/SKELETON.md, "--rescan (timer)". Rescan adds candidate VLANs on every detected trunk; its only removals are carrier-down prunes.
 
-## 7. Apply/rollback state machine (the safety-critical chain)
+- **Rationale: carrier is checked on every owned iface.** A carrier-down owned trunk reports zero tags, so it is absent from `DETECTED_TRUNKS`.
+- **Rationale: the fast path.** The settle sleep runs only when an owned trunk is down and `have_routing` is true. An all-up box pays nothing extra. A down trunk with no healthy routing only logs a preserve warning.
+- **Rationale: `have_routing` is checked twice.** The first check decides whether to sleep at all. The second check, after the settle, decides whether to remove. Without it, an uplink lost during the settle would let a removal through. An example is a switch reboot that takes both ports. The empty pre-apply snapshot would make the health check pass, and the removal would be accepted on a box with no routing.
 
-Runs under the flock (§ FR-30). Pseudocode with every failure branch:
+### --reapply (FR-39)
 
-```
-apply_change(target_set):
-  snap = snapshot_default_route()                 # may be empty
-  if not backend_validate_candidate(target_set):  # FR-17: ISOLATED scratch root (staged /lib+/etc+/run YAML, netplan generate --root-dir);
-     log err (distinguish our-YAML vs base-file); return NO_CHANGE   # live file never touched, live /run not regenerated
-  if stop_requested: return NO_CHANGE             # D2: a stop during validation leaves the live file untouched
-  if not backup_current(): return NO_CHANGE
-  if not backend_generate_config(target_set):     # LIVE atomic temp+fsync+rename (FR-16); netplan try's backup then sees the PRIOR runtime files
-     restore_prior(); return NO_CHANGE
+Flow: dev/SKELETON.md, "--reapply (FR-39)". `do_reapply` regenerates the owned set with the running build and applies only if `config_body_differs` reports a changed body.
 
-  accepted = backend_apply_with_revert(health_check_fn = -> health_check(snap))   # FR-18
-     # netplan impl: netplan try --timeout N + fifo drive (§9);
-     # health_check runs inside the try window; N > max_check + margin; wall-clock guard
+- **Rationale: no detection.** `--reapply` pins its trunks to `distinct_ifaces` of the owned tokens. A detection pass could silently change which trunks are in scope.
+- **Rationale: a blocking lock.** `--boot` and `--rescan` run again next cycle, so a skipped run is harmless there. `--reapply` is an operator command, so it waits for the run lock instead of skipping.
 
-  if not accepted:                                # REVERT path (FR-27, H-3)
-     log err apply-rollback
-     restore_prior()                              # converge disk to the prior file
-     return NO_CHANGE                             # NO deletes, NO lease-settle, NO restarts
+### --dry-run (FR-34, FR-41)
 
-  # ACCEPTED path only:
-  prune_backups()
-  for vlan in removals:                           # FR-24: ip link delete ONLY here, after accept
-     backend_remove_vlan(vlan) or record_pending_delete(vlan)  # M5: failed delete -> retry next run
-  wait_leases(additions)                          # bounded, non-fatal (FR-27)
-  restart_targets()                               # snaps then services (FR-27/28)
-  log notice (summary)
-```
+Flow: dev/SKELETON.md, "--dry-run". Dry-run runs the boot candidate math in one pass and validates, but never applies.
 
-Every failure path lands on "no net change, uplink intact, logged." A death anywhere releases the flock (kernel, fd-held) and `netplan try` reverts (timer). See §9 for the accept/revert primitive.
+- **Validation tree.** Dry-run stages a copy of the real netplan tree with `backend_stage_netplan_tree`, the same helper that `apply_change` uses. It overlays the candidate config on the copy, and `backend_validate` runs `netplan generate` there. So validation sees the base files too.
+  Rationale: dry-run then surfaces a base-file freeze (FR-17, risk R-5) instead of hiding it.
+- **Carrier-down preview.** Dry-run takes one advisory carrier sample per trunk, with no debounce, because nothing applies. When routing is unhealthy, it prints a note that a carrier-down teardown is suppressed.
+- **Lock interaction (review round 4).** Dry-run tries the run lock (FR-30) without blocking. If the lock is free, dry-run holds it for the preview. A timer rescan that lands during the preview then skips and retries next cycle. If the lock is held, dry-run does not block the operator. It warns that the preview may show a mid-change state, and it continues read-only.
 
-FR-41 (carrier-down removal, §11b) adds one PRE-condition in front of this chain, never inside it: `have_routing()` gates whether a carrier-down trunk's VLANs are even proposed for removal (`all_removals`) before `apply_change` is called at all. The chain itself is unchanged. Do NOT, however, read the health-check POST-condition as a backstop for this particular pre-condition: it reverts a removal that BREAKS routing, but the case `have_routing` guards is one where routing is ALREADY broken before the apply. There the pre-apply snapshot is empty, and an empty snapshot is a deliberate unconditional PASS (AC-12, "never revert on an independently-missing uplink"), so the health check passes such a removal straight through. The two layers cover adjacent cases, not the same case twice; `have_routing` is load-bearing on its own, which is why it is evaluated immediately before the removal set is built rather than once at the top of the mode.
+### --teardown (FR-42, Group 6, D7)
 
-`restore_prior` (disk convergence on any failure/revert path) checks its copy-back and logs `err` on failure naming the surviving backup path (round-4): a failed restore means disk holds the reverted config while live state is the prior one - the next run's owned-set would be wrong - and being loud with the manual-recovery pointer is the only safe remedy at that point.
+Flow: dev/SKELETON.md, "--teardown (Group 6, D7)". Teardown is an attended removal of owned network state.
+
+- **Decision: reuse `apply_change` with an empty target.** A shell recipe would duplicate the backup, restore, health and pending-record logic. An adversarial review found concrete defects in such a recipe.
+- **Packaging side.** On `prerm remove`, the package quiesces: it verifies the timer stop and waits for the run lock. Then it disables the timer and the boot service, and verifies that. On `postrm purge`, the package removes the conffile, the journald drop-in, and `interval.conf`. It removes the timer drop-in directory only if the directory is empty.
+
+### --status (FR-35, FR-41, M8)
+
+Flow: dev/SKELETON.md, "--status". Status prints one row per owned or detected trunk.
+
+- **Rationale: detection is gated on `check_detect_deps` (M8).** Without the gate, a suppressed missing-tool failure would print `detected trunks: [none]` and exit 0. That looks exactly like a quiet wire. With the gate, status prints `detected trunks: unavailable` and returns non-zero.
+- **Static fields need no tools.** The owned set, trunks, carrier and config still print when detection is unavailable. So do the `owned-ignored` and `owned-out-of-range` fields. The detected-id fields do not change.
+- **Decision: no persisted last-run record.** Status prints a `journalctl -t dynavlan` hint for run history. A last-run record is deferred.
+
+### --reconfigure
+
+`--reconfigure` renders the `dynavlan.timer` drop-in from `RESCAN_MINUTES`, then runs `systemctl daemon-reload`. For the drop-in's trigger rules, see dev/SKELETON.md, "The timer drop-in restates every monotonic trigger (FR-21a)".
+
+## 7. Apply and revert state machine
+
+This chain runs under the run lock (FR-30). dev/SKELETON.md, "Apply and revert state machine", owns the sequence and every failure branch.
+
+In outline, `apply_change` does these steps:
+1. Snapshot the default route.
+2. Run the up-front guards: the default-route VLAN guard (C1) and, in routed mode, the metric conflict check.
+3. Validate the candidate config in an isolated scratch root (FR-17).
+4. Back up the owned file, then write the candidate config live and atomically (FR-16).
+5. Apply with `netplan try` and accept or revert (FR-18, §9).
+6. On an accept only: prune backups, delete removed VLAN links (FR-24), wait for leases, and restart targets (FR-27, FR-28).
+7. On any other outcome: converge the disk back to the prior file, with no deletes and no restarts.
+
+Every failure path ends with no net change, a reachable uplink, and a log entry (dev/SKELETON.md, "Never strand the box"). If the process dies anywhere, the kernel releases the run lock, because a file descriptor holds it. `netplan try` then reverts on its own timer.
+
+**Rationale: `have_routing` sits in front of the chain, not inside it.** FR-41 adds one pre-condition before `apply_change` is called. `have_routing` decides whether a carrier-down trunk's VLANs are proposed for removal at all. The chain itself does not change.
+
+The post-apply health check is not a backstop for this pre-condition. The health check reverts a removal that breaks routing. `have_routing` guards the case where routing is already broken before the apply. There the pre-apply snapshot is empty, and an empty snapshot passes unconditionally (AC-12). So the two layers cover adjacent cases, not the same case twice. For this reason the modes evaluate `have_routing` immediately before they build the removal set, not once at the start of the mode.
+
+**Rationale: a failed `restore_prior` is loud (review round 4).** `restore_prior` converges the disk to the prior file on every failure or revert path. It checks its copy-back. On failure it logs `err` and names the surviving backup path. A failed restore leaves the disk holding the reverted config while the live state is the prior one. The next run would then read a wrong owned set. At that point, a loud log with the manual-recovery path is the only safe remedy.
 
 ## 8. Health check (FR-18)
 
-- `snapshot_default_route`: returns only the interface of the lowest-metric IPv4 default route, or empty if none; the metric is queried separately for routed conflict checks, and no gateway is captured.
-- Post-apply PASS iff: a default route exists AND the **lowest-metric** default route's `dev` equals the snapshot `dev`. Comparison is on `dev` (interface) only, never metric or gateway (a metric or gateway change on the same iface is a normal DHCP event and must not revert). If a spurious lower-metric default appears on a *different* iface post-apply, the lowest-metric default has moved off the base uplink → FAIL/revert. **Empty-snapshot rule (AC-12):** if the snapshot was empty there is no uplink to protect, so the evaluator PASSES unconditionally, whatever the post-apply routes are (`health_check_eval`). Isolated VLANs add no default (FR-14), so nothing is missed there; in routed mode metrics are assigned, but with an empty snapshot the check does not constrain any new default. dynavlan never reverts solely because the box independently had no uplink.
-- ARP reachability of the gateway is optional, secondary, **strictly non-fatal**: a silent gateway must not fail the check. Never ICMP.
-- Dependency (isolated-mode rationale): valid because FR-14 gives generated VLANs no default route, so snapshot/post-apply reflect the base uplink alone. Routed mode (FR-37) supports IPv4 VLAN defaults and relies on FR-37's metric rules and the snapshot comparison instead; `accept-ra: false` still excludes IPv6 defaults. A change to the FR-14 isolation keys must revisit this.
+The health check decides whether a change is accepted or reverted. The accept rule that uses it is in dev/SKELETON.md, "The accept primitive", condition 3. This section keeps the design of the check itself.
 
-## 9. `netplan try` accept/revert primitive (netplan `apply_with_revert`)
+- **Snapshot.** `snapshot_default_route` returns only the interface of the lowest-metric IPv4 default route, or empty if there is none. It captures no gateway. `snapshot_default_metric` reads the metric separately, for the routed-mode conflict check.
+- **Pass rule.** The check passes when a default route exists and the snapshot iface holds a default at the lowest post-apply metric. `post_apply_health` samples the routes, and the pure `health_check_eval` decides.
+- **A spurious lower-metric default fails.** Suppose a default with a lower metric appears on a different iface after the apply. Then the lowest-metric default has left the base uplink, so the check fails and the change reverts.
+- **Empty-snapshot rule (AC-12).** An empty snapshot means there is no uplink to protect. The evaluator then passes unconditionally, whatever the post-apply routes are. Isolated VLANs add no default route (FR-14), so nothing is missed. In routed mode the metrics are assigned, but with an empty snapshot the check does not constrain a new default. dynavlan never reverts only because the box independently had no uplink.
 
-The concurrency-sensitive part (IR-2), hardened after the round-2 review found the fifo-ACCEPT race. TIMING MODEL: `netplan try --timeout N` APPLIES the config first and only then reads stdin; its revert timer starts after the apply. A newline written early sits in the pipe buffer and is consumed unconditionally post-apply - accepting a change the health check never saw applied. The primitive therefore runs a poll loop:
+**Decision: compare the interface only.** The check never compares the metric or the gateway.
+Rationale: a metric or gateway change on the same iface is a normal DHCP event. Such a change must not cause a revert.
 
-- Start `netplan try` with stdin from a fifo we hold open for writing (the write-open unblocks its read-open).
-- Poll every `POLL_INTERVAL` seconds, bounded by an independent wall-clock guard (`TRY_TIMEOUT * 3`), gating the ACCEPT on all of:
-  1. **Apply evidence + settle floor**: the probe interface (first added VLAN's `<iface>.<id>`) exists - proof the apply has BEGUN (netdev creation is async after the networkd restart; it does not prove completion), which is why health sampling additionally waits for the `APPLY_FALLBACK_SETTLE` floor. No-addition changes (removal-only, `--reapply`) have no probe and NO in-kernel signal at all (netplan try does not delete removed netdevs, and a rerender changes no kernel state), so they anchor at t=0 and use the LARGER `APPLY_NOEVIDENCE_SETTLE` floor (`apply_settle_floor`), sized so the first health sample lands post-apply instead of on pre-apply routing (C2, 2026-08-04). That floor is bounded above by the confirmation window (round 0) so a no-addition change can still accept; there is no positive completion signal for these changes by design (prompt-parsing was rejected as version-fragile). netplan try's exit is logged on both paths for audit, but cannot un-accept.
-  0. **Confirmation-window bound (round 3)**: accepting is forbidden once `waited - seen_at >= TRY_TIMEOUT - 2*POLL_INTERVAL` (seen_at = first apply evidence). netplan try's revert timer starts at its apply completion, at or before seen_at; past the bound a still-alive try may be mid-REVERT, the revert restores routing (health PASSes!), and a buffered newline would false-ACCEPT a rolled-back change. Past-bound = FAIL path.
-  2. **Liveness**: `netplan try` still alive, re-checked at the accept instant. Dead try = reverted or failed = never accept (a false accept would run FR-24 deletes + restarts for a change never applied - e.g. "another netplan process is running" exits early with routing untouched and health trivially PASSing).
-  3. **Health**: `HEALTH_CONSEC` consecutive PASS samples.
-- PASS(all) → write `\n`, close, reap. FAIL → **write nothing and keep the fifo write-end OPEN until `netplan try` exits**, so revert rides netplan's own timeout path. Stdin EOF before confirmation is also hardware-validated (P2, 2026-08-06: writer killed mid-apply, revert ~4.3s) and is what a stop request deliberately uses (D2). Bounded wait, then log-and-proceed if wedged (flock releases on our exit).
-- The accept-write tolerates `netplan try` having already exited (`SIGPIPE`/`EPIPE` ignored).
-- **Service stop (D2)**: under `KillMode=mixed` + `TimeoutStopSec=60`, a TERM before ACCEPT sets a flag and closes the unaccepted writer; the run never confirms, waits (bounded by `TRY_TIMEOUT + STOP_CHILD_MARGIN`) for `netplan try` to revert on EOF, restores the prior owned file and exits 1. After ACCEPT: removals run, lease wait/restart/FR-40 are skipped. See `dev/SKELETON.md` (accept primitive).
-- `N` (`TRY_TIMEOUT`) is set explicitly, never left to netplan's 120s default.
+**Decision: gateway reachability is optional and non-fatal.** dynavlan does not probe the gateway today. If a probe is added, it must use ARP and must never fail the check by itself. Never use ICMP.
+Rationale: sites often filter ICMP, which would cause false reverts.
+
+**Dependency on isolation.** In isolated mode the check is valid because FR-14 gives generated VLANs no default route. So the snapshot and the post-apply sample reflect the base uplink alone. Routed mode (FR-37) allows IPv4 VLAN defaults. It relies on the FR-37 metric rules and the snapshot comparison instead. `accept-ra: false` still excludes IPv6 defaults (dev/SKELETON.md, "Isolation covers each channel separately (FR-14a)").
+
+**Warning:** before you change the FR-14 isolation keys, revisit this check.
+
+## 9. The netplan try accept primitive
+
+This is the netplan implementation of `apply_with_revert` (`backend_apply_with_revert`). It is the concurrency-sensitive part of the design (IR-2). dev/SKELETON.md owns its behavior in three places:
+- "The accept primitive (netplan try and a fifo)": the timing model and the four accept conditions;
+- "Stop requests during an apply (D2)": the stop path under `KillMode=mixed`;
+- "Fifo behavior on a fail": the fail path and the wall-clock guard.
+
+**Mechanism.**
+- dynavlan starts `netplan try` with stdin from a fifo. It holds the fifo open for writing; that write-open unblocks the read-open by netplan.
+- The accept loop polls every `POLL_INTERVAL` seconds. An independent wall-clock guard of `3 * TRY_TIMEOUT` bounds the loop.
+- When all four accept conditions hold, the loop writes the newline, closes the fifo, and reaps the child.
+- On a fail, the loop writes nothing. It keeps the write end open until `netplan try` exits, so the revert follows netplan's own timeout path.
+- A bounded wait follows a fail. If the child is wedged, dynavlan logs and proceeds. The run lock releases when dynavlan exits.
+- The accept write tolerates a `netplan try` that has already exited. The loop ignores `SIGPIPE`, so the write fails with `EPIPE` instead of killing the run.
+- `TRY_TIMEOUT` is always passed explicitly. dynavlan never uses the netplan default of 120 seconds. The window must exceed the longest health check plus a margin.
+
+**Rationale: a poll loop, not an early write (review round 2).** `netplan try` applies first and reads stdin after. A review found that a newline written early waits in the pipe buffer. netplan then consumes it unconditionally, which accepts a change the health check never saw. The poll loop writes the newline only after every check passes.
+
+**Rationale: apply evidence proves a start, not completion.** Netdev creation is asynchronous after the networkd restart. So the probe iface shows only that the apply began. For this reason, health sampling also waits for the `APPLY_FALLBACK_SETTLE` floor.
+
+**Decision: no positive completion signal for a change with no additions (C2, 2026-08-04).** Parsing the `netplan try` prompt was rejected as fragile across netplan versions. Such a change uses the larger `APPLY_NOEVIDENCE_SETTLE` floor instead (`apply_settle_floor`). The confirmation window bounds that floor from above (review round 0), so the change can still accept. dynavlan logs the exit of `netplan try` on both paths for audit, but the log cannot undo an accept.
+
+**Rationale: the confirmation-window bound (review round 3).** The revert timer of `netplan try` starts when its apply completes. That is at or before the first apply evidence (`seen_at`). Past the bound, a live `try` may be reverting. The revert restores routing, so health passes, and a buffered newline would accept a rolled-back change. So past the bound the loop takes the fail path.
+
+**Rationale: the liveness check.** A false accept would run the FR-24 deletes and the restarts for a change that was never applied. For example, `netplan try` can exit early with "another netplan process is running". Routing is then untouched, so health passes trivially.
+
+**Evidence: stdin EOF reverts (hardware check P2, 2026-08-06).** On the test box, a writer killed during an apply caused a revert in about 4.3 seconds. A stop request uses this path on purpose (D2).
 
 ## 10. Data representation
 
-- VLAN sets: space-separated sorted `iface.id` TOKEN lists in shell vars downstream of detection (never bare VLAN ids - two trunks can share an id, so the token is the only collision-free key); per-trunk bare-id lists only inside the per-trunk loop (`compute_candidates`/`boot_removals`), tagged to tokens immediately after. Set ops via `comm`/`grep -F` or the pure token helpers (`tag_tokens`/`untag_tokens`/`tokens_for_iface`/`distinct_ifaces`).
-- Known-set (`backend_owned_vlans`): parsed from `90-dynavlan.yaml` stanza headers as `iface.id` tokens (`netplan get network.vlans` is authoritative for IDs, but the token comes from our own file since that is what disambiguates a shared id across trunks).
-- `VLAN_IGNORE`: parsed once into an associative-array set for O(1) membership (bare ids; it filters within a trunk's own candidate math, before tagging).
-- Generated VLAN stanza per token (FR-14): `<iface>.<id>` with `dhcp4: true` + `use-routes/use-dns/use-ntp/use-domains: false` + `accept-ra: false` (FR-14a). The four `use-*` keys sit under `dhcp4-overrides` and bind DHCPv4 alone; IPv6 RA is a separate unsolicited channel networkd accepts by default on a non-router link, and an RA-installed default route would be invisible to the IPv4-only health check. `accept-ra: false` is emitted in routed mode too, since FR-37's metric guard only reasons about metrics dynavlan assigns.
-- Routed mode (FR-37, `VLAN_ROUTES=true`, default off): the stanza becomes `use-routes: true` + `route-metric: <assigned>`; DNS/NTP/domains stay declined. The "token:metric" map is computed by the pure `plan_route_metrics` (the single choke point, so boot/rescan/dry-run - and `--reapply` - all agree; every caller MUST use it rather than composing `map_filter`/`assign_route_metrics` itself): kept tokens keep their metric read back from our own YAML (`backend_owned_metrics` - the owned file doubles as the assignment store, no extra state file); the tokens given a NEW metric are the target tokens lacking one, next-free ascending in lexical full-`iface.id` token order within the assignment batch across the whole box (one shared metric sequence over every trunk, not one per trunk). `VLAN_ROUTE_METRIC_MODE`/`id` mode was dropped in the all-trunks redesign - lexical full-token order is the only mode, since a stateless START+id scheme has no natural per-trunk meaning once ids are no longer globally unique. Assigning for `additions` instead of "target tokens lacking a metric" was a defect (fixed 2026-07-25): on an isolated -> routed migration every owned token lacks a metric while additions is empty or partial, so generation refused permanently. Before any disk change, `metric_conflict` refuses loudly if an assigned metric would match or beat the uplink default's metric (that VLAN's default would win, guaranteeing an FR-18 health-FAIL revert loop - refuse up front instead of revert-looping). Empty pre-apply snapshot with routes on: a VLAN default may become the uplink; documented as intended failover (PRD FR-37). The flip side is C1: once a VLAN IS the box's default egress, removing it would strand the box (the post-ACCEPT `ip link delete` runs after `netplan try` committed, and health PASSed during the try because the VLAN was still up - unrevertable). So `apply_change` refuses the whole reconcile before any disk change when `default_iface_in_removals` holds (`snapshot_default_route` is an exact token in `removals`), preserving the active default VLAN and changing nothing until the operator moves the default. No-op at `VLAN_ROUTES=false` (the default is the base uplink, never a token). Refuse-whole, consistent with the metric-conflict guard above; dry-run previews the refusal.
+- **Token sets.** Every set after detection is a space-separated, sorted token list in a shell variable (dev/SKELETON.md, "Token representation"). Bare-id lists exist only inside the per-trunk loop (`compute_candidates`, `boot_removals`), which tags them to tokens at once. Set operations use `set_minus`, `set_union` and `emit_tokens`, or the token helpers.
+  Rationale: two trunks can share a VLAN id, so the token is the only key that cannot collide.
+- **Known set.** `backend_owned_vlans` parses the stanza headers of the owned file as tokens. `netplan get network.vlans` is authoritative for ids. But the token comes from the owned file, because the file is what tells apart a shared id on two trunks.
+- **`VLAN_IGNORE`.** `load_config` parses it once with `parse_vlan_ignore` into `IGNORE_SET`, a sorted set of bare ids. It filters inside a trunk's own candidate math, before tagging.
+- **Generated stanza (FR-14).** Each token gets one stanza, named `<iface>.<id>`. It has `dhcp4: true`, the four `use-*` keys set to `false` under `dhcp4-overrides`, and `accept-ra: false` (FR-14a). The reason for `accept-ra: false` is in dev/SKELETON.md, "Isolation covers each channel separately (FR-14a)".
+  Rationale for `accept-ra: false` in routed mode too: the FR-37 metric guard reasons only about metrics that dynavlan assigns.
 
-## 11. systemd units & install layout
+### Routed mode (FR-37)
 
-- `/usr/local/sbin/dynavlan` (0755), the script.
-- `/etc/dynavlan.conf` (commented defaults).
-- `/etc/netplan/90-dynavlan.yaml` (0600, generated).
-- `dynavlan.service`: `Type=oneshot`, `After=systemd-networkd.service`, NOT `Wants/After=network-online.target`, `ExecStart=/usr/local/sbin/dynavlan --boot`, `WantedBy=multi-user.target`, `KillMode=mixed`, `TimeoutStopSec=60` (D2), `TimeoutStartSec=600` (boot can take CARRIER_WAIT + 2*SNIFF + BOOT_SETTLE + lease settle).
-- `dynavlan-rescan.service`: `Type=oneshot`, `ExecStart=/usr/local/sbin/dynavlan --rescan`, no `[Install]` (activated only by the timer). SEPARATE from dynavlan.service because a `.timer` activates a service with a fixed `ExecStart` mode, and boot (full reconcile with detection-diff and carrier-down removals) vs rescan (additions plus FR-41 carrier-down pruning) are different modes. This is one more unit than the original "two units" wording.
-- `dynavlan.timer`: `OnBootSec`/`OnActiveSec`/`OnUnitActiveSec` (monotonic), `Unit=dynavlan-rescan.service`, `WantedBy=timers.target`; interval via `.d/interval.conf` from `RESCAN_MINUTES` (rendered by `--reconfigure`). The drop-in resets the monotonic list and emits only `OnActiveSec` (first fire) and `OnUnitActiveSec` (interval), so it intentionally replaces the base `OnBootSec` with `OnActiveSec`.
-- Persistent journald guaranteed at install (`/var/log/journal` + `Storage=persistent` drop-in). dynavlan logs to the journal via stderr (identifier `dynavlan`); the optional `/var/log/dynavlan.log` file branch was not built - the install guarantees the journald branch instead (FR-31 requires one branch, not both).
-- `install.sh`: require root; install script (0755) + config (0644, never clobber existing) + all three units; ensure `tcpdump` and `lldpd` present; write the journald persistence drop-in; `--reconfigure`; `enable dynavlan.service` + `enable dynavlan.timer` (both armed for NEXT boot - deliberately NOT `--now`: a monotonic timer whose `OnBootSec` is already past fires immediately, which would run a rescan apply before the operator's `--dry-run` preview). Install never triggers any network change; first apply is the operator's `--boot` or the next reboot (which also starts the timer).
-- Known limitation (FR-11): if an external netplan file reuses dynavlan's exact stanza key (`<iface>.<id>`), `netplan get` merges the two entries into one and the overlap warning cannot fire (detecting it would require reading base files by name, which crosses the never-read-base-config line). Accepted; different-key/same-id overlaps are detected and warned.
+With `VLAN_ROUTES=true` (default off), the stanza sets `use-routes: true` and `route-metric: <assigned>`. DNS, NTP and domains stay declined. The assignment rules are in dev/SKELETON.md, "Metric assignment".
 
-## 11a. Restart-on-new-subnet (FR-40)
+- `plan_route_metrics` is the single decision point for the token-to-metric map. Boot, rescan, dry-run and `--reapply` all call it. No caller composes `map_filter` and `assign_route_metrics` itself (tests/unit.sh §1g).
+- The owned file doubles as the metric store (`backend_owned_metrics`), so there is no extra state file.
+- All trunks share one metric sequence, not one sequence per trunk.
+- **Conflict guard.** Before any disk change, `metric_conflict` refuses if an assigned metric would equal or beat the uplink default's metric.
+  Rationale: that VLAN's default would win, and every apply would fail health and revert. A loud refusal up front beats a silent revert loop.
+- **Empty snapshot with routes on.** A VLAN default may become the uplink. The PRD documents this as intended failover (FR-37).
+- **Default-route VLAN guard (C1).** Once a VLAN is the box's default egress, removing it would strand the box. The rule is in dev/SKELETON.md, "Never remove the default-route interface (C1)". The guard refuses the whole reconcile, consistent with the metric-conflict guard. It does nothing when `VLAN_ROUTES=false`.
 
-FR-27's restart trigger fires only on a tagged-VLAN change, so two real cases are missed: an access port or native-only trunk that gets a lease after boot (dynavlan detects no *tagged* VLAN on it, so nothing changes), and the monitoring agent starting before base-interface DHCP completes (FR-29 deliberately does not block boot on `network-online.target`). Both are really the same problem: the agent cares about IPv4 subnets it can scan, not about VLAN tags.
+**Decision: lexical full-token order is the only ordering mode.** The all-trunks redesign dropped `VLAN_ROUTE_METRIC_MODE` and its `id` mode.
+Rationale: a stateless `START + id` scheme has no natural per-trunk meaning once ids are not unique across the box.
 
-**The seen-set.** `maybe_restart_on_new_subnet` samples `current_subnets` - sorted `iface:network/prefix` tokens from every global-scope IPv4 address on the box (link-local and loopback excluded) - and compares against a stored seen-set at `SEEN_FILE` (`/run/dynavlan/seen`). The token is keyed on the network (via `ipv4_network`), never the host address, so a same-pool DHCP renewal produces an identical token and does not restart. The seen-set normally only grows (`seen ∪ current`, via `set_union`), so a link flap back onto an already-seen subnet does not re-trigger. The one exception is M6: if NO restart target restarted this run (`RESTART_NONE_SUCCEEDED_THIS_RUN`, a total failure), the new tokens are held back (`(seen ∪ current) − new`) so the next run sees them as new again and retries; "seen" must never claim a subnet no agent was restarted to pick up. L10 applies the same rule when NO restart targets are configured: `restart_targets` does not set `RESTARTED_THIS_RUN`, and the subnet pass leaves the new tokens unseen, so a target configured later gets one catch-up restart (dry-run/status report `no restart targets configured`). **Total-failure only, not any failure** (a subnet cannot be mapped to a specific target): a partial success consumes the event, because blocking on any failure would let one permanently-broken target re-restart the working agents on every `--boot`/`--rescan` forever (a restart storm at the timer cadence, actively disrupting the healthy monitoring agents), while the genuine bug - a transient TOTAL failure (snapd/systemd briefly busy) - is still retried. In the common single-target config the two rules coincide. Ordering throughout uses `emit_tokens` (lexical `sort -u`), the string-token counterpart of `emit_set`, never `emit_set` (numeric, bare-VLAN-id only).
+**Decision (2026-07-25): assign metrics to target tokens that lack one, not to additions.** Assigning for additions was a defect.
+Rationale: on an isolated-to-routed migration, every owned token lacks a metric, while the additions are empty or partial. Generation then refused permanently.
 
-**Why `/run`, not the owned YAML.** Two independent reasons, not one: (1) lifetime - `/run` is tmpfs, wiped on reboot, which is exactly the seen-set's required semantics (on reboot the agent relaunches and must re-enumerate, so the baseline has to reset to empty); the owned YAML persists across reboots, so storing `seen` there would leave it populated after reboot and defeat the boot-race fix. (2) keeping the safety-critical file off this path - the owned YAML is written only inside `apply_change`'s generate → validate → `netplan try` → accept/rollback chain (FR-16/17/18), and `seen` updates as often as every rescan; routing that traffic through the one file that must never end up partially written on a headless box buys nothing and adds risk for free.
+## 11. systemd units and install layout
 
-**Empty-seen-at-boot.** There is no boot-specific branch. `read_seen` returns empty when `SEEN_FILE` is absent (first run of an uptime), so on boot `current − seen == current`: if any real subnet is present, the growth-check fires and restarts once after settle, whether the agent started before or after DHCP. The unified rule (`new = current − seen`; if non-empty, restart once; `seen = seen ∪ current`) runs identically on every boot and rescan.
+**Installed files.**
+- `/usr/local/sbin/dynavlan` (0755): the script.
+- `/etc/dynavlan.conf` (0644): the config, with commented defaults.
+- `/etc/netplan/90-dynavlan.yaml` (0600): the owned file, generated.
 
-**Dedup against the VLAN restart.** `apply_change` is untouched: its own `wait_leases → restart_targets` on ACCEPT still fires on every VLAN change, in every mode. `restart_targets` sets a per-run `RESTARTED_THIS_RUN` flag whenever it runs (whether called from `apply_change` or from the growth-check itself), so at most one restart happens per run - a VLAN-driven restart suppresses a redundant subnet-driven one, and vice versa.
+**`dynavlan.service`** runs `/usr/local/sbin/dynavlan --boot`.
+- It sets `Type=oneshot`, `After=systemd-networkd.service`, and `WantedBy=multi-user.target`.
+- It does not use `Wants=network-online.target` or `After=network-online.target`. Boot must not block on network-online (FR-29).
+- It sets `KillMode=mixed` and `TimeoutStopSec=60` (D2; dev/SKELETON.md, "Stop requests during an apply (D2)").
+- It sets `TimeoutStartSec=600`. Rationale: a boot can take `CARRIER_WAIT + 2*SNIFF + BOOT_SETTLE` plus the lease settle.
 
-**Hook point.** `main` calls `maybe_restart_on_new_subnet` once, after `do_boot`/`do_rescan` returns, on the `--boot | --rescan` dispatch arm - unconditionally, regardless of the mode's own return code, so it also runs after a health-FAILed/reverted apply or a `VLAN_LIMIT`-refused apply (subnet appearance is independent of VLAN provisioning outcome). It is NOT called from `--dry-run`, `--status`, or `--reapply`: those report the would-restart delta (`current_subnets − read_seen`) for visibility but never call `restart_targets` and never call `write_seen`, keeping them side-effect-free per FR-34/FR-35.
+**`dynavlan-rescan.service`** runs `/usr/local/sbin/dynavlan --rescan`. It sets `Type=oneshot` and has no `[Install]` section, so only the timer activates it.
 
-## 11b. Carrier-down VLAN removal (FR-41)
+**Decision: a separate service for rescan.** A timer activates a service with a fixed `ExecStart` mode. Boot and rescan are different modes. Boot is a full reconcile with detection-diff and carrier-down removals. Rescan adds VLANs and prunes carrier-down trunks (FR-41).
 
-A tagless-but-carrier-up trunk is preserved, because absence of evidence (a sniff miss) is not evidence of absence. That reasoning does not hold for carrier: `/sys/class/net/<iface>/carrier` is an authoritative kernel signal, not a passive/lossy one, and a carrier-down port categorically cannot pass frames - there is no "genuinely down but the switch still has it configured" case to protect against, unlike a silent-but-live VLAN.
+**`dynavlan.timer`** activates `dynavlan-rescan.service`.
+- It sets the monotonic triggers `OnBootSec`, `OnActiveSec` and `OnUnitActiveSec`, and `WantedBy=timers.target`.
+- `--reconfigure` renders the interval from `RESCAN_MINUTES` into `.d/interval.conf`.
+- The drop-in resets the monotonic list and emits only `OnActiveSec` (first fire) and `OnUnitActiveSec` (the interval). So it replaces the base `OnBootSec` with `OnActiveSec` on purpose (dev/SKELETON.md, FR-21a).
 
-**The rule.** When an OWNED trunk's link is carrier-down across a two-sample debounce (reusing the boot pass-2 settle where one already runs - note that reuse is what makes the interval `BOOT_SETTLE + CARRIER_WAIT + SNIFF` ≈ 110s on a `RESET_ON_BOOT=true` boot, since the pass-2 re-detect sits between the two carrier samples, versus a plain `BOOT_SETTLE_SECONDS` on rescan and on `RESET_ON_BOOT=false`; longer is preserve-biased, so this is documented rather than "fixed" - sampling carrier before the re-detect would leave the two signals reflecting different instants) AND the box still has a healthy default route (`have_routing`), remove ALL owned VLANs on that trunk - a full teardown of the trunk's set, not a per-VLAN detection diff, since a dead port kills every VLAN riding it equally.
+**Logging.** The install guarantees persistent journald: `/var/log/journal` plus a `Storage=persistent` drop-in. dynavlan logs to stderr, and the journal stores it under the identifier `dynavlan`.
 
-**Two pure helpers carry the decision**, both side-effect-free and unit-tested:
-- `carrier_removals(owned_on_trunk, c1, c2)` - the debounce: returns the full owned set iff both samples are `down`, else empty (mirrors `boot_removals`'s shape; tests 1r).
-- `have_routing()` - the routing pre-condition: composes existing `snapshot_default_route` + `has_carrier` (tests 1s). False means either no default route exists, or the only default egresses a now carrier-down iface (the dead trunk doubles as the box's own uplink, no redundancy) - in both cases, preserve. Note this is NOT redundant with the post-apply health check: that check reverts a removal which breaks routing, whereas this guards the case where routing is already gone, and there the empty route snapshot makes the health check an unconditional PASS. Both `do_boot` and `do_rescan` therefore evaluate it immediately before building the removal set, after any settle sleep - a pre-settle-only check would let an uplink lost during the settle through.
+**Decision: the journald branch only.** The optional `/var/log/dynavlan.log` file branch was not built. FR-31 requires one branch, not both.
 
-**Fire points and their settle mechanics differ, deliberately:**
-- `do_boot`: piggybacks on the existing `RESET_ON_BOOT=true` pass-2 settle when one is already running (dual-purpose: same sleep serves the detection-diff AND the carrier resample). When `RESET_ON_BOOT=false`, there is no free pass-2 to reuse, so boot runs its OWN minimal settle+resample, but only if some owned trunk was already down at pass 1 (`need_pass2`, §6) - an all-up `RESET_ON_BOOT=false` boot stays single-pass, unchanged.
-- `do_rescan`: gains its first removal path ever. Fast-path-preserved by construction: the settle sleep fires only when at least one OWNED trunk (not just `DETECTED_TRUNKS`) is actually carrier-down, so steady-state rescans (all trunks up) incur zero added latency.
+**`install.sh`.**
+- It requires root.
+- It installs the script (0755), the config (0644, never overwriting an existing one), and all three units.
+- It makes sure that `tcpdump` and `lldpd` are present.
+- It writes the journald persistence drop-in and runs `--reconfigure`.
+- It enables `dynavlan.service` and `dynavlan.timer` for the next boot. An upgrade keeps the operator's prior unit posture (dev/SKELETON.md, "Package lifecycle").
+- It never triggers a network change. The first apply is the operator's `--boot` or the next reboot, which also starts the timer.
 
-**Independent of `RESET_ON_BOOT`.** `RESET_ON_BOOT` continues to govern only the sniff-based detection-diff removal (FR-23); `REMOVE_ON_CARRIER_LOSS` (default `true`) is the sole gate for carrier-down removal in both modes, so a `RESET_ON_BOOT=false` box (add-only across boots) still self-heals a dead trunk.
+**Decision: install never enables with `--now`.** A monotonic timer whose `OnBootSec` is already past fires at once. That would run a rescan apply before the operator's `--dry-run` preview.
 
-**Deferred alternative (recorded, not built): a grace-timer debounce.** Instead of the minimal two-in-run-pass check, a persistent tracker in `/run` could record first-seen-carrier-down time per trunk and require continuous down-ness for a configurable grace period (~2 rescan cycles) before pruning. This would avoid remove-then-re-add churn across a brief switch reboot or cable re-patch (tens of seconds to a few minutes), at the cost of an ephemeral `/run` tracker and a new grace config knob, and roughly 10 minutes slower cleanup of a genuine unplug. Rejected for v1: the minimal two-sample debounce accepts a self-healing monitoring-agent restart in the transient case, with no new persistent state; revisit if field data shows real churn from switch maintenance. See `docs/superpowers/specs/2026-07-30-carrier-down-vlan-removal-design.md`.
+**Known limitation (FR-11).** An external netplan file can reuse dynavlan's exact stanza key (`<iface>.<id>`). Then `netplan get` merges the two entries into one, and the overlap warning cannot fire. Detection of this case would mean reading base files by name, which crosses the never-read-base-config line. This limitation is accepted. An overlap with a different key and the same id is detected and warned.
 
-## 12. Portability plan (what to build now vs later)
+## 11a. Restart on a new subnet (FR-40)
 
-**Now (cheap, structural):** the §4 `backend_*` functions; the abstract ownership model (§3); the `apply_with_revert` capability contract. The core still has the direct netplan and platform dependencies listed in §4. (`backend_detect` is deferred with the second backend - not built while netplan is the only one.)
+**Problem.** The FR-27 restart trigger fires only on a tagged-VLAN change. So it misses two real cases:
+1. An access port or a native-only trunk gets a lease after boot. dynavlan detects no tagged VLAN on it, so nothing changes.
+2. The monitoring agent starts before base-interface DHCP completes. FR-29 does not block boot on `network-online.target`, on purpose.
 
-**Later (only when a second backend is real):** NM/networkd/ifupdown implementations; a real `backend_detect`; any backend-selection config. Each future backend's hardest piece is the revert (NM native / networkd-direct hand-rolled).
+Both cases are one problem. The agent cares about IPv4 subnets that it can scan, not about VLAN tags.
 
-**Not planned:** non-systemd init (OpenRC/runit) — systemd assumed for service/timer/journald; revisit only if it comes up.
+The rules are in dev/SKELETON.md, "The new-subnet restart (FR-40)" and "A total restart failure keeps the subnet unseen (M6, L10)".
 
-## 13. Deferred open items (see context/open_questions.md)
+**The seen set.** `maybe_restart_on_new_subnet` samples `current_subnets`: sorted `iface:network/prefix` tokens from every global-scope IPv4 address on the box. Link-local and loopback addresses are excluded. It compares them with the seen set in `SEEN_FILE` (`/run/dynavlan/seen`).
+- The token is keyed on the network (`ipv4_network`), never the host address. So a DHCP renewal in the same pool gives the same token, and nothing restarts.
+- The seen set normally only grows (`seen ∪ current`, through `set_union`). So a link flap back onto a seen subnet does not trigger again.
+- The exception (M6): if no restart target restarted this run, the new tokens are held back (`(seen ∪ current) − new`). The next run then sees them as new and retries.
+- L10 applies the same hold when no restart targets are configured. Dry-run and status report `no restart targets configured`.
+- Ordering uses `emit_tokens` (lexical `sort -u`). Never use `emit_set` here, because it sorts numerically and takes bare VLAN ids only.
 
-- IR-1: exact minimum netplan version (pinned conservatively at 0.106; possible later relaxation).
-- G-4: per-VLAN MAC derivation function (post-1.0; the reserved `PER_VLAN_MAC` key was removed in 0.4.3, would be reintroduced by any implementation).
+**Decision: hold back on total failure only, not on any failure.** A subnet cannot be mapped to one target, so a partial success consumes the event.
+Rationale: if any failure blocked the subnet, one broken target would restart the working agents on every `--boot` and `--rescan`. That is a restart storm at the timer cadence, which disrupts the healthy agents. A transient total failure, such as snapd or systemd briefly busy, is still retried. In the common single-target config the two rules give the same result.
+
+**Decision: the seen set lives in `/run`, not in the owned file.** There are two independent reasons.
+1. Lifetime. `/run` is tmpfs and is wiped on reboot, which is the lifetime the seen set needs. After a reboot the agent relaunches and must enumerate again, so the baseline resets to empty. The owned file persists across reboots. A seen set stored there would stay populated and defeat the boot-race fix.
+2. Safety. Only `apply_change` writes the owned file, inside the chain of generate, validate, `netplan try`, and accept or revert (FR-16, FR-17, FR-18). The seen set can change on every rescan. Sending that traffic through the one file that must never be half-written adds risk and buys nothing.
+
+**No boot-specific branch.** `read_seen` returns empty when `SEEN_FILE` is absent, which is the first run of an uptime. So at boot, `current − seen` equals `current`. If any real subnet is present, the check fires and restarts once after the settle, whether the agent started before or after DHCP. The same rule runs on every boot and rescan: `new = current − seen`; if `new` is non-empty, restart once; then `seen = seen ∪ current`.
+
+**Deduplication with the VLAN restart.** `apply_change` does not change. On an accept, its own `wait_leases` and `restart_targets` still fire on every VLAN change, in every mode. `restart_targets` sets the per-run flag `RESTARTED_THIS_RUN` whenever it runs, from either caller. So at most one restart happens per run.
+
+**Hook point.** `main` calls `maybe_restart_on_new_subnet` once, after `do_boot` or `do_rescan` returns. It runs whatever the mode's return code is, except after a stop request (D2). So it also runs after a reverted apply or a `VLAN_LIMIT` refusal, because a new subnet does not depend on the VLAN outcome.
+
+It is not called from `--dry-run`, `--status` or `--reapply`. `--dry-run` and `--status` report the would-restart delta (`current_subnets − read_seen`). None of the three calls `restart_targets` or `write_seen`.
+Rationale: these modes stay free of side effects (FR-34, FR-35).
+
+## 11b. Carrier-down removal (FR-41)
+
+**Rationale: carrier is authoritative.** A trunk with carrier up and no tags is preserved, because absence of evidence (a sniff miss) is not evidence of absence. That reasoning does not hold for carrier. `/sys/class/net/<iface>/carrier` is an authoritative kernel signal, not a passive, lossy one. A carrier-down port cannot pass frames at all. So there is no case where the port is down but its VLANs are still live, unlike a silent VLAN on a live port.
+
+**The rule.** dev/SKELETON.md, "Carrier-down removes; carrier-up with no tags preserves (FR-41)", owns it. A two-sample carrier-down debounce plus healthy routing removes every owned VLAN on that trunk. This is a full teardown of the trunk's set, not a per-VLAN diff, because a dead port kills every VLAN on it equally.
+
+**Debounce interval.** On a `RESET_ON_BOOT=true` boot, the debounce reuses the pass-2 settle. The pass-2 re-detect sits between the two carrier samples. So the interval is about `BOOT_SETTLE + CARRIER_WAIT + SNIFF`, roughly 110 seconds with the defaults. On rescan, and on a `RESET_ON_BOOT=false` boot, the interval is a plain `BOOT_SETTLE_SECONDS`.
+
+**Decision: keep the longer boot interval.** A longer interval biases toward preserve, so it is documented, not changed.
+Rationale: a carrier sample taken before the re-detect would make the two signals reflect different instants.
+
+**Two helpers carry the decision.** Both are free of side effects and unit-tested.
+- `carrier_removals(owned_on_trunk, c1, c2)` is the debounce. It returns the full owned set only if both samples are `down`, else empty. It mirrors the shape of `boot_removals` (tests/unit.sh §1r).
+- `have_routing()` is the routing pre-condition. It composes `snapshot_default_route`, `has_carrier` and `discover_phys_ifaces` (§1s). It is false when no default route exists, or when the only default leaves through a carrier-down iface. The second case is a dead trunk that is also the box's only uplink. In both cases the trunk is preserved.
+
+**Rationale: the physical-NIC clause in `have_routing`.** `have_routing` also needs at least one physical NIC with carrier. A tun or WireGuard netdev reports `carrier=1` whenever it is up. So without this clause, a tunnel default would make an all-dark box look routable.
+
+**Rejected alternative: test the egress device against a physical-NIC allowlist.** That would wrongly reject a default route that egresses a VLAN. It would also disable FR-41 completely on a box that really routes over a VPN.
+
+**Rationale: `have_routing` is not redundant with the health check.** See §7. Both `do_boot` and `do_rescan` evaluate it immediately before they build the removal set, after any settle. A check made only before the settle would let an uplink lost during the settle through.
+
+**Fire points differ on purpose.**
+- `do_boot` reuses the pass-2 settle when `RESET_ON_BOOT=true` already runs one. The same sleep then serves the detection diff and the carrier resample. When `RESET_ON_BOOT=false`, boot runs its own minimal settle and resample. It does so only if an owned trunk was already down at pass 1 (`need_pass2`). An all-up `RESET_ON_BOOT=false` boot stays single-pass.
+- `do_rescan` has this as its only removal path. The settle sleep fires only when at least one owned trunk is carrier-down, not merely absent from `DETECTED_TRUNKS`. So a steady-state rescan with every trunk up adds no latency.
+
+**Independent of `RESET_ON_BOOT`.** `RESET_ON_BOOT` governs only the sniff-based detection-diff removal (FR-23). `REMOVE_ON_CARRIER_LOSS` (default `true`) is the only gate for carrier-down removal in both modes. So a `RESET_ON_BOOT=false` box, which only adds VLANs across boots, still heals a dead trunk.
+
+**Deferred alternative: a grace-timer debounce (recorded, not built).** A persistent tracker in `/run` could record when each trunk first went carrier-down. It would require the trunk to stay down for a configurable grace period, about two rescan cycles, before a prune. That would avoid remove-then-re-add churn across a brief switch reboot or cable re-patch, which lasts tens of seconds to a few minutes. The cost is an ephemeral `/run` tracker and a new grace config key. Cleanup of a real unplug would also be about 10 minutes slower.
+
+**Decision: grace timer rejected for v1.** The two-sample debounce accepts one self-healing agent restart in the transient case, and it needs no new persistent state. Revisit if field data shows real churn from switch maintenance. Spec: `docs/superpowers/specs/2026-07-30-carrier-down-vlan-removal-design.md`.
+
+## 12. Portability plan
+
+**Build now (cheap, structural):** the `backend_*` functions (§4), the abstract ownership model (§3), and the `apply_with_revert` capability contract. The core still has the direct netplan and platform dependencies that §4 lists. `backend_detect` waits for the second backend.
+
+**Build later, only when a second backend is real:** the NetworkManager, networkd and ifupdown implementations, a real `backend_detect`, and any backend-selection config. The hardest piece of each future backend is the revert: native in NetworkManager, hand-rolled in networkd-direct.
+
+**Not planned:** non-systemd init (OpenRC, runit). dynavlan assumes systemd for the service, the timer and journald. Revisit only if a real need comes up.
+
+## 13. Deferred open items
+
+The live list is in `context/open_questions.md`.
+
+- IR-1: the exact minimum netplan version. It is pinned conservatively at 0.106 (`MIN_NETPLAN`), and it may be relaxed later.
+- G-4: a per-VLAN MAC derivation function, after 1.0. The reserved `PER_VLAN_MAC` key was removed in 0.4.3; an implementation would bring it back.

@@ -39,19 +39,19 @@ A plain bash script (`tests/unit.sh`) with asserts, run manually or in a pre-com
 | {18,21} / 2-1000 / {} / {21} / {21} | {18} (21 in BOTH managed and owned; pins order-independence) |
 | {} / 2-1000 / {} / {} / {} | {} (empty detection; feeds the FR-22 zero-detection guard) |
 
-### 1c. `health_check` evaluator (snapshot vs post-apply, no live apply)
+### 1c. `health_check_eval` evaluator (snapshot vs post-apply, no live apply)
 | Snapshot | Post-apply default route | Expected |
 |----------|--------------------------|----------|
-| (enp1s0, gw, 10) | via enp1s0 | PASS |
-| (enp1s0, gw, 10) | via enp2s0 (different iface) | FAIL → revert |
-| (enp1s0, gw, 10) | none | FAIL → revert |
+| enp1s0 (metric 10) | via enp1s0 | PASS |
+| enp1s0 (metric 10) | via enp2s0 (different iface) | FAIL → revert |
+| enp1s0 (metric 10) | none | FAIL → revert |
 | empty (no default) | none | PASS (empty snapshot, AC-12) |
 | empty (no default) | via enp1s0 (uplink finally leased) | PASS (an empty snapshot passes unconditionally; nothing to protect) |
-| (enp1s0, gw, 10) | via enp1s0, **metric 20** (metric changed) | PASS (FR-18 compares iface only; guards against a false-revert if someone tightens to compare metric) |
+| enp1s0 (metric 10) | via enp1s0, **metric 20** (metric changed) | PASS (FR-18 compares iface only; guards against a false-revert if someone tightens to compare metric) |
 | (enp1s0, gw1, 10) | via enp1s0, **gw2** (gateway changed) | not a unit row: the evaluator receives `iface:metric` tokens only, so a gateway change cannot appear in its input (the gateway is neither stored nor compared). The earlier unit row for this case carried no gateway and was removed in Group 7; the property holds by construction, and `post_apply_health` parsing of real `ip route` rows is pinned by 1au. |
-| (enp1s0, gw, 10) | two defaults: enp1s0 m10 AND enp2s0 **m5** | FAIL → revert (lowest-metric default moved off the snapshot iface; see design §8) |
-| (enp1s0, gw, 10) | two **equal-metric** defaults: enp1s0 m10 AND enp2s0 m10 | PASS in EITHER listing order (P3: order-independent; snapshot iface still holds a default at the min metric) |
-| (enp2s0, gw, 10) | two equal-metric defaults: enp1s0 m10 AND enp2s0 m10 | PASS (the other equal-metric uplink is the snapshot iface) |
+| enp1s0 (metric 10) | two defaults: enp1s0 m10 AND enp2s0 **m5** | FAIL → revert (lowest-metric default moved off the snapshot iface; see design §8) |
+| enp1s0 (metric 10) | two **equal-metric** defaults: enp1s0 m10 AND enp2s0 m10 | PASS in EITHER listing order (P3: order-independent; snapshot iface still holds a default at the min metric) |
+| enp2s0 (metric 10) | two equal-metric defaults: enp1s0 m10 AND enp2s0 m10 | PASS (the other equal-metric uplink is the snapshot iface) |
 
 P3: the equal-metric rows are the order-independence guard - the evaluator is set membership at the minimum metric, not "the first route listed at the min metric", so a route-listing order flip between the pre and post samples (same routing state) cannot spuriously FAIL/revert on a legitimate multi-uplink box. The `m5`-elsewhere row still FAILs: a genuinely lower default elsewhere means the snapshot iface is no longer at the min.
 

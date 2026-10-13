@@ -215,7 +215,7 @@ A non-accepted apply gives no delete advice. After teardown, the owned file defi
 - The real count gate applies (S3). A refusal cancels additions and removals, prints the unchanged owned target, validates nothing, and returns 1.
 - A quiet wire does not cause an early return (L9). The run still previews guarded pending-delete retries and the new-subnet state, and it validates.
 - The pending-delete preview uses the route snapshot taken before detection, as the real drain does. The later snapshot feeds only the default-route guard preview (C1).
-- It generates into a throwaway copy of `/etc/netplan` and validates there. A failed copy of the base tree returns 1 (L8).
+- It stages the netplan tree with `backend_stage_netplan_tree`: `/etc/netplan`, plus `/lib` and `/run` netplan YAML when present. It generates the candidate config there and validates. A failed copy returns 1 (L8).
 - It prints the per-trunk diff with carrier state, a combined total, and the count gate. In routed mode it also prints the metric map and any conflict.
 - It never applies, deletes, restarts, or writes the pending or seen records.
 - Detection still brings NICs administratively up and leaves promiscuous mode on. This is disclosed, not restored.
@@ -264,6 +264,7 @@ apply_change(target, additions, removals)
   stop request? -> nothing applied     # a TERM during validation is honored before any live change
   backup current owned file            # failure = refuse: no safe target to converge back to
   backend_generate_config(target)      # live atomic write: same-dir mktemp 0600, fsync, rename (try reads it)
+                                       # write fails -> restore the prior file, return 1, nothing applied
   backend_apply_with_revert            # the accept primitive below
   accepted:     prune backups -> delete removed VLAN links (only here) -> wait leases -> restart targets
   not accepted: converge disk back to the prior file; no deletes, no restarts
@@ -450,6 +451,7 @@ Why: The delete runs after `netplan try` commits. During the try the VLAN is sti
 - `default_iface_in_removals` compares `snapshot_default_route` against the removal tokens as exact matches.
 - Only routed mode can reach this guard. In isolated mode the default route is always the base uplink, so the guard does nothing.
 - The guard refuses the whole reconcile, not part of it. This matches the metric-conflict and zero-detection guards.
+- Nothing changes until the operator moves the default route off that VLAN.
 - `do_dryrun` previews the refusal.
 
 Enforced by: `default_iface_in_removals`, `apply_change`, `do_dryrun`; `tests/unit.sh` §1aa.
