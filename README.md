@@ -1,72 +1,83 @@
 # dynavlan
 
-A self-configuring VLAN provisioner for headless Linux appliances. Built for monitoring and discovery platforms, but a general dynamic-VLAN tool at its core. dynavlan detects the active tagged VLANs on every trunk a box is plugged into, brings each one up with DHCP (address only, fully route/DNS-isolated by default), and restarts the services you nominate so any agent that enumerates interfaces at startup picks up the new subnets. No SSH, no hand-edited YAML.
+dynavlan finds the tagged VLANs on each trunk port of a headless Linux box and configures them for you. Each VLAN gets a DHCP address. By default, it gets no routes and no DNS. After a change, dynavlan restarts the services that you name, so your monitoring agent sees the new subnets. You do not need SSH or hand-edited YAML.
 
-> **1.0.0.** Its runtime is the hardware-validated `0.4.22` build (`01e9f98`); 1.0.0 changes only the version number, developer tooling and docs. Validated on one reference Protectli/igb appliance with Meraki and UniFi switches. Compatibility promise for 1.x: [COMPATIBILITY.md](COMPATIBILITY.md). Full matrix: [Hardware validation](docs/hardware-validation.md).
+dynavlan was built for monitoring and discovery platforms, but it is a general tool for dynamic VLANs.
+
+> **1.0.0.** Validated on one reference Protectli/igb appliance with Meraki and UniFi switches. Compatibility promise for 1.x: [COMPATIBILITY.md](COMPATIBILITY.md). Full matrix: [Hardware validation](docs/hardware-validation.md).
 
 ## The problem
 
-A box on a trunk port with multiple tagged VLANs only sees the VLANs it has been configured for. On a headless box at a remote site, adding a VLAN means someone SSHing in and editing netplan by hand, per site, every time the switch config changes. Get the YAML wrong and the box loses its uplink with no way back.
+A box on a trunk port sees only the VLANs that it is configured for. To add a VLAN to a headless box at a remote site, someone must connect with SSH and edit the netplan YAML by hand. They must do this at each site, each time the switch configuration changes. If the YAML is wrong, the box can lose its uplink, and nobody can reach it again.
 
-dynavlan removes the human from that loop. It discovers the VLANs from the wire, configures them itself on every trunk the box carries, and every change is validated and auto-reverted if it would break the box's route to the world.
+dynavlan does this work for you. It reads the VLANs from the wire and configures them on each trunk. Before it keeps a change, it checks the box's route to the network. If the change breaks that route, dynavlan reverts it automatically.
 
 ## How it works
 
-1. **Discover** every trunk on the box and its live tagged VLANs from kernel state and the wire (LLDP plus passive sniff; neither interface names, VLAN IDs, the native VLAN, nor which NIC is "the trunk" are hardcoded or selected - a box with two live trunks gets both provisioned). Two trunks sharing the same VLAN id provision as two distinct interfaces, not a collision.
-2. **Isolate**: by default each VLAN comes up DHCP address-only with routes, DNS, NTP, and search domains all declined, so a discovered subnet can never hijack the box's uplink or resolver. An opt-in routed mode (`VLAN_ROUTES=true`) instead accepts DHCP routes per VLAN at deterministic per-VLAN metrics (starting from `VLAN_ROUTE_METRIC_START`, always above the uplink's metric - dynavlan refuses up front if they would collide); DNS/NTP stay declined either way.
-3. **Apply with a safety net**: dynavlan owns exactly one generated netplan file and modifies no other netplan file. Every change across every trunk goes through a single `netplan try` against a pre-apply default-route snapshot and **auto-reverts on a routing-health failure** - the box is never stranded.
-4. **Restart** the services you configure, so the interface-enumerating agent re-enumerates and starts watching the new VLANs.
+1. **Discover.** dynavlan finds each trunk on the box and the tagged VLANs that are live on it. It uses two methods: LLDP and a passive sniff of 802.1Q tags. Nothing is hardcoded: not interface names, VLAN IDs, the native VLAN, or which NIC is the trunk. A box with two live trunks gets VLANs on both. If both trunks carry the same VLAN ID, dynavlan creates two separate interfaces.
+2. **Isolate.** By default, each VLAN gets an address only, with no routes and no DNS. A discovered subnet cannot take over the box's uplink or resolver. See [Isolated by default](#isolated-by-default).
+3. **Apply with a safety net.** dynavlan writes exactly one netplan file and changes no other netplan file. It applies all changes for all trunks in one `netplan try`. Before the apply, it records the box's default route. If the default route is not healthy after the apply, netplan reverts the change, so the box stays reachable.
+4. **Restart.** dynavlan restarts the services that you configure. Your agent then reads the interface list again and starts to monitor the new VLANs.
 
-It runs at boot as a full reconcile (`--boot`: adds *and* removes VLANs to match every trunk), then on a systemd timer as a rescan (`--rescan`, default every 5 min) that brings up VLANs as they appear. A trunk that's carrier-up but shows no tags is preserved either way (a sniff can miss a real, silent VLAN, so absence of evidence there isn't evidence of absence). A trunk whose physical link goes down, though, is pruned - not preserved - once that's confirmed across two samples and the box still has a healthy uplink: a dead port cannot carry any VLAN, so there is nothing to protect. This runs at both boot and on the rescan timer, gated by `REMOVE_ON_CARRIER_LOSS` (default `true`); a brief flap shorter than the confirmation window is preserved, and it never touches anything if the box's own uplink has no redundant route.
+dynavlan runs at two times:
+
+- **At boot** (`--boot`): a full reconcile. It adds VLANs that appear and removes VLANs that are gone, on every trunk.
+- **On a timer** (`--rescan`, every 5 minutes by default): it adds VLANs as they appear.
+
+Two rules control removal, on both runs:
+
+- **A trunk that has link but shows no tags:** dynavlan keeps its VLANs. A sniff can miss a VLAN that is silent, so "no tags seen" does not prove that the VLANs are gone.
+- **A trunk that loses link:** dynavlan removes its VLANs. A trunk with no link cannot carry a VLAN. dynavlan removes them only when two samples confirm the link loss and the box still has a working default route. A short flap between the two samples does not remove anything. `REMOVE_ON_CARRIER_LOSS` (default `true`) controls this rule.
 
 ## Isolated by default
 
-By default every discovered VLAN comes up **address-only**: DHCP assigns an IP so the subnet is present and reachable on its own interface, but the VLAN installs **no default route, no DNS, no NTP, no search domains**, and IPv6 Router Advertisements are declined. This is deliberate, and it is the *opposite* of netplan's own `dhcp4: true` default (which accepts routes) - so if "enable a VLAN" makes you expect a fully routable interface, this is the surprising part, on purpose.
+By default, each VLAN gets a DHCP address and nothing else. It does not install a default route, DNS servers, NTP servers, or search domains. It also ignores IPv6 Router Advertisements. The subnet is present and reachable on its own interface.
 
-dynavlan grew out of monitoring/discovery use: it provisions VLANs so an agent can *see* each subnet, not so the box *routes through* it. Isolation keeps the box's uplink and resolver clean, and it is what the auto-revert safety net depends on - a VLAN that installs no default route cannot hijack the uplink, so the health check can treat "the default route moved" as a failure.
+This default is the opposite of netplan's own `dhcp4: true`, which accepts routes. If you expect "enable a VLAN" to give a fully routed interface, this behavior will surprise you. It is intentional.
 
-Routed mode is a first-class, opt-in alternative (`VLAN_ROUTES=true`) that accepts each VLAN's DHCP default route at deterministic per-VLAN metrics above the uplink's, with DNS/NTP/domains still declined. Setup, `--reapply`, and the metric mechanics live in [Making the VLAN interfaces routable](docs/deployment-guide.md#making-the-vlan-interfaces-routable-opt-in) in the deployment guide.
+dynavlan provisions VLANs so that an agent can *see* each subnet, not so that the box can *route through* it. Isolation keeps the box's uplink and resolver clean. The safety net also depends on it: a VLAN cannot install a default route, so any change to the default route after an apply is a failure.
+
+**Routed mode** is an opt-in alternative (`VLAN_ROUTES=true`). Each VLAN accepts its DHCP default route, at a fixed metric per VLAN. The metrics start at `VLAN_ROUTE_METRIC_START` and are always above the uplink's metric. dynavlan refuses to run if they would collide. DNS, NTP and search domains stay declined. For setup, `--reapply`, and how metrics are assigned, see [Making the VLAN interfaces routable](docs/deployment-guide.md#making-the-vlan-interfaces-routable-opt-in) in the deployment guide.
 
 ## Service-restart integration
 
-Most monitoring and discovery agents (network scanners, SNMP pollers, asset-discovery daemons) read the interface list once at startup and do not notice interfaces added later. After a successful VLAN change, dynavlan restarts the targets you list so the agent re-reads its interfaces and begins monitoring the new subnets. Two config keys, both optional:
+Most monitoring and discovery agents read the interface list once, at startup. Examples are network scanners, SNMP pollers, and asset-discovery daemons. They do not see interfaces that are added later. After a successful VLAN change, dynavlan restarts the targets that you list. The agent then reads its interfaces again and monitors the new subnets.
 
-- `RESTART_SNAPS` - space-separated snap names (`snap restart`)
-- `RESTART_SERVICES` - space-separated systemd units (`systemctl restart`)
+Two config keys set the targets. Both are optional:
 
-A restart that fails is logged and non-fatal; the VLAN change still stands. This is the seam that makes dynavlan useful to a specific agent without knowing anything about it. The reference deployment restarts the Domotz agent snap, but the same hook drives any interface-enumerating tool (LibreNMS, Zabbix, netdisco, a custom collector).
+- `RESTART_SNAPS`: snap names, separated by spaces (`snap restart`)
+- `RESTART_SERVICES`: systemd units, separated by spaces (`systemctl restart`)
 
-dynavlan also restarts those targets when a new IPv4 subnet simply *appears* on any interface - an access port plugged in after boot, or the agent starting before the base interface finishes DHCP - not only on a tagged-VLAN change. Controlled by `RESTART_ON_NEW_SUBNET` (default `true`).
+If a restart fails, dynavlan logs it and continues. The VLAN change stays. With these keys, dynavlan can work with any agent and needs no knowledge of it. The reference deployment restarts the Domotz agent snap. The same keys work for any tool that reads interfaces at startup, for example LibreNMS, Zabbix, netdisco, or a custom collector.
+
+dynavlan also restarts the targets when a new IPv4 subnet appears on any interface, not only after a VLAN change. Two examples: an access port is plugged in after boot, or the agent starts before the base interface gets its DHCP address. `RESTART_ON_NEW_SUBNET` (default `true`) controls this.
 
 ## Requirements
 
-- Ubuntu (or any distro) using **netplan with the systemd-networkd renderer**. Validated on Ubuntu 22.04 LTS Server; other netplan/systemd-networkd systems are expected to work but untested; the NetworkManager renderer (the usual Desktop setup) is not supported. Details: [COMPATIBILITY.md](COMPATIBILITY.md#supported-platforms).
-- **netplan >= 0.106** (validated baseline; refuses to run below it, and capability-probes `netplan try` - no silent fallback to an un-revertable `netplan apply`). netplan only grew a `--version` flag in 1.0, so on the 0.10x line the version is read from the package database (`dpkg-query`); a netplan 0.10x box with no dpkg cannot be version-checked and is refused.
-- root
-- `tcpdump` when sniff detection is enabled (default), `lldpd`/`lldpctl` for LLDP detection
+- **netplan with the systemd-networkd renderer.** Validated on Ubuntu 22.04 LTS Server. Other distributions that use netplan and systemd-networkd are expected to work, but are not tested. The NetworkManager renderer, which Ubuntu Desktop usually uses, is not supported. Details: [COMPATIBILITY.md](COMPATIBILITY.md#supported-platforms).
+- **netplan 0.106 or later.** This is the validated baseline. dynavlan refuses to run on an older netplan. It also checks that `netplan try` works, and it never falls back to `netplan apply`, which cannot revert. Netplan has a `--version` flag only from 1.0. On netplan 0.10x, dynavlan reads the version from the package database (`dpkg-query`). It refuses to run on a netplan 0.10x box without dpkg.
+- **root.**
+- **`tcpdump`** for sniff detection (on by default), and **`lldpd`/`lldpctl`** for LLDP detection.
 
-No dependency on NIC names, native VLAN, switch vendor, or the contents/filenames of any base netplan config. (One naming caveat: a NIC whose name plus the `.<vlan-id>` suffix would exceed the kernel's 15-char limit - e.g. a MAC-derived `enx001122334455` - has those VLANs skipped with a warning rather than provisioned into a name the kernel rejects; short standard names like `enp1s0`/`eth0` are unaffected.)
+dynavlan does not depend on NIC names, the native VLAN, the switch vendor, or the names or contents of your base netplan files.
+
+One naming limit applies. The kernel limits an interface name to 15 characters. A VLAN interface name is the NIC name plus `.<vlan-id>`. If that name is too long, dynavlan skips the VLAN and logs a warning. This can happen with a name based on a MAC address, such as `enx001122334455`. Short standard names such as `enp1s0` and `eth0` are not affected.
 
 ## Install
 
-Before your first `dynavlan --boot`, read [Safety](#safety): a bad apply can strand a headless box, so run the first attended with an out-of-band console.
+Read [Safety](#safety) before your first `dynavlan --boot`. A bad apply can disconnect a headless box.
 
-**Recommended: one-line install** (latest release; on an apt/dpkg system this
-adds the dynavlan APT repository and installs via `apt`, so future releases
-arrive with `sudo apt upgrade` - on any other system it falls back to a
-tarball + `install.sh` install):
+**Recommended: one-line install of the latest release.**
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash
 ```
 
-Upgrades are manual and attended by design (`sudo apt upgrade`) - dynavlan
-deliberately does not support unattended-upgrades; auto-deploying a
-network-touching tool to remote headless boxes at once is the exact
-recoverability footgun the project exists to avoid.
+On a system with apt and dpkg, this adds the dynavlan APT repository and installs with `apt`. You then get new releases with `sudo apt upgrade`. On other systems, it installs from the release tarball with `install.sh`.
 
-To add the apt repository by hand instead of via `get.sh` (e.g. to add it to
-a box already running dynavlan from a `.deb`):
+Upgrades are manual and attended, by design. dynavlan does not support unattended-upgrades. An automatic upgrade of a network tool on many remote headless boxes at once is the risk that this project exists to prevent.
+
+To add the APT repository by hand instead of with `get.sh` (for example, on a box that already runs dynavlan from a `.deb`):
 
 ```sh
 sudo mkdir -p /etc/apt/keyrings
@@ -80,95 +91,113 @@ Signed-By: /etc/apt/keyrings/dynavlan.gpg" | sudo tee /etc/apt/sources.list.d/dy
 sudo apt update && sudo apt install dynavlan
 ```
 
-**Alternatives**, for cases the one-liner doesn't cover:
+**Other ways to install:**
 
-- **Pin a specific version** (bypasses apt, always a tarball install):
+- **Install a specific version.** This always installs from the tarball and does not use apt:
   ```sh
-  curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v0.4.0
+  curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v1.0.0
   ```
-- **Don't want to pipe `curl` into `sudo bash`, or need to transfer a file to
-  an offline/air-gapped box**: download the `.deb` from a
-  [GitHub release](https://github.com/pereljon/dynavlan/releases) and install
-  it directly:
+- **Install from a `.deb` file.** Use this if you do not want to pipe `curl` into `sudo bash`, or if the box is offline. Download the `.deb` from a [GitHub release](https://github.com/pereljon/dynavlan/releases), then install it:
   ```sh
-  sudo dpkg -i dynavlan_0.4.0_all.deb
+  sudo dpkg -i dynavlan_1.0.0_all.deb
   sudo apt-get install -f   # if dependencies are missing
   ```
-- **No apt/dpkg at all** (any other netplan/systemd-networkd distro): clone
-  the repo and run the installer directly:
+- **Install without apt or dpkg** (other netplan/systemd-networkd distributions). Clone the repository and run the installer:
   ```sh
   sudo bash install.sh
   ```
 
-Both paths install the script to `/usr/local/sbin/dynavlan`, the config template to `/etc/dynavlan.conf`, the systemd units, and a persistent-journald drop-in. The package puts the units in `/lib/systemd/system`; `install.sh` puts them in `/etc/systemd/system`. A first install enables the boot service and rescan timer for the next boot, starts neither, and changes nothing on the network itself; an upgrade keeps each unit's enabled/disabled state as you left it and restarts only a timer that was running (the boot service's running state is not restored). Configure via `/etc/dynavlan.conf` (every key is documented at its default).
+**What gets installed.** The package and `install.sh` both install:
 
-**Removal** is two separate steps: first take down the network state dynavlan owns with the attended `dynavlan --teardown`, then remove the software (`apt remove`/`purge`, or the source-install steps). Removing the software alone stops the units but leaves the VLANs and `/etc/netplan/90-dynavlan.yaml` in place; see Removal in `docs/deployment-guide.md`.
+- the script, to `/usr/local/sbin/dynavlan`
+- the config file, to `/etc/dynavlan.conf`
+- the systemd units: the package puts them in `/lib/systemd/system`, and `install.sh` puts them in `/etc/systemd/system`
+- a drop-in that makes the journal persistent
+
+**What install and upgrade do.**
+
+- A first install enables the boot service and the rescan timer for the next boot. It starts neither of them, and it changes nothing on the network.
+- An upgrade keeps each unit enabled or disabled, as you left it. It restarts the timer only if the timer was running. It does not restore the running state of the boot service.
+
+To configure dynavlan, edit `/etc/dynavlan.conf`. Each key is documented there, at its default value.
+
+**Removal** has two steps:
+
+1. Remove the network state that dynavlan owns, with an attended `dynavlan --teardown`.
+2. Remove the software (`apt remove` or `apt purge`, or the steps for a source install).
+
+If you only remove the software, the units stop, but the VLANs and `/etc/netplan/90-dynavlan.yaml` stay. See Removal in `docs/deployment-guide.md`.
 
 ## Usage
 
 ```
-dynavlan --boot         # reconcile at boot (add + remove VLANs to match every trunk)
-dynavlan --rescan       # reconcile across every trunk: adds VLANs, prunes a debounced carrier-down trunk (what the timer runs)
-dynavlan --reapply      # regenerate + apply the current VLAN set with this build's config,
-                        #   only if it differs from what's on disk (use after an upgrade or a
-                        #   config change like VLAN_ROUTES; no-ops if nothing changed)
-dynavlan --dry-run      # show the diff without applying anything (it still runs detection)
-dynavlan --status       # owned and detected VLANs per trunk row (no apply, no config change;
-                        #   exits non-zero if a detection tool is missing or a detector failed)
-                        # NOTE: both run detection, which brings physical NICs administratively
-                        #   up and leaves promiscuous mode on; dynavlan does not restore that.
-dynavlan --reconfigure  # rewrite the timer drop-in after changing RESCAN_MINUTES
-dynavlan --teardown     # ATTENDED, console only: remove every VLAN dynavlan owns through a
-                        #   health-gated netplan try (see Removal in docs/deployment-guide.md;
-                        #   --dry-run does NOT preview it)
-dynavlan --version      # print version + build id (works unprivileged; safe with a broken config)
+dynavlan --boot         # full reconcile at boot: add and remove VLANs to match every trunk
+dynavlan --rescan       # what the timer runs: add new VLANs, and remove the VLANs of a
+                        #   trunk that has lost link (confirmed by two samples)
+dynavlan --reapply      # regenerate and apply the current VLAN set with this build and config,
+                        #   only if the result differs from the file on disk. Use it after an
+                        #   upgrade or after a config change such as VLAN_ROUTES.
+dynavlan --dry-run      # show the planned changes; apply nothing
+dynavlan --status       # show owned and detected VLANs, one row per trunk; apply nothing.
+                        #   Exits non-zero if a detection tool is missing or a detector failed.
+dynavlan --reconfigure  # rewrite the timer drop-in after you change RESCAN_MINUTES
+dynavlan --teardown     # remove every VLAN that dynavlan owns, through a health-checked
+                        #   netplan try. Attended, from a console. --dry-run does not preview it.
+dynavlan --version      # print the version and build ID (no root needed; works with a broken config)
 ```
+
+`--dry-run` and `--status` both run detection. Detection sets the physical NICs administratively up and turns on promiscuous mode. dynavlan does not change them back.
+
+For `--teardown`, see Removal in `docs/deployment-guide.md`. Run it from a console, not over SSH. A management VLAN that is not the default route can carry your SSH session, and the default-route check cannot see that.
 
 ## Safety
 
-dynavlan is built for boxes that may be remote, headless, or unattended, where a bad apply that breaks the uplink could be unrecoverable. Every design choice favors recoverability:
+dynavlan is built for boxes that can be remote, headless, or unattended. On such a box, a bad apply that breaks the uplink can be impossible to fix without a site visit. Each design decision puts recovery first:
 
-- Every apply is validated and health-checked against a pre-apply default-route snapshot; a routing failure auto-reverts via `netplan try`. Rollback is gated on the health check, never on an exit code.
-- dynavlan owns one generated netplan file and writes no other netplan file (`--reconfigure` also writes the systemd timer drop-in). It assumes nothing from base netplan files, though validation, the overlap check and `--dry-run` read the merged netplan tree to detect conflicts.
-- Boot reconcile never reads "detected nothing" as "remove everything": a carrier-up trunk with no tags is preserved (detection is uncertain), while a carrier-down trunk is pruned only after a two-sample debounce and only if the box still has a healthy uplink route. Detection has no distinct failure signal, so zero detection blocks additions, but the carrier signal (independent of detection) still governs pruning.
+- **Each apply is checked.** dynavlan validates each change, then applies it with `netplan try`. After the apply, it compares the default route with the route that it recorded before. If the route is not healthy, netplan reverts the change. The route check decides the rollback, not an exit code.
+- **One file only.** dynavlan writes one netplan file and no other netplan file. `--reconfigure` also writes the systemd timer drop-in. dynavlan does not depend on your base netplan files. It reads them only to find conflicts, during validation, the overlap check, and `--dry-run`.
+- **"Detected nothing" never means "remove everything."** Removal rules are in [How it works](#how-it-works). If a detector fails, dynavlan does not remove VLANs based on that sample.
 
-A bad apply can drop an SSH session, so if possible, run the first `--boot` with an out-of-band fallback (serial console, IPMI, or physical access). If that is not available, `--dry-run` previews the change without applying it, and exits non-zero if the candidate config fails validation, so it doubles as a scripted pre-flight check.
+A bad apply can disconnect your SSH session. For the first `--boot`, have a console that does not depend on the network, if you can: a serial console, IPMI, or physical access. If you do not have one, run `--dry-run` first. It shows the change without applying it. It exits non-zero if the new configuration fails validation, so you can also use it as a scripted pre-flight check.
 
 ## Limitations
 
-- IPv4 only; IPv6 provisioning is post-1.0.
-- Validated on one reference box (two switch vendors); a second independent site is post-1.0 evidence.
-- Even after a successful revert restores the prior configuration, a VLAN link that only the reverted change created can stay, with its DHCP address and route, until it is removed by hand or by a reboot. A stop after the change was accepted keeps the change, and an interrupted or failed run does not by itself prove a completed revert. See the deployment guide, section 5.
+- IPv4 only. IPv6 provisioning is planned after 1.0.
+- Validated on one reference box, with two switch vendors. Validation at a second, independent site is planned after 1.0.
+- A reverted change can leave a VLAN link behind. If the change created the link, the link can stay with its DHCP address and route after the revert. It stays until you remove it by hand or reboot. See the deployment guide, section 5.
+- If dynavlan is stopped after a change is accepted, the change stays. A run that is interrupted or that fails does not prove that a revert completed.
 - The full list is in [COMPATIBILITY.md](COMPATIBILITY.md).
 
 ## Report your setup
 
-dynavlan makes no vendor assumptions: it reads live 802.1Q tags off the wire (primary) and LLDP where a switch advertises the VLAN table (supplement). Detection is validated on Meraki and UniFi edge switches; the core switch and upstream firewall/router do not affect detection (LLDP is single-hop, so only the directly-attached edge switch matters, and 802.1Q tagging is a standard).
+dynavlan makes no assumptions about the switch vendor. It reads live 802.1Q tags from the wire, which is the main method. It also reads LLDP, when a switch advertises its VLAN table. Detection is validated on Meraki and UniFi edge switches. Only the edge switch that the box connects to matters. LLDP reaches one hop only, and 802.1Q tagging is a standard, so the core switch and the upstream firewall or router do not affect detection.
 
-If dynavlan works on your gear, a short report helps confirm the range of switches it covers. Please [open an issue](https://github.com/pereljon/dynavlan/issues) with:
+If dynavlan works on your hardware, a short report helps to show which switches it supports. Please [open an issue](https://github.com/pereljon/dynavlan/issues) with:
 
-- **Edge switch** (the one the box plugs into): vendor and model.
-- **Detection**: did LLDP advertise the tagged VLANs, or did sniff carry it? (`dynavlan --status` shows what was detected, and each run logs one aggregate line per trunk, `trunk <iface>: N tags detected [ids]`, for the union of the enabled methods. Per-method results are not logged and `LOG_LEVEL=debug` adds no extra detection detail; to tell the methods apart, run `dynavlan --dry-run` once with `DETECT_METHOD=lldp` and once with `DETECT_METHOD=sniff`.)
-- **Scale**: number of VLANs detected, and `SNIFF_SECONDS` if you changed it.
-- **Environment**: `dynavlan --version`, `netplan --version`, and the NIC driver (`ethtool -i <iface>`).
+- **Edge switch** (the switch that the box connects to): vendor and model.
+- **Detection**: did LLDP advertise the tagged VLANs, or did the sniff find them?
+- **Scale**: the number of VLANs detected, and `SNIFF_SECONDS` if you changed it.
+- **Environment**: the output of `dynavlan --version`, `netplan --version`, and `ethtool -i <iface>` (the NIC driver).
 
-No MACs, hostnames, or subnets are needed. A "didn't work" report is just as useful as a success.
+To see what was detected, run `dynavlan --status`. Each run also logs one line per trunk, `trunk <iface>: N tags detected [ids]`. That line combines all enabled methods. dynavlan does not log the result of each method separately, and `LOG_LEVEL=debug` adds no detail. To compare the methods, run `dynavlan --dry-run` two times: one time with `DETECT_METHOD=lldp`, and one time with `DETECT_METHOD=sniff`.
+
+Do not send MACs, hostnames, or subnets. A report that says "it did not work" is as useful as a success.
 
 ## Documentation
 
 | File | Purpose |
 |------|---------|
-| `docs/dynavlan-PRD.md` | Product requirements (authoritative behavior) |
-| `dev/features/dynavlan.md` | Technical design: architecture, apply/rollback state machine, systemd/install layout |
+| `docs/dynavlan-PRD.md` | Product requirements (the authority on behavior) |
+| `dev/features/dynavlan.md` | Technical design: architecture, apply/rollback state machine, systemd and install layout |
 | `dev/SKELETON.md` | How it works: logic flow, key invariants, hardware-validated behaviors |
-| `dev/CODEMAP.md` | Where things live: per-function map for navigating the script |
-| `dev/features/dynavlan-tests.md` | Test plan: unit asserts, `--dry-run`, hardware integration checklist |
-| `dynavlan.conf` | Config reference (every key documented at its default) |
+| `dev/CODEMAP.md` | Where things are: a map of each function in the script |
+| `dev/features/dynavlan-tests.md` | Test plan: unit tests, `--dry-run`, hardware integration checklist |
+| `dynavlan.conf` | Config reference (each key documented at its default) |
 | `docs/deployment-guide.md` | Deployment guide: install, configure, first attended run, operation, removal |
-| `COMPATIBILITY.md` | The 1.x compatibility contract, effective with the 1.0.0 tag: config keys, generated YAML, CLI flags, exit codes |
-| `docs/exit-codes.md` | Exit-code inventory by mode and the frozen table |
-| `docs/hardware-validation.md` | Validated hardware and the console-backed validation record |
+| `COMPATIBILITY.md` | The 1.x compatibility contract, effective from the 1.0.0 tag: config keys, generated YAML, CLI flags, exit codes |
+| `docs/exit-codes.md` | Exit codes for each mode, and the frozen table |
+| `docs/hardware-validation.md` | Validated hardware and the record of console-backed validation |
 
 ## License
 
-MIT - see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
