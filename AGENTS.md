@@ -90,6 +90,9 @@ Project rows, in addition to the shared gate and generic items in `../AGENTS.md`
 - `context/` files (todo, decisions, open questions) - stale context compounds errors downstream
 - version in the `dynavlan` script (`ver=` variable) - see **Version and build identity**
 - systemd units (`dynavlan.service`/`dynavlan-rescan.service`/`dynavlan.timer`) and `install.sh` if artifacts change
+- **When changing a frozen surface** (a config key, a CLI flag, an exit code, or the generated YAML): check the change against `COMPATIBILITY.md`, apply its deprecate-with-warning process where it applies, and update `docs/exit-codes.md` for any exit change. A rename of an integration identifier follows the same process.
+- **Package and repo metadata**: the `debian/control` description, the GitHub repo description, and every pinned version in a usage example (`README.md`, `docs/deployment-guide.md`, `get.sh`). Check them at each release.
+- **When adding or removing a function**: its `dev/CODEMAP.md` row (`tests/unit.sh` §1ay fails on a function with no row).
 - **When adding a config key**: default + `in_list`/range validation in `load_config`, **the key added to the `CONFIG_KEYS` allowlist** (H2: config is parsed against that allowlist, so a key defaulted but not allowlisted would make its own config line refuse to run), a commented template entry in `dynavlan.conf` at its default, and the FR/config-surface section in `docs/dynavlan-PRD.md`. Removing a documented key later needs a `postinst` conffile migration (an old conffile still carrying it would otherwise refuse after upgrade).
 - **When adding a CLI mode/flag**: the dispatch in `main`, the Usage section in `README.md`, and the corresponding FR/AC in `docs/dynavlan-PRD.md`.
 

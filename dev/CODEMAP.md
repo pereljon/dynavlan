@@ -152,7 +152,7 @@ The core also calls `netplan`, `ip` and the owned file directly (version/`try` p
 
 | function | one-line purpose |
 |----------|------------------|
-| `apply_change` | D2 wrapper: installs the TERM trap, calls `apply_change_run`, removes it. `apply_change_run` is the §7 safety chain: snapshot → **C1 default-route removal guard (refuse if snap_iface in removals)** → (FR-37 metric assign + conflict refusal) → isolated validation (`backend_validate_candidate`) → STOP recheck → backup → live generate → apply_with_revert → ACCEPT: prune/deletes/leases/restarts, FAIL: converge disk, nothing else |
+| `apply_change` / `apply_change_run` | D2 wrapper: installs the TERM trap, calls `apply_change_run`, removes it. `apply_change_run` is the §7 safety chain: snapshot → **C1 default-route removal guard (refuse if snap_iface in removals)** → (FR-37 metric assign + conflict refusal) → isolated validation (`backend_validate_candidate`) → STOP recheck → backup → live generate → apply_with_revert → ACCEPT: prune/deletes/leases/restarts, FAIL: converge disk, nothing else |
 | `log_exclusions` | Warn per detected-but-managed-elsewhere VLAN |
 | `warn_overlap` | FR-11: warn when an owned `(link,id)` tuple (via `backend_netplan_vlan_tokens`, not key-name matching) is also defined under a different key elsewhere; `do_rescan` now calls it before its no-change early return, matching `do_boot` (L1) |
 | `gate_vlan_count` | Orchestrate warn / refuse / fill per VLAN_LIMIT_MODE; removals-only always passes |

@@ -4193,6 +4193,29 @@ fi
 unset _hk_out _hk_rc _hk_sum _hk_t _hk_f
 
 # ---------------------------------------------------------------------------
+# 1ay. CODEMAP completeness: every column-0 function in the script is named in the
+#      first column of a dev/CODEMAP.md table row. CODEMAP's own "add a row when a
+#      function lands" rule is otherwise unchecked, and a function shipped in 1.0
+#      without one.
+# ---------------------------------------------------------------------------
+
+codemap_missing() { # SCRIPT CODEMAP -> one undocumented function name per line
+	# shellcheck disable=SC2016 # the backticks are literal Markdown, matched not expanded
+	comm -23 \
+		<(grep -oE '^[A-Za-z_][A-Za-z0-9_]*\(\)' "$1" | sed 's/()$//' | sort -u) \
+		<(awk -F'|' '/^\| `/ {print $2}' "$2" | grep -oE '`[A-Za-z_][A-Za-z0-9_]*`' | tr -d '`' | sort -u)
+}
+
+_cm_tmp=$(mktemp -d)
+printf 'alpha() { :; }\nbeta() { :; }\ngamma() { :; }\n  nested() { :; }\n' >"$_cm_tmp/script"
+# shellcheck disable=SC2016 # the backticks are literal Markdown in the fixture
+printf '| function | purpose |\n|---|---|\n| `alpha` / `beta` | grouped row |\n' >"$_cm_tmp/map.md"
+assert_eq "$(codemap_missing "$_cm_tmp/script" "$_cm_tmp/map.md")" "gamma" "1ay codemap_missing reports a function with no row (grouped rows count, indented defs ignored)"
+rm -rf "$_cm_tmp"
+unset _cm_tmp
+assert_eq "$(codemap_missing "$src" "${here}/../dev/CODEMAP.md" | tr '\n' ' ')" "" "1ay every dynavlan function has a dev/CODEMAP.md row"
+
+# ---------------------------------------------------------------------------
 
 printf '\n%s tests, %s failures\n' "$tests" "$fails"
 [ "$fails" -eq 0 ]
