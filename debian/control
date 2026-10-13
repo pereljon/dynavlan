@@ -6,7 +6,8 @@ Architecture: all
 Depends: netplan.io (>= 0.106), tcpdump, lldpd, systemd
 Maintainer: Jonathan Perel <pereljon@users.noreply.github.com>
 Homepage: https://github.com/pereljon/dynavlan
-Description: Self-configuring VLAN provisioner for headless Linux boxes
- Discovers active tagged VLANs on every trunk a box is plugged into,
- brings each up with DHCP (route-isolated by default), and auto-reverts
- on failure. No SSH, no hand-edited YAML.
+Description: Automatic VLAN setup for headless Linux boxes
+ Finds the tagged VLANs on each trunk that a box is connected to and
+ configures them with DHCP. By default, each VLAN gets an address only,
+ with no routes or DNS. Reverts any change that breaks the uplink.
+ No SSH or hand-edited YAML.
