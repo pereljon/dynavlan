@@ -1,63 +1,131 @@
 # dynavlan compatibility contract
 
-**Status: final text, effective with the `1.0.0` tag.** It binds every release from `1.0.0`
-on; a build before that tag is not covered. The policy is the approved one from
-[`docs/v1.0-definition.md`](docs/v1.0-definition.md) (Gate 4); this file is where it
-graduates into the standalone, README-linked promise.
+**Status: final text, in effect from the `1.0.0` tag.** This contract binds every release
+from `1.0.0` on. It does not cover a build from before that tag. The policy is the one
+approved in [`docs/v1.0-definition.md`](docs/v1.0-definition.md). This file is the
+standalone promise that the README links to.
 
 ## What this promises
 
 For the whole `1.x` line, dynavlan makes a **deprecate-with-warning** promise about its
-external surface: you can upgrade within `1.x` and a breaking change will never reach you
-without a prior release that warned about it. Chosen over strict semver so the config
-surface can still evolve during `1.x`, at the cost of a two-step process for any break.
+external surface:
 
-## Scope: the four frozen surfaces
+- You can upgrade within `1.x`.
+- A breaking change never reaches you unless an earlier release warned about it.
 
-The deprecate-with-warning rules below govern exactly these four evolving surfaces:
+This promise was chosen over strict semantic versioning. It lets the config surface change
+during `1.x`. The cost is that each breaking change takes two releases (see
+[The deprecate-with-warning process](#the-deprecate-with-warning-process)).
 
-1. **Config keys** (names, accepted values, defaults)
-2. **The generated `/etc/netplan/90-dynavlan.yaml` shape**
-3. **CLI flags** (modes and their meaning)
-4. **Exit codes**
+## Terms
 
-**Also frozen (integration identifiers).** These are names an external consumer binds to,
-so a rename would break silently: the config path `/etc/dynavlan.conf`, the systemd unit
-and timer names (`dynavlan.service`, `dynavlan-rescan.service`, `dynavlan.timer`), and the
-`dynavlan` syslog identifier (`--status` tells operators to run `journalctl -t dynavlan`).
+- **Frozen surface:** one of the four surfaces in [Scope](#scope). The rules in this file
+  govern them.
+- **Breaking change:** a change in the list under [Breaking changes](#breaking-changes).
+- **Confirmation window:** the time in which `netplan try` waits for dynavlan to confirm
+  an applied change. If no confirmation arrives, netplan reverts the change.
+- **Accepted:** a change is accepted when the post-apply health check passes and dynavlan
+  confirms it inside the confirmation window. netplan then keeps the change.
+- **Revert:** netplan restores the previous configuration after a change that was not
+  accepted.
 
-**Not covered:** internal code layout, log message text **and severities** (exit codes are
-the only contractual outcome signal, so a severity change like 0.4.12's is free), the order
-of unrelated log lines, structured journal fields, `/run` state paths, and the backup
-directory. dynavlan is single-file by design and its apply/rollback state machine is
-deliberately coupled; internal refactors stay free even after `1.0`.
+## Scope
+
+### The four frozen surfaces
+
+The rules in this file govern exactly these four surfaces:
+
+1. **Config keys:** names, valid values, and defaults.
+2. **The generated `/etc/netplan/90-dynavlan.yaml`:** its shape.
+3. **CLI flags:** the modes and their meaning.
+4. **Exit codes.**
+
+### Integration identifiers
+
+External tools bind to these names, so a rename would break them without any error. These
+names are also frozen. A rename follows the same
+[deprecate-with-warning process](#the-deprecate-with-warning-process) as a breaking change:
+
+- the config path, `/etc/dynavlan.conf`
+- the systemd unit names, `dynavlan.service` and `dynavlan-rescan.service`, and the timer
+  name, `dynavlan.timer`
+- the syslog identifier, `dynavlan` (`--status` tells operators to run
+  `journalctl -t dynavlan`)
+
+### Not covered
+
+The promise does not cover these items:
+
+- Internal code layout. dynavlan is a single file by design, and its apply and revert
+  state machine is coupled on purpose. Internal refactors stay free after `1.0`.
+- Log message text and log severities. Exit codes are the only outcome signal in this
+  contract, so a change of log severity is free.
+- The order of unrelated log lines.
+- Structured journal fields.
+- The state paths under `/run`.
+- The backup directory.
 
 ## The rules
 
-- **Additions are always free in a minor.** A new config key that defaults to current
-  behavior, a new CLI flag, a new exit code (see below), or a new log line may land in any
-  `1.x` minor with no deprecation cycle.
-- **Breaking changes ship in two steps, never one.** A breaking change is: removing or
-  repurposing a config key, removing a CLI flag, changing a default in a way that alters
-  behavior on an existing box, changing an exit code's meaning, or changing the generated
-  YAML in a way that breaks the owned-set round-trip or an external consumer. Such a change
-  requires:
-  1. A release that emits a **deprecation warning** on the old form. The old form still
-     works and produces the same behavior. The warning names the replacement.
-  2. A **later** release (never the same one) that removes or changes it.
-- **`2.0` is reserved** for changes that cannot be done via the two-step path.
+### Additions
 
-## Frozen surface
+An addition can ship in any `1.x` minor release, with no deprecation step. These are
+additions:
+
+- a new config key whose default keeps the current behavior
+- a new CLI flag
+- a new exit code (see [Exit codes](#4-exit-codes))
+- a new log line
+
+A new config key whose default changes behavior on an existing box is not an addition. It
+changes a default, so it is a breaking change.
+
+### Breaking changes
+
+A breaking change is any of these:
+
+- removing a config key, or giving it a different purpose
+- removing a CLI flag
+- changing a default in a way that changes behavior on an existing box
+- changing the meaning of an exit code
+- changing the generated YAML in a way that breaks the owned-set round-trip or an external
+  consumer
+
+**The owned-set round-trip.** dynavlan keeps its state in its own netplan file. It writes
+the VLANs that it owns into that file, and on each run it reads them back from it. The
+read gives two things: the `<iface>.<id>` names under `vlans:`, and in routed mode the
+`route-metric` of each VLAN. A YAML change breaks the round-trip if a `1.x` release cannot
+read back, unchanged, the owned set that an earlier `1.x` release wrote.
+
+### The deprecate-with-warning process
+
+A breaking change needs two releases:
+
+1. A release that emits a **deprecation warning** when the old form is used. The old form
+   still works and gives the same behavior. The warning names the replacement and links a
+   migration note.
+2. A **later** release that removes or changes the old form. It is at least the next minor
+   release after step 1: never the same release, and never a patch release.
+
+`2.0` is reserved for changes that the deprecate-with-warning process cannot handle.
+
+## The frozen surfaces in detail
 
 ### 1. Config keys
 
-The parser honors only these keys (the `CONFIG_KEYS` allowlist); any other key is refused.
-The promise covers each key's **name, accepted values, and default**.
+dynavlan reads only the keys in this table (the `CONFIG_KEYS` allowlist). It refuses any
+other key. The promise covers the name, the valid values, and the default of each key.
 
-Numbers are **canonical decimal** everywhere: `0`, or a non-zero digit followed by digits. A leading zero (`05`, `018`) is refused, not converted. Quoted values need a matching closing quote followed only by whitespace and an optional `#` comment. Upgrade note (0.4.18): a config that previously loaded with a leading-zero number, an empty `VLAN_IGNORE` element (`"1,"`, `",1"`, `"1,,3"`), an unmatched quote, or text after a closing quote is now refused at load, naming the key; correct the value (there is no automatic migration).
+Value rules:
 
-| Key | Default | Accepted values |
-|-----|---------|-----------------|
+- A number is **canonical decimal** everywhere: `0`, or a non-zero digit followed by zero
+  or more digits. dynavlan refuses a number with a leading zero (`05`, `018`). It does not
+  convert it.
+- A quoted value needs a matching closing quote. After the closing quote, only whitespace
+  and an optional `#` comment can follow.
+
+| Key | Default | Valid values |
+|-----|---------|--------------|
 | `DETECT_METHOD` | `both` | `both` \| `lldp` \| `sniff` |
 | `VLAN_MIN` | `1` | canonical decimal int 1-4094 |
 | `VLAN_MAX` | `1000` | int 1-4094, >= `VLAN_MIN` |
@@ -66,7 +134,7 @@ Numbers are **canonical decimal** everywhere: `0`, or a non-zero digit followed 
 | `VLAN_LIMIT` | `64` | int; `0` = unlimited |
 | `VLAN_LIMIT_MODE` | `refuse` | `refuse` \| `fill` |
 | `SNIFF_SECONDS` | `60` | canonical decimal int >= 1 |
-| `BOOT_SETTLE_SECONDS` | `20` | non-neg int (the FR-41 carrier-sample interval derives from it and is floored at 5 when `REMOVE_ON_CARRIER_LOSS=true`; the sniff-comparison settle uses the raw value) |
+| `BOOT_SETTLE_SECONDS` | `20` | non-neg int (see the note below the table) |
 | `CARRIER_WAIT_SECONDS` | `30` | non-neg int |
 | `LEASE_SETTLE_SECONDS` | `30` | non-neg int |
 | `RESCAN_MINUTES` | `5` | int >= 1 |
@@ -80,14 +148,25 @@ Numbers are **canonical decimal** everywhere: `0`, or a non-zero digit followed 
 | `BACKUP_KEEP` | `10` | int >= 1 |
 | `RESTART_ON_NEW_SUBNET` | `true` | `true` \| `false` |
 
-The "unknown key is refused" behavior is itself part of the contract: the frozen set is
-exactly these keys, and a 22nd is a free minor addition. `dynavlan` also refuses to run if
-`/etc/dynavlan.conf` is not root-owned or is group/other-writable; that refusal is
-contractual, not an incidental check.
+**`BOOT_SETTLE_SECONDS`.** dynavlan uses this value in two places:
+
+- **Carrier-loss removal.** The interval between the two carrier samples derives from this
+  value. When `REMOVE_ON_CARRIER_LOSS=true`, a value below 5 counts as 5 for this interval.
+- **Boot re-detection.** The settle time before the second detection pass uses the value
+  as set.
+
+**Unknown keys.** The refusal of an unknown key is part of the contract. The frozen key
+set is exactly the 21 keys in the table. A new key follows the rule in
+[Additions](#additions).
+
+**Config file permissions.** dynavlan refuses to run if `/etc/dynavlan.conf` is not owned
+by root, or if its group or other users can write to it. This refusal is part of the
+contract.
 
 ### 2. Generated `90-dynavlan.yaml` shape
 
-File path `/etc/netplan/90-dynavlan.yaml`, mode `600`. Per-VLAN block:
+The file path is `/etc/netplan/90-dynavlan.yaml`, with mode `600`. Each VLAN gets this
+block:
 
 ```yaml
 network:
@@ -105,96 +184,126 @@ network:
         use-domains: false
 ```
 
-Frozen invariants:
+These invariants are frozen:
 
-- **`<iface>.<id>` interface naming.** The owned-set round-trip and any external consumer
-  key off this scheme.
-- **Isolation defaults** (`accept-ra: false`, `use-dns`/`use-ntp`/`use-domains: false`).
-- **Exactly one comment line, at line 1.** The file always begins with a single
-  `# Managed by dynavlan ...` line. The drift comparison strips exactly line 1 positionally
-  (FR-39); a second header line, or none, silently breaks it. The line's *text* is
-  informational (it carries `ver`+`build`, which change every release) and is not frozen;
-  its count (1) and position (line 1) are.
-- Empty owned set: `network:` / `version: 2` with no `vlans:` block.
+- **`<iface>.<id>` interface names.** The owned-set round-trip and external consumers
+  depend on this naming scheme.
+- **Isolation defaults:** `accept-ra: false`, and `use-dns`, `use-ntp` and `use-domains`
+  set to `false`.
+- **Exactly one comment line, at line 1.** The file always starts with one
+  `# Managed by dynavlan ...` line. The `--reapply` comparison checks whether the
+  generated file differs from the file on disk. It skips line 1 by position, not by
+  content. A second header line, or no header line, breaks that comparison without any
+  error. The count (one line) and the position (line 1) are frozen. The text of the line
+  is not frozen: it is for information only, and it carries the version and build ID,
+  which change in every release.
+- **Empty owned set:** `network:` and `version: 2`, with no `vlans:` block.
 
 ### 3. CLI flags
 
-One mode per invocation. `-V` and `-h` are the only short aliases.
+Each run takes one mode. `-V` and `-h` are the only short aliases.
 
 | Flag | Meaning |
 |------|---------|
-| `--boot` | full reconcile (add + remove) |
-| `--rescan` | timer reconcile (add as VLANs appear; prune a confirmed carrier-down trunk) |
+| `--boot` | full reconcile (add and remove) |
+| `--rescan` | timer reconcile: add VLANs as they appear; remove the VLANs of a trunk whose carrier loss is confirmed |
 | `--reapply` | operator re-apply of the current owned set |
 | `--dry-run` | preview, no apply |
-| `--status` | owned vs detected-now report |
-| `--reconfigure` | rewrite the systemd timer interval from config |
-| `--teardown` | attended removal of every owned VLAN (empty target through the health-gated apply); refuses unless both units are disabled and inactive |
-| `--version` / `-V` | print `dynavlan <ver> (build <id>)`; works pre-config and non-root |
+| `--status` | report of owned VLANs and VLANs detected now |
+| `--reconfigure` | rewrite the systemd timer interval from the config |
+| `--teardown` | attended removal of every owned VLAN: applies an empty VLAN set through the health-checked apply. Refuses unless `dynavlan.timer` and `dynavlan.service` are both disabled and inactive |
+| `--version` / `-V` | print `dynavlan <ver> (build <id>)`; works before the config loads and without root |
 | `-h` / `--help` | usage |
 
 ### 4. Exit codes
 
-The vocabulary is **`{0, 1, 2}`**, frozen as **open-ended**: a consumer must treat any
-unknown non-zero as failure, never assume `{1,2}` exhaustive. This is what lets a new code
-be added later as a free minor addition.
+The set of exit codes is **`{0, 1, 2}`**, frozen as **open-ended**:
+
+- A consumer must treat any unknown non-zero code as a failure.
+- A consumer must not assume that `1` and `2` are the only failure codes.
+
+Because the set is open-ended, a later release can add a new code as an addition.
 
 | Code | Meaning |
 |------|---------|
-| `0` | Success or a deliberate no-op; does not by itself establish routing health. Includes a requested `--help`/`-V`. |
-| `1` | Operational refusal, failure or interruption; may follow partial work, an unaccepted/uncertain apply, or interruption after ACCEPT. Does not prove a completed revert. |
-| `2` | usage error: no mode given, or an unknown mode |
+| `0` | Success, or a deliberate no-op. Exit 0 does not by itself prove routing health. Includes a requested `--help` or `-V`. |
+| `1` | A refusal, a failure, or an interruption. The run may have done part of its work first. Exit 1 can follow a change that was not accepted, a change whose outcome is uncertain, or an interruption after the change was accepted. Exit 1 does not prove that a revert completed. |
+| `2` | Usage error: no mode given, or an unknown mode. |
 
-Full per-mode inventory, dispositions, and the rationale for keeping a reverted apply at
-`1` (not `0`): [`docs/exit-codes.md`](docs/exit-codes.md).
+Exit 1 does not tell you the state of the box. A completed revert restores the
+configuration, but not all kernel state. See [Documented limitations](#documented-limitations).
+
+[`docs/exit-codes.md`](docs/exit-codes.md) lists the exits of each mode. It also explains
+why a reverted apply exits `1`, not `0`.
 
 ## Supported platforms
 
-Not part of the frozen surface; stated so the promise has a defined scope.
+This section is not part of the frozen surface. A `1.x` release can change it without the
+deprecate-with-warning process. It is here so that the promise has a defined scope.
 
 - **Validated:** Ubuntu 22.04 LTS (Server) with netplan 0.107.1 and the systemd-networkd
   renderer, on the reference box.
-- **Expected to work, not tested:** any Linux whose networking is netplan >= 0.106 driving the
-  systemd-networkd renderer, with systemd, root, `tcpdump` and (for LLDP) `lldpd`. dynavlan
-  checks the netplan version at start and refuses below 0.106. netplan >= 1.0 reports its
-  own version; on the 0.10x line the version comes from the package database
-  (`dpkg-query`), so a 0.10x system without dpkg cannot be checked and is refused. The
-  `.deb` and the apt repository need a dpkg/apt system; `install.sh` installs dependencies only through apt.
+- **Expected to work, not tested:** any Linux system that has all of these:
+  - networking managed by netplan 0.106 or later, with the systemd-networkd renderer
+  - systemd
+  - root
+  - `tcpdump`, and `lldpd` for LLDP detection
 - **Not supported:** netplan with the NetworkManager renderer (the usual Ubuntu Desktop
   setup), and systems that do not manage networking with netplan.
 
-## Documented limitations (out of scope for 1.0)
+**netplan version check.** dynavlan checks the netplan version at start and refuses to run
+below 0.106. netplan 1.0 and later reports its own version. On netplan 0.10x, dynavlan
+reads the version from the package database (`dpkg-query`). On a netplan 0.10x system
+without dpkg, dynavlan cannot check the version, so it refuses to run.
 
-Stated plainly, not silently absent (detail in
-[`docs/v1.0-definition.md`](docs/v1.0-definition.md)):
+**Packages.** The `.deb` and the apt repository need a system with dpkg and apt.
+`install.sh` installs dependencies only through apt.
 
-- **IPv4 only.** IPv6 provisioning and the FR-14a IPv6 health-check arm are post-1.0.
-- **One validated non-Meraki vendor** (UniFi), not a broad matrix.
-- **No per-VLAN MAC derivation** (the reserved key was removed, not frozen).
-- **No automatic config-drift detection** on boot/rescan.
+## Documented limitations
+
+These limitations are out of scope for 1.0. They are stated here so that they are not
+silently absent. Details: [`docs/v1.0-definition.md`](docs/v1.0-definition.md).
+
+- **IPv4 only.** IPv6 provisioning, and the IPv6 part of the post-apply health check, are
+  planned after 1.0.
+- **One validated vendor besides Meraki** (UniFi). There is no broad vendor matrix.
+- **No per-VLAN MAC derivation.**
+- **No automatic drift detection.** `--boot` and `--rescan` do not run the `--reapply`
+  comparison. On a box whose VLAN set does not change, a change to the generated YAML
+  reaches the box only when you run `--reapply`.
 - **Validated on one reference box.** 1.0 is hardware-validated on one Protectli/igb
-  appliance with Meraki and UniFi switches; validation on a second independent site was
-  waived for 1.0 and is post-1.0 evidence.
-- **A completed revert restores configuration, not all kernel state.** Even after a
-  successful revert restores the prior configuration, a VLAN link that only the reverted
-  change created can stay with its DHCP address and connected route, and its VLAN reads as
-  managed elsewhere until it is removed by hand or by a reboot (FR-43; recovery steps in the
-  deployment guide, section 5). A stop after the change was accepted keeps the change, and
-  an interrupted or failed run does not by itself prove that a revert completed: exit 1 can
-  report uncertain recovery. Hardware validation covered a stop during the confirmation
-  window (HV-01); timeout, health-failure and routed-mode reverts were not hardware-tested.
-- **`VLAN_LIMIT=0` (unlimited) is frozen semantics but unvalidated at scale.** A large
-  owned set stresses the fixed `TRY_TIMEOUT` (30s) apply window, which is not scaled by
-  VLAN count and not hardware-validated at high counts. `0` opts out of the guard; the
-  operator assumes that timing risk.
+  appliance, with Meraki and UniFi switches. Validation at a second, independent site was
+  waived for 1.0. It is planned as evidence after 1.0.
+- **A completed revert restores the configuration, not all kernel state.** A revert can
+  leave behind a VLAN link that only the reverted change created. The link keeps its DHCP
+  address and connected route, and dynavlan treats its VLAN as managed elsewhere. The link
+  stays until you remove it by hand or reboot. For recovery steps, see
+  [After a stopped or reverted apply](docs/deployment-guide.md#after-a-stopped-or-reverted-apply)
+  (deployment guide, section 5).
+- **A stop after the change is accepted keeps the change.**
+- **Exit 1 does not prove that a revert completed.** After an interrupted or failed run,
+  the recovery can be uncertain.
+- **Not every revert path is hardware-tested.** A stop during the confirmation window was
+  tested on hardware (HV-01). A revert after a timeout, a revert after a failed health
+  check, and a revert in routed mode were not tested on hardware.
+- **`VLAN_LIMIT=0` (unlimited) has frozen meaning, but is not validated at scale.** A large
+  owned set puts load on the fixed 30-second confirmation window (`TRY_TIMEOUT`). The
+  window does not grow with the number of VLANs. It was not hardware-validated at high
+  VLAN counts. A value of `0` turns off the count guard, and the operator takes this
+  timing risk.
 
 ## Enforcement
 
-The policy is documentation plus review discipline, reinforced at commit time by the FR-38
-version-gate git hooks in `githooks/` (installed per clone with `bash githooks/install.sh`).
-`pre-commit` refuses a staged `dynavlan` without exactly one valid `ver=` line and exactly one
-unindented `build="source"` line; `commit-msg` refuses a change to `dynavlan` that does not
-raise `ver=`, unless the commit carries one reasoned `Version-Bump: none (<reason>)` trailer,
-and never accepts a lower version. The hooks guard against accidental omissions: the
-trailer is a reviewed declaration, not machine proof that a change is behavior-neutral, so
-whether a change needed a version bump is still a review decision.
+The policy depends on documentation and review. Git hooks in `githooks/` add a check at
+commit time. They protect the version and build identity of the script (FR-38). Install
+them once per clone with `bash githooks/install.sh`.
+
+- `pre-commit` refuses a staged `dynavlan` script unless it has exactly one valid `ver=`
+  line and exactly one unindented `build="source"` line.
+- `commit-msg` refuses a change to `dynavlan` that does not raise `ver=`. The exception is
+  a commit message with exactly one `Version-Bump: none (<reason>)` trailer.
+- `commit-msg` never allows a lower `ver=`, with or without the trailer.
+
+The hooks catch accidental omissions. They do not prove that a change is
+behavior-neutral: the trailer is a declaration that review must check. Review still
+decides whether a change needed a version bump.

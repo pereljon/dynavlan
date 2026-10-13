@@ -1,158 +1,157 @@
 # dynavlan exit codes
 
-**Status: DRAFT — Gate-4 freeze artifact.** This table is the authoritative exit-code
-surface that `COMPATIBILITY.md` freezes at 1.0.0. It does not exist yet as a stable
-contract; this draft enumerates what the script produces today (v0.4.20; line numbers are deliberately not cited because they drift),
-proposes the frozen table, and records a disposition for each currently-ambiguous exit.
+This page lists the exit codes of dynavlan. They are frozen as of 1.0.0 under
+[`COMPATIBILITY.md`](../COMPATIBILITY.md). If a change alters what a code means, it is a
+breaking change.
 
-Exit codes are one of the four frozen surfaces (config keys, generated YAML shape, CLI
-flags, exit codes). Under the deprecate-with-warning policy, changing an exit code's
-*meaning* is a breaking change post-1.0. Pre-release (now) we are free to change any of
-them; the point of this draft is to make those changes deliberately, then freeze.
+## The frozen table
 
-## Current vocabulary
+| Code | Meaning |
+|------|---------|
+| `0` | Success, or a deliberate no-op. Exit 0 does not by itself prove routing health. Includes a requested `--help` or `-V`. |
+| `1` | A refusal, a failure, or an interruption. The run may have done part of its work first. Exit 1 can follow a change that was not accepted, a change whose outcome is uncertain, or an interruption after the change was accepted. Exit 1 does not prove that a revert completed. |
+| `2` | Usage error: no mode given, or an unknown mode. |
 
-The script produces exactly three codes today: **{0, 1, 2}**. `main` returns them and is
-the process's last statement (`dynavlan` tail: `main "$@"`), so its return is the exit
-code.
+A usage error (`2`) never touches the config or the network.
 
-| Code | Current meaning |
-|------|-----------------|
-| `0` | success, OR a deliberate no-op (nothing to change / another run holds the lock / a guarded abort) |
-| `1` | operational failure or refusal — invalid config, not root, precondition fail, lock-acquire fail, validation fail, detection unavailable, **and an apply that was not accepted (health-failed and reverted, or uncertain)** |
-| `2` | usage error — no mode given, or an unknown mode (a requested `-h`/`--help` is `0`) |
+Rules for a script that reads the exit code:
 
-The problem this draft resolves: `0` currently covers both "success" and three distinct
-"changed nothing" cases (one of which logs at `err`), and `1` conflates "refused before
-touching anything" with "tried, health-failed, revert attempted." Neither overload is
-wrong per se, but the freeze should make each a deliberate, documented choice.
+- Treat the list as open-ended. Treat any unknown non-zero code as a failure. Do not assume that
+  `1` and `2` are the only failure codes.
+- Do not read `0` as "the network is healthy". Read it as "the run did what it should".
+- Do not read `1` as "the box is unchanged". An apply can fail after some work is done.
+  The journal (`journalctl -t dynavlan`) holds the cause.
 
-## Complete inventory by mode (v0.4.20)
+A new code can be added in a minor release. Any new code stays below 126, because the shell
+reserves 126 and above.
 
-Every terminal exit path, by function.
+## Why a reverted apply exits 1
 
-### All modes — `main`
-- `--version` / `-V` → **0**, before config load and root check
-- `-h` / `--help` (explicitly requested) → **0** (0.4.13; requested help is success)
-- no arg → **2**; unknown mode → **2**
-- `load_config` failure → **1** (except `--teardown`, which falls back to built-in defaults with a warning and continues)
-- `check_preconditions` failure → **1**
-- lock-file open failure (reapply/boot/rescan) → **1**
+A reverted apply exits `1`, not `0`. Both systemd units are `Type=oneshot` and have no
+`OnFailure=` or `SuccessExitStatus=`. A non-zero exit is the only passive signal that puts the
+unit in the failed state, and a headless box shows that state in `systemctl --failed`. An exit
+of `0` would hide the one failure that dynavlan exists to survive.
 
-### `--status` — `do_status`
-- non-root → **1**; detection prerequisite missing (M8) → **1** (`detected trunks: unavailable`); a runtime detector failure on ANY sampled interface (D5) → **1** (incomplete or unavailable, whether the partial result is empty or not); a managed-elsewhere query failure → **1**; otherwise → **0**, including a genuinely quiet valid wire
+dynavlan has no separate code for "applied, health check failed, reverted". To systemd, any
+non-zero exit is a failure, and `OnFailure=` cannot tell the codes apart. The journal already
+records the revert.
 
-### `--reconfigure` — `do_reconfigure`
-- cannot create drop-dir → **1**; write failure → **1**; `systemctl daemon-reload` failure (the new timer interval is not active) → **1**; success → **0** (the reload is skipped, not failed, only where systemd is positively absent); non-root → **1** (main)
+## Exit codes by mode
 
-### `--dry-run` — `do_dryrun`
-- validation pass or nothing-to-do → **0** (a quiet wire still validates); validation rejection (M3) → **1**; count-gate refusal (S3) → **1** with nothing validated; base-tree copy failure (L8) → **1** with nothing validated; a failed pending-delete or managed-elsewhere query → **1**; other early refusals → **1** (`vstatus` is only ever 0 or 1)
+### Checks before any mode runs
 
-### `--teardown` — `do_teardown` (Group 6)
-- non-root, `ip` missing, unsupported netplan, no `netplan try` → **1**; lock timeout → **1**; a unit enabled, active, or indeterminate → **1**
-- pending-delete drain failure → **1**; unreadable or unrecognized owned file → **1**; nothing owned → **0**
-- `apply_change` not accepted or uncertain → **1** (no manual-delete advice); stop request → **1**
-- accepted but a link still present, or the post-accept drain failed → **1**; accepted and clean → **0** (a failed agent restart only warns, as for any accepted apply)
+| Condition | Exit |
+|-----------|------|
+| `--version` or `-V` (answered before the config load and the root check) | `0` |
+| `-h` or `--help` | `0` |
+| No mode given | `2` |
+| Unknown mode | `2` |
+| Config is invalid (`--teardown` instead uses the built-in defaults and logs a warning) | `1` |
+| Not root | `1` |
+| A precondition fails, for example: netplan missing, too old or of unknown version; detection tools missing; or `netplan try` unavailable (does not apply to `--status`, `--reconfigure` and `--teardown`, which check their own needs) | `1` |
+| The lock file cannot be opened (`--boot`, `--rescan`, `--reapply`, `--teardown`) | `1` |
 
-### `--reapply` — `do_reapply`
-- nothing owned → **0**; body identical to on-disk → **0**; applied + accepted → **0**
-- lock timeout → **1**; no-parent refuse / scratch-dir fail / generate fail / readback fail → **1**
-- every `apply_change` failure → **1** (see below)
+### `--status`
 
-### `--boot` — `do_boot` / `--rescan` — `do_rescan`
-- lock busy → **0** `skipped, run in progress` — deliberate, FR-30
-- FR-22 zero-detection abort → **0**, severity now conditional on the owned set
-  (`warning` if owned VLANs are preserved behind a quiet wire, else `info`; D1, fixed
-  in 0.4.12) — was `log err` then 0
-- no change → **0**
-- pending-delete drain failure → **1** and no further reconciliation, with two different shapes: a failed current-state query happens before the delete loop and preserves the pending record untouched; a failure to write the survivor record happens after the attempted deletes, can truncate or partly rewrite the record, and a still-failing token can be lost. A later managed-elsewhere query failure → **1** before any change, but does not undo an earlier drain
-- `gate_vlan_count` refuse (limit exceeded, `refuse` mode) → **1**
-- fill-mode → proceeds to apply; exit reflects the apply outcome (not a distinct code)
-- any `apply_change` failure → **1**
+| Condition | Exit |
+|-----------|------|
+| Detection tools missing (output shows `detected trunks: unavailable`) | `1` |
+| The detector failed on any sampled interface, so the result is incomplete or unavailable | `1` |
+| A query for VLANs managed elsewhere failed | `1` |
+| Everything else, including a valid but quiet wire | `0` |
 
-### `apply_change` failure paths (all → 1)
-- C1 default-route-in-removals guard; route-metric conflict; backup
-  fail; generate fail; validate fail; **health-fail or otherwise unaccepted
-  apply** — `return 1`. Rc 1 means unaccepted, failed or uncertain; it is not
-  proof of a completed live revert (the caller's message says so, L6). A stop
-  request (SIGTERM, FR-43) before or after ACCEPT also exits 1
+### `--reconfigure`
 
-## Proposed frozen table
+| Condition | Exit |
+|-----------|------|
+| The drop-in directory cannot be created | `1` |
+| The drop-in file cannot be written | `1` |
+| `systemctl daemon-reload` fails (the new timer interval is not active) | `1` |
+| The drop-in is written and the reload succeeds | `0` |
+| The drop-in is written and systemd is not running (the reload is skipped, not failed) | `0` |
 
-| Code | Meaning | Notes |
-|------|---------|-------|
-| `0` | Success or a deliberate no-op; does not by itself establish routing health. | Covers: applied+accepted; nothing to change; lock-skip; guarded aborts (see dispositions) |
-| `1` | Operational refusal, failure or interruption; may follow partial work, an unaccepted/uncertain apply, or interruption after ACCEPT. Does not prove a completed revert. | The union is intentional (see D4); the cause is in the journal |
-| `2` | Usage error: no mode, or an unknown mode (requested `-h`/`--help` is `0`) | Never touches config or hardware |
-| `3` | *(proposed, optional)* Applied, post-apply health check FAILED, revert attempted | Only if a real consumer needs it — see Decision below |
+### `--dry-run`
 
-Codes stay below 126 (shell/signal reserved range). Additions to this table are allowed
-post-1.0 as a free minor addition **provided the table is documented as open-ended** —
-i.e. a consumer must treat any unknown non-zero as failure, not assume {1,2} exhaustive.
+`--dry-run` never applies anything.
 
-## Dispositions for the ambiguous exit-0 states
+| Condition | Exit |
+|-----------|------|
+| Validation passes, or there is nothing to do (a quiet wire still validates) | `0` |
+| Validation rejects the candidate config | `1` |
+| The VLAN-count gate refuses the change; nothing is validated | `1` |
+| The base netplan tree cannot be copied or the scratch tree cannot be created; nothing is validated | `1` |
+| A query for pending deletes or for VLANs managed elsewhere failed | `1` |
+| Any other early refusal, for example the candidate config cannot be written into the scratch tree | `1` |
 
-Three terminal states currently return 0 for "changed nothing." Each needs a ruling so
-the freeze is deliberate.
+### `--teardown`
 
-### D1 — FR-22 zero-detection abort: **FIXED in 0.4.12**
-Was `log err "...aborted..."` then `return 0` — an error-severity log paired with a
-success exit, internally inconsistent. It is an intended no-op (zero detection + removal
-disabled → change nothing), so exit 0 is correct and the log level was the bug. The same
-predicate was already `log info` in `do_rescan`, so boot was the outlier.
+| Condition | Exit |
+|-----------|------|
+| Not root, `ip` missing, netplan unsupported, or `netplan try` unavailable | `1` |
+| The lock wait times out | `1` |
+| `dynavlan.timer` or `dynavlan.service` is enabled, active, or in an unknown state | `1` |
+| The pending-delete drain fails | `1` |
+| The owned file cannot be read or is not recognized | `1` |
+| Nothing is owned | `0` |
+| The apply is not accepted or ends uncertain (no advice to delete links by hand) | `1` |
+| A stop request (SIGTERM) arrives | `1` |
+| The apply is accepted, but a link is still present or the final drain failed | `1` |
+| The apply is accepted and everything is clean | `0` |
 
-Fixed by making the severity track the owned set (the guard now computes `owned` first):
-`warning` when owned VLANs are being preserved behind a now-quiet wire (the per-trunk
-preserve `warning` is unreachable from this early return, so this is the only
-signal — matching that line's convention), `info` when nothing is owned and there is
-genuinely nothing to do (matching `do_rescan`). A blanket `warning` was rejected: it would
-cry-wolf on every boot of a dark spare box; a blanket `info` would lose the signal under
-`LOG_LEVEL=warning`. `notice` was rejected: the codebase reserves it for state changes.
+After an accepted apply, a failed agent restart only logs a warning. It does not change the exit.
 
-Note: dynavlan's `log()` prints the level as *text* to stderr and no unit sets
-`SyslogLevel=`, so journald records every line at one uniform priority — severity is
-visible to human readers and to dynavlan's own `LOG_LEVEL` gate, but NOT to
-`journalctl -p`. The severity choice matters for those two, not for priority filtering.
+### `--reapply`
 
-### D2 — Lock-skip: **KEEP 0, document**
-`log info "skipped, run in progress"` → 0. Deliberate per FR-30: a timer rescan that
-collides with a running apply is a healthy no-op, not a failure; it retries next cycle.
-Freeze as 0. No change.
+| Condition | Exit |
+|-----------|------|
+| Nothing is owned | `0` |
+| The on-disk file already matches what this build generates | `0` |
+| The regenerated config is applied and accepted | `0` |
+| The lock wait times out | `1` |
+| The owned file has VLANs but no parent link, or the scratch directory, config generation, or read-back fails | `1` |
+| The apply fails (see [Apply failures](#apply-failures)) | `1` |
 
-### D3 — No-change reconcile: **KEEP 0, document**
-Nothing to add or remove → 0. Unambiguously correct. Freeze as 0. No change.
+### `--boot` and `--rescan`
 
-### D4 — Health-fail revert: **KEEP 1** (decision point for code 3 below)
-Currently 1, grouped with refused-before-trying. Keep it non-zero on **observability
-grounds**: both systemd units are `Type=oneshot` with no `OnFailure=`/`SuccessExitStatus=`,
-so a non-zero exit is the only passive signal that puts the unit in failed state — the one
-signal a headless box surfaces to `systemctl --failed`. Exit 0 here would hide the single
-failure the tool exists to survive. Keep 1.
+| Condition | Exit |
+|-----------|------|
+| Another run holds the lock (logs `skipped, run in progress`; this is deliberate) | `0` |
+| Nothing was detected and `REMOVE_ON_CARRIER_LOSS=false`: dynavlan changes nothing | `0` |
+| No change is needed (also after VLAN-limit gating) | `0` |
+| The change is applied and accepted | `0` |
+| The pending-delete drain fails; nothing more is reconciled | `1` |
+| A query for VLANs managed elsewhere fails; this happens before any change | `1` |
+| The VLAN limit is exceeded and `VLAN_LIMIT_MODE` is not `fill` | `1` |
+| The apply fails (see [Apply failures](#apply-failures)) | `1` |
+| A stop request (SIGTERM) arrives | `1` |
 
-## Open decision — add code 3?
+Notes:
 
-Whether to split D4 out from generic `1` into a distinct code `3` = "applied,
-health-failed, auto-reverted, box safe."
+- When nothing is detected and `REMOVE_ON_CARRIER_LOSS=false`, `--boot` logs a warning if
+  owned VLANs exist and are kept, and an info line if nothing is owned. `--rescan` logs an
+  info line in both cases. The exit is `0` in every case.
+- With `VLAN_LIMIT_MODE=fill`, dynavlan adds only as many VLANs as the limit allows and goes
+  on to the apply. The exit then reflects the apply.
+- A drain failure has two forms. If the query for current state fails, it fails before any
+  delete runs, and the pending record is not touched. If the survivor record cannot be
+  written, it fails after the deletes ran. The record can then be cut short or partly
+  rewritten, and a token that still fails can be lost. A failed managed-elsewhere query later
+  in the run also exits `1`, but it does not undo an earlier drain.
 
-- **For:** a remote operator on a degraded link, without journal access, could distinguish
-  "refused cold, nothing tried" (`1`) from "tried, reverted, box safe" (`3`) from `$?`
-  alone.
-- **Against:** to systemd the distinction is cosmetic — `Type=oneshot` + any non-zero =
-  failed; `OnFailure=` cannot discriminate by code; the journal already logs the revert at
-  `err` with full context (FR-38 journal-as-provenance). With zero deployed consumers of
-  `$?` today, the yield is low.
+### Apply failures
 
-**Recommendation: do NOT add code 3 for 1.0.** Keep the table `{0,1,2}`, document it as
-open-ended so `3` can be added later as a free minor addition *if and when* the
-remote-operator consumer becomes real. Adding it now is speculative surface against no
-demand (project principle: smallest thing that works). If added, add *only* `3`; do not
-proliferate.
+`--boot`, `--rescan`, `--reapply` and `--teardown` share one apply step. Each of these makes it
+return `1`, and so makes the mode exit `1`:
 
-## Summary of actions
-
-1. **D1:** DONE in 0.4.12 — FR-22 abort severity now tracks the owned set (`warning` if
-   preserving owned VLANs, else `info`), exit 0 unchanged.
-2. **D2/D3:** no change; document as deliberate 0-exits.
-3. **D4:** keep revert → 1; document.
-4. **Code 3:** deferred; freeze `{0,1,2}` as open-ended, add `3` post-1.0 only on real demand.
-5. Freeze this table into `COMPATIBILITY.md` at Gate 4.
+- The current default-route interface is in the removal set (dynavlan refuses before it
+  changes anything).
+- The route-metric check finds a conflict.
+- A stop request arrives before the apply starts.
+- Validation of the candidate config fails.
+- The current owned file cannot be backed up, or the new file cannot be written.
+- `netplan try` is not accepted. This includes a health-check failure. The result is
+  unaccepted, failed or uncertain. It does not prove that the revert finished.
+- The apply is accepted, but a delete failed and its retry record could not be written. The
+  removed VLANs are not confirmed gone.
+- A stop request arrives after ACCEPT. The change stays, and the lease wait and agent restart
+  can be skipped.
