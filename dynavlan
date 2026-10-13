@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="0.4.21"
+ver="0.4.22"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -1032,9 +1032,16 @@ lldp_tagged_vlans() {
 detect_lldp() { # IFACE -> "STATUS IDS" - STATUS ok|fail (H1), IDS = tagged LLDP VLAN ids (PVID excluded)
 	local i="$1" out rc
 	# lldpctl returns 0 even with no neighbors (empty output); a non-zero exit means
-	# the daemon is down or the query errored - a failed sample, not an empty trunk.
-	out=$(lldpctl -f keyvalue "$i" 2>/dev/null)
+	# the query errored - a failed sample, not an empty trunk. lldpd 1.0.13 also exits 0
+	# when it cannot reach the daemon, so the same query's own connection diagnostic
+	# (stderr, merged here; the parse reads only `.vlan.` keys) fails the sample too.
+	out=$(LC_ALL=C lldpctl -f keyvalue "$i" 2>&1)
 	rc=$?
+	# grep reads all input (no -q): under pipefail an early-exiting grep can SIGPIPE printf
+	# on a long response and turn a match into a false.
+	if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -iE 'unable to connect to (socket|lldpd daemon)' >/dev/null; then
+		rc=1
+	fi
 	case "$rc" in
 	0) printf 'ok %s' "$(lldp_tagged_vlans "$out")" ;;
 	*) printf 'fail %s' "$(lldp_tagged_vlans "$out")" ;;
@@ -2260,13 +2267,13 @@ do_boot() {
 	warn_overlap "$owned"
 
 	if [ -z "$all_additions" ] && [ -z "$all_removals" ]; then
-		log info "no change: owned=[${owned:-none}]; zero applies/restarts"
+		log info "no change: owned=[${owned:-none}]; nothing to apply"
 		return 0
 	fi
 
 	all_additions=$(gate_vlan_count "$(set_minus "$owned" "$all_removals")" "$all_additions") || return 1
 	if [ -z "$all_additions" ] && [ -z "$all_removals" ]; then
-		log info "no change after VLAN_LIMIT gating; zero applies/restarts"
+		log info "no change after VLAN_LIMIT gating; nothing to apply"
 		return 0
 	fi
 
@@ -2370,13 +2377,13 @@ do_rescan() {
 	warn_overlap "$owned"
 
 	if [ -z "$all_additions" ] && [ -z "$all_removals" ]; then
-		log info "rescan: no changes (owned=[${owned:-none}]); zero applies/restarts"
+		log info "rescan: no changes (owned=[${owned:-none}]); nothing to apply"
 		return 0
 	fi
 
 	all_additions=$(gate_vlan_count "$(set_minus "$owned" "$all_removals")" "$all_additions") || return 1
 	if [ -z "$all_additions" ] && [ -z "$all_removals" ]; then
-		log info "rescan: no changes after VLAN_LIMIT gating; zero applies/restarts"
+		log info "rescan: no changes after VLAN_LIMIT gating; nothing to apply"
 		return 0
 	fi
 
@@ -2475,10 +2482,13 @@ do_dryrun() {
 	printf '  additions: [%s]\n' "${all_additions:-none}"
 	printf '  removals:  [%s]  (indicative; boot confirms with a 2-pass sniff or a 2-sample carrier check)\n' "${all_removals:-none}"
 	printf '  target:    [%s]\n' "${target:-none}"
-	printf '  count gate: %s (%s VLANs; VLAN_WARN=%s VLAN_LIMIT=%s mode=%s)\n' \
-		"$(vlan_guard "$(count_ids "$target")" "$VLAN_WARN" "$VLAN_LIMIT")" \
-		"$(count_ids "$target")" "$VLAN_WARN" "$VLAN_LIMIT" "$VLAN_LIMIT_MODE"
-	[ "$gate_refused" = 1 ] && printf '  count gate REFUSED: --boot/--rescan would change nothing (additions and removals cancelled; target is the unchanged owned set)\n'
+	if [ "$gate_refused" = 1 ]; then
+		printf '  count gate REFUSED: --boot/--rescan would change nothing (additions and removals cancelled; target is the unchanged owned set)\n'
+	else
+		printf '  count gate: %s (%s VLANs; VLAN_WARN=%s VLAN_LIMIT=%s mode=%s)\n' \
+			"$(vlan_guard "$(count_ids "$target")" "$VLAN_WARN" "$VLAN_LIMIT")" \
+			"$(count_ids "$target")" "$VLAN_WARN" "$VLAN_LIMIT" "$VLAN_LIMIT_MODE"
+	fi
 
 	for trunk in $all_trunks; do
 		local detected_ids t_owned t_adds t_rems cstate

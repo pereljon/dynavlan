@@ -86,7 +86,7 @@ Every set in the pipeline holds `iface.id` tokens, not bare VLAN ids, so two tru
 | `prep_iface` / `has_carrier` | Admin-up + promisc on (records failure via `prep_fail_var`, H1); carrier probe |
 | `detect_sniff` | Passive 802.1Q capture, INBOUND ONLY (`-Q in`, FR-5a: our own egress is not evidence); minimal snaplen, no disk → `"STATUS IDS"` where STATUS is ok\|fail from tcpdump's own exit (`{0,124}`=ok; captured before the grep pipeline so `pipefail`+grep cannot mask a real failure, H1) |
 | `lldp_tagged_vlans` | Pure: tagged VLAN ids from `lldpctl -f keyvalue` text; drops the native VLAN (`pvid=yes`), stateful adjacency parse (FR-7a) |
-| `detect_lldp` | lldpctl-advertised VLAN ids (PVID excluded) → `"STATUS IDS"`, STATUS ok\|fail from lldpctl's exit (H1) |
+| `detect_lldp` | lldpctl-advertised VLAN ids (PVID excluded) → `"STATUS IDS"`, STATUS ok\|fail from lldpctl's exit or its own zero-exit connection diagnostic (H1, HV-41; tests 1aw) |
 | `detect_iface` | Union of enabled methods for one iface → `"SNIFFSTATUS LLDPSTATUS IDS..."` (relays per-method run status for the validity verdict, H1) |
 | `store_detection` | Parse a `detect_iface` line, stash `TAGS_` (ids) + `VALID_` (removal-trust verdict via `detection_sample_valid` + the prep flag); empty/short line defaults to `invalid` (safe: preserves owned VLANs) (H1) |
 | `run_detection` | Orchestrate: prep all, ONE shared carrier deadline, concurrent per-iface detection → `store_detection` sets `TAGS_`/`VALID_` per iface → `DETECTED_TRUNKS` (every carrier-up iface with a non-empty tag set, not a single selected trunk) and `DETECT_INVALID` (every SAMPLED iface whose detector failed, tagged or not, D5) |
@@ -182,5 +182,5 @@ The core also calls `netplan`, `ip` and the owned file directly (version/`try` p
 | `dynavlan-rescan.service` | Timer-invoked oneshot (`--rescan`) |
 | `dynavlan.timer` | OnBootSec/OnActiveSec/OnUnitActiveSec → rescan service; the `--reconfigure` drop-in resets the monotonic list and restates `OnActiveSec` + `OnUnitActiveSec`, so it intentionally replaces the base `OnBootSec` with `OnActiveSec` |
 | `install.sh` | Root installer: stamps the build id into the script (FR-38, awk + verify + `bash -n`), script/config/units, deps, persistent journald, enables service+timer for NEXT boot (never applies); ONE EXIT trap (`cleanup`) does temp-file removal and timer restore |
-| `tests/unit.sh` | Layer-1 unit suite (sections 1a-1av): pure helpers plus real functions run with stubbed system commands; sources the script and folds in `tests/lifecycle.sh` (§1aq) |
+| `tests/unit.sh` | Layer-1 unit suite (sections 1a-1aw): pure helpers plus real functions run with stubbed system commands; sources the script and folds in `tests/lifecycle.sh` (§1aq) |
 | `tests/lifecycle.sh` | Package maintainer-script and `install.sh` lifecycle tests against fake `systemctl`/`dpkg`; run from `unit.sh` §1aq |

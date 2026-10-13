@@ -177,7 +177,7 @@ above stay tied to the builds they were run on.
 |------|-------|--------|
 | Pristine package install, manual-to-package migration | HV-02, HV-21 | D6 |
 | Installer posture, restoration failure, historical config migration | HV-20, HV-23, HV-25 | D8, D9 |
-| LLDP detector failure (failed in batch 2, fix pending) | HV-41 | D4 |
+| LLDP detector failure (failed in batch 2; fixed locally in 0.4.22, hardware recheck pending) | HV-41 | D4 |
 | Package remove/purge, attended teardown | HV-60, HV-61 | D7 |
 | Published package reaches the box | HV-31 | D3 (only an authorized release can prove it) |
 

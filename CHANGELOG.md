@@ -12,6 +12,14 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ### Fixed
 
+- LLDP detector failure read as an empty trunk (`ver=` 0.4.21 -> 0.4.22). `lldpctl` (lldpd 1.0.13)
+  exits 0 when it cannot reach the daemon, so with `DETECT_METHOD=lldp` and lldpd down `--status`
+  reported `detected trunks: [none]` with exit 0 (hardware case HV-41). The query's own connection
+  diagnostic now fails the LLDP sample, so status reports detection unavailable and exits non-zero,
+  and the sample cannot authorize a detection-diff removal. Under `both`, a good sniff still decides.
+- Misleading output (same version). A steady boot or rescan logged "zero applies/restarts" just
+  before the separate new-subnet pass could restart a target; it now says "nothing to apply". A
+  count-gate refusal in `--dry-run` no longer prints a "count gate: OK" line before "count gate REFUSED".
 - Rollback correctness (`ver=` 0.4.20 -> 0.4.21). `apply_change` validated the candidate with a real
   `netplan generate` before `netplan try`, so try's runtime backup (`/run/systemd/network`) captured the
   candidate's generated files and a revert restored them (observed on hardware: an interrupted add left

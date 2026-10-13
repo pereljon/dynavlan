@@ -3111,6 +3111,7 @@ _g4_out=$(
 )
 _g4_has "1ar dry-run count-gate refusal returns 1" "rc=1" "$_g4_out"
 _g4_has "1ar dry-run count-gate refusal says so" "count gate REFUSED" "$_g4_out"
+_g4_lacks "1ar dry-run count-gate refusal prints no contradicting \"count gate: OK\" line" "count gate: OK" "$_g4_out"
 _g4_is "1ar dry-run count-gate refusal reports the unchanged owned target" "enp1s0.100" "$(_g4_printed_target "$_g4_out")"
 _g4_is "1ar dry-run count-gate refusal cancels removals" "none" "$(_g4_removals "$_g4_out")"
 _g4_lacks "1ar dry-run count-gate refusal never validates the rejected candidate" "CALLS:validate" "$_g4_out"
@@ -4076,6 +4077,75 @@ _av_has "1av stage: a failed copy of an EXISTING optional input refuses" "rc=1" 
 rm -rf "$_av_dir"
 unset -f _av _av_has _av_lacks _av_chk
 unset _av_dir _av_env _av_o
+
+# ---------------------------------------------------------------------------
+# 1aw. LLDP query failure with a zero exit (HV-41). lldpctl (lldpd 1.0.13) exits 0
+#      with empty output when it cannot reach the daemon; only its diagnostic shows
+#      the failure. Each case runs the REAL functions in a fresh bash; lldpctl and the
+#      link/carrier helpers are the only stubs.
+# ---------------------------------------------------------------------------
+
+_aw_dir=$(mktemp -d)
+_aw() { # SCRIPT -> its stdout; real dynavlan functions loaded, lldpctl stubbed
+	AW_DIR="$_aw_dir" bash -c 'source "$1"; set +e +u
+lldpctl() { echo "LC_ALL=${LC_ALL:-}" >"$AW_DIR/env"; printf "%b" "${LO:-}"; printf "%b" "${LE:-}" >&2; return "${LRC:-0}"; }
+eval "$2"' _ "${here}/../dynavlan" "$1" 2>/dev/null
+}
+_aw_is() { # DESC EXPECTED ACTUAL
+	tests=$((tests + 1))
+	if [ "$2" = "$3" ]; then
+		printf 'ok   - %s\n' "$1"
+	else
+		fails=$((fails + 1))
+		printf 'FAIL - %s\n       expected [%s]\n       got      [%s]\n' "$1" "$2" "$3"
+	fi
+}
+_aw_conn='2026-10-12T21:08:25 [WARN/control] unable to connect to socket /run/lldpd.socket: No such file or directory\n2026-10-12T21:08:25 [WARN/lldpctl] not able to get the list of interfaces. Unable to connect to lldpd daemon\n'
+_aw_pos='lldp.enp1s0.vlan.vlan-id=1\nlldp.enp1s0.vlan.pvid=yes\nlldp.enp1s0.vlan.vlan-id=20\nlldp.enp1s0.vlan.vlan-id=30\n'
+
+_aw_o=$(_aw 'LE="'"$_aw_conn"'"; echo "[$(detect_lldp enp1s0)]"')
+_aw_is "1aw zero exit with the observed connection error is a failed sample" "[fail ]" "$_aw_o"
+_aw_o=$(_aw 'echo "[$(detect_lldp enp1s0)]"')
+_aw_is "1aw zero exit with a genuinely empty response stays ok (quiet LLDP)" "[ok ]" "$_aw_o"
+_aw_o=$(_aw 'LO="'"$_aw_pos"'"; echo "[$(detect_lldp enp1s0)]"')
+_aw_is "1aw positive output parses as before (PVID excluded)" "[ok 20 30]" "$_aw_o"
+_aw_o=$(_aw 'LO="'"$_aw_pos"'"; LE="2026-10-12T21:08:25 [WARN/lldpctl] some unrelated warning\n"; echo "[$(detect_lldp enp1s0)]"')
+_aw_is "1aw an unrelated stderr warning does not fail a successful query" "[ok 20 30]" "$_aw_o"
+_aw_o=$(_aw 'LO="lldp.enp1s0.vlan.vlan-id=20\n"; LRC=1; echo "[$(detect_lldp enp1s0)]"')
+_aw_is "1aw a non-zero exit stays a failure and keeps partial ids" "[fail 20]" "$_aw_o"
+_aw_o=$(_aw 'LO="lldp.enp1s0.vlan.vlan-id=20\n"; LE="'"$_aw_conn"'"; echo "[$(detect_lldp enp1s0)]"')
+_aw_is "1aw a zero exit with the connection error fails even with partial ids" "[fail 20]" "$_aw_o"
+_aw_o=$(_aw 'LO=$(printf "%b" "'"$_aw_conn"'"; for n in $(seq 6000); do echo lldp.enp1s0.vlan.vlan-id=20; done); set -o pipefail; echo "[$(detect_lldp enp1s0)]"')
+_aw_is "1aw a long response after the connection error still fails under pipefail" "[fail 20]" "$_aw_o"
+_aw_o=$(_aw 'LC_ALL=de_DE.UTF-8 detect_lldp enp1s0 >/dev/null; cat "$AW_DIR/env"')
+_aw_is "1aw lldpctl runs in the C locale" "LC_ALL=C" "$_aw_o"
+
+# Composed: the real run_detection -> detect_iface -> detect_lldp -> store_detection path.
+_aw_det='log() { :; }; discover_phys_ifaces() { echo enp1s0; }; ip() { return 0; }; has_carrier() { return 0; }
+mktemp() { return 1; }; detect_sniff() { printf "ok 20 30"; }'
+_aw_o=$(_aw "$_aw_det"'; LE="'"$_aw_conn"'"; DETECT_METHOD=lldp; run_detection; echo "rc=$? invalid=[$DETECT_INVALID] valid=$(iface_valid enp1s0) trunks=[$DETECTED_TRUNKS]"')
+_aw_is "1aw lldp-only: a daemon-down query makes the trunk invalid, never a valid empty trunk" "rc=1 invalid=[enp1s0] valid=invalid trunks=[]" "$_aw_o"
+_aw_o=$(_aw "$_aw_det"'; LE="'"$_aw_conn"'"; DETECT_METHOD=both; run_detection; echo "rc=$? invalid=[$DETECT_INVALID] valid=$(iface_valid enp1s0) trunks=[$DETECTED_TRUNKS]"')
+_aw_is "1aw both: a good sniff keeps the sample valid when supplemental LLDP fails" "rc=0 invalid=[] valid=valid trunks=[enp1s0]" "$_aw_o"
+_aw_o=$(_aw "$_aw_det"'; LE="'"$_aw_conn"'"; DETECT_METHOD=lldp; VLAN_MIN=1 VLAN_MAX=1000 IGNORE_SET="" RESTART_ON_NEW_SUBNET=false
+check_detect_deps() { return 0; }; backend_owned_vlans() { printf "enp1s0.20"; }; backend_list_managed_vlans() { return 0; }; current_subnets() { :; }
+do_status; echo "rc=$?"' | grep -E 'detected trunks|^rc=')
+_aw_is "1aw lldp-only status with the daemon down is unavailable and non-zero" "  detected trunks: unavailable (detector failed on [enp1s0]; results may be incomplete)
+rc=1" "$_aw_o"
+
+# Steady no-change runs: the new-subnet restart pass runs AFTER this line, so it must not
+# claim that nothing restarts (batch 2 found it logged just before a real restart).
+_aw_st='log() { l="$1"; shift; printf "%s|%s\n" "$l" "$*"; }; drain_pending_deletes() { return 0; }; warn_overlap() { :; }
+run_detection() { DETECTED_TRUNKS=enp1s0; return 0; }; backend_owned_vlans() { printf "enp1s0.18"; }
+iface_tags() { printf "18"; }; backend_list_managed_vlans() { return 0; }; REMOVE_ON_CARRIER_LOSS=false'
+_aw_o=$(_aw "$_aw_st"'; do_rescan 2>&1 | grep "no changes"')
+_aw_is "1aw steady rescan says nothing to apply, not zero restarts" "info|rescan: no changes (owned=[enp1s0.18]); nothing to apply" "$_aw_o"
+_aw_o=$(_aw "$_aw_st"'; has_carrier() { return 0; }; boot_removals() { :; }; sleep() { :; }; do_boot 2>&1 | grep "no change"')
+_aw_is "1aw steady boot says nothing to apply, not zero restarts" "info|no change: owned=[enp1s0.18]; nothing to apply" "$_aw_o"
+
+rm -rf "$_aw_dir"
+unset -f _aw _aw_is
+unset _aw_dir _aw_conn _aw_pos _aw_o _aw_det
 
 # ---------------------------------------------------------------------------
 # 1aq. Upgrade/systemd lifecycle (Group 2): the real maintainer scripts and install.sh
