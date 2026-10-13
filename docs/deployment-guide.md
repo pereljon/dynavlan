@@ -284,6 +284,12 @@ Removal is two separate things: taking down the network state dynavlan owns (att
   sudo rm /usr/local/sbin/dynavlan /etc/dynavlan.conf
   ```
 
+**Reinstalling after `apt remove`.** The removed package keeps its config but no record of the units' earlier state, so a reinstall leaves both units **disabled and inactive** (the install log says it found no prior-state record). Arm the next boot without starting anything now, then use the attended first run before starting the timer:
+```
+sudo systemctl enable dynavlan.service dynavlan.timer    # no --now
+```
+Then follow section 4 (`--dry-run`, attended `--boot` at the console) and only then `sudo systemctl start dynavlan.timer`.
+
 ### C. If you remove the software without tearing down
 
 Nothing is removed from the network: `/etc/netplan/90-dynavlan.yaml` and the VLAN links stay, and netplan re-creates them at boot, with nothing managing them. Removing the YAML and running `netplan apply` does **not** drop the links (netplan does not delete interfaces). To clear that state later: reinstall and run step A; or, at the console, delete the owned file and reboot; or delete the file and each link by hand with `ip link delete`.

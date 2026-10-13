@@ -9,7 +9,7 @@ Entry format: `- [ ] task`  /  done: `- [x] task (done YYYY-MM-DD)`
 The v1.0 major review is underway on `release/1.0.0-review`. Groups 1, 3, 2a, 2, 4, 5, 6, 7 and 8 are implemented,
 Codex-approved locally and committed locally (nothing pushed, merged or released; the retained `0.4.20 (build d9b3618)` package was deployed to the reference box for the 2026-10-09 first hardware batch). `ver=0.4.20` committed (Group 8, `6eefdd1`).
 Unit suite at the committed Group 8/9A gate: 800 tests, 0 failures. Group 8 bumped `ver=` to 0.4.20 (output wording only).
-2026-10-13: hardware batch 3 on `0.4.22 (build 01e9f98)` passed every run case (HV-02, HV-20..25, HV-41 recheck, HV-60/61, HV-90 and the HV-61 default-route refusal); C1 positive refusal not exercised (switch setup), open questions added; box at its 14-VLAN baseline on 0.4.22. Remaining: those two questions, HV-31 at release, then merge/push/release decisions.
+2026-10-13: hardware batch 3 on `0.4.22 (build 01e9f98)` passed every run case (HV-02, HV-20..25, HV-41 recheck, HV-60/61, HV-90 and the HV-61 default-route refusal); C1 positive refusal accepted on the HV-61 shared-guard refusal (switch-induced `--boot` not exercised); reinstall posture documented; box at its 14-VLAN baseline on 0.4.22 (`01e9f98`). Review and hardware work for the v1.0 review is closed (finding matrix in docs/hardware-validation.md). Remaining for 1.0: merge/push decisions, HV-31 with an authorized release, Gate 4 version-gate hooks and the `COMPATIBILITY.md` freeze (docs/v1.0-definition.md).
 2026-10-12: the isolated pre-try validation fix (`ver=0.4.21`, 871 tests, 0 failures) is committed as `72d9eea`; its clean package runs on the appliance, and its HV-01 restored the prior owned file and runtime files: D2 CLOSED, retained kernel link accepted as a limitation (context/decisions.md 2026-10-12). Hardware batch 2 (runbook steps 4-6) ran the same day: 13 cases PASS, HV-41 FAIL (fails safe), fixed locally in `ver=0.4.22` (uncommitted; hardware recheck pending), box restored (docs/hardware-validation.md).
 
 | Group | Scope | Commit |
@@ -255,10 +255,10 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 - [x] Test .deb build end-to-end (done 2026-08-03): installed the v0.3.0 release .deb on the Domotz box (Ubuntu 22.04), console-backed. Validated install.sh->.deb migration (old /etc/systemd/system units removed, /lib copies live), FR-38 build id (`814bcd1`, was `unknown`), conffile preserved, reboot + boot `--boot` apply (no-change, no revert), and real `domotzpro-agent-publicstore` snap restart. Box now dpkg-managed. Apply->netplan-try->revert path not exercised (no config diff); already hw-validated for v0.3.0.
 - [ ] v1.0 release. DEFINED 2026-08-03 (spec: local-only
       `docs/superpowers/specs/2026-08-03-v1.0-definition-design.md`; decision in
-      context/decisions.md 2026-08-03). Four gates, all required before the 1.0.0 tag:
+      context/decisions.md 2026-08-03). Four gates; Gates 1, 2 and 4 required before the 1.0.0 tag (Gate 3 waived 2026-10-13):
       (1) [x] DONE 2026-08-04: carrier-down VLAN removal shipped as v0.4.0 (see the v0.4.0 milestone above);
       (2) [x] DONE 2026-08-04: APT distribution built, live, and reference-box-validated (see the APT repository hosting milestone above);
-      (3) second-box / multi-site validation on >=1 more box at a different site
+      (3) [waived 2026-10-13, operator decision; post-1.0] second-box / multi-site validation on >=1 more box at a different site
       (non-Meraki switch requirement ALREADY MET via the v0.3.0 UniFi trunk validation);
       (4) 1.0.0 itself = config-surface freeze + `COMPATIBILITY.md` (deprecate-with-warning
       policy) + version-gate git hooks + full major-review (adversarial, other models).

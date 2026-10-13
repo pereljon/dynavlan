@@ -176,7 +176,7 @@ Clean package from `01e9f98` (sha256 `a7e113da...b3f7faa4`); install.sh lanes ra
 | HV-21 normal upgrade | PASS: `dpkg -i` 0.4.21 -> 0.4.22 from enabled/active returned to enabled/active, no reconcile during the swap |
 | HV-41 LLDP detector failure (recheck) | PASS: with lldpd stopped and `DETECT_METHOD=lldp`, `--status` reports detection unavailable and exits 1, `--dry-run` preserves every owned VLAN; with lldpd restored, `--status` exits 0 |
 | HV-61 default-route refusal | PASS via a controlled route override (a temporary metric-5 default through owned `enp1s0.100`; routed mode cannot make a VLAN the default because dynavlan refuses a VLAN metric at or below the uplink's): `--teardown` refused before any disk or link change |
-| C1 positive refusal (Phase 4.1) | NOT EXERCISED: the switch controller kept the temporary VLAN excluded on the box's port after the intended port settings were applied twice, so it never reached the wire; per the batch rules no other switch method was tried |
+| C1 positive refusal (Phase 4.1) | ACCEPTED on shared-guard evidence: the HV-61 default-route refusal above is a real positive refusal by the same `apply_change` default-route guard that `--boot` uses, together with the local mode and dry-run tests. The switch-induced `--boot` scenario is NOT EXERCISED: the switch controller kept the temporary VLAN excluded on the box's port after the intended settings were applied twice, and no other switch method was tried |
 | HV-60 remove and purge | PASS: remove keeps the conffile, removes the script, units and wants links, and makes no Netplan or link call; after a reboot no unit invokes the missing script and the retained owned YAML recreates the VLANs. Purge removes the conffile and the timer drop-in. Reinstalling over the removed state leaves both units disabled (no prior-state record), so the operator re-enables them |
 | HV-61 teardown | PASS: refuses with the timer enabled, with it active, and with the run lock held past 300 s; the real teardown removes every owned VLAN through `netplan try` with base files and defaults unchanged; re-enabling and an attended `--boot` recreate the set |
 | HV-20 direct upgrades | PASS: enabled/active returns to enabled/active, disabled/inactive stays so, no reconcile during the swap, build matches the clone |
@@ -187,15 +187,55 @@ Clean package from `01e9f98` (sha256 `a7e113da...b3f7faa4`); install.sh lanes ra
 | HV-02 pristine install | PASS: from a state with no package, units, config, record or process, `dpkg -i` enables both units for the next boot and leaves the timer inactive with no run; after a reboot the boot reconcile ran under 0.4.22 and the timer runs on schedule |
 | HV-90 final observation | PASS: a real timer rescan reported no changes; `--status` and `--dry-run` clean |
 
+Control-path deviations, recorded as they happened: the serial console has no autologin and sat at a login prompt after each reboot, so the S4 refusals, teardown and recovery `--boot` ran over SSH to the base address `192.168.100.118` (on no VLAN, so teardown could not cut that session), and reboot 3 was issued over SSH after a reboot command typed at the console login prompt failed as a login. The observed results stand; base-address SSH does not replace the console-only rule, and future destructive or reboot work needs an authenticated console shell first.
+
+## v1.0 review: finding closure
+
+Hardware evidence is on `0.4.20`-`0.4.22` from the records above; "local" means unit, lifecycle-harness or dry-run evidence that Codex accepted for the pass.
+
+| Finding | Remediation | Evidence | Status |
+|---------|-------------|----------|--------|
+| D1 pending-delete default guard | Group 1 (`bf59ab0`) | local; shared default guard shown live in HV-61 | closed |
+| D2 stop during `netplan try` | Groups 2a, `72d9eea` | HV-01 on 0.4.21 | closed; retained candidate link accepted (FR-43) |
+| D3 APT publication | Group 3 (`34bed4e`) | local; HV-31 needs a real release | open until a release |
+| D4 status/dry-run link mutations disclosed | Group 4 | HV-40 | closed |
+| D5 detector failure reported as `[none]` | Group 4, `01e9f98` | HV-41 on 0.4.22, HV-44 | closed |
+| D6 fresh install vs migration | Group 2 | HV-02, HV-21 | closed |
+| D7 removal lifecycle | Group 6 | HV-60, HV-61 | closed |
+| D8 direct upgrade re-enables units | Group 2 | HV-20 | closed |
+| D9 failed upgrade leaves timer stopped | Group 2 | HV-22 (package), HV-21; fault branches local | closed |
+| D10 reload failure reported as success | Group 2 | HV-24 live; injected failures local | closed |
+| D11, D12, D13, S1, L16 documentation | Group 8 | review | closed |
+| S2, S3 dry-run planning | Group 4 | HV-42, HV-43 | closed |
+| L1 external Netplan keys | Group 1 | HV-10 | closed |
+| L2 config grammar | Group 5 | HV-50 | closed |
+| L3 prerm continues after a failed stop | Group 2 | HV-22 | closed |
+| L4 `get.sh` cleanup | Group 3 | local | closed locally; exercised with a release |
+| L5 direct upgrade hides a failed timer restore | Group 2 | HV-23 | closed |
+| L6, L7 honest apply reporting, pending-delete ownership | Group 1 | local; HV-01 reporting | closed |
+| L8 dry-run base-copy failure | Group 4 | local (HV-46) | closed |
+| L9 quiet-wire dry-run | Group 4 | HV-43 | closed |
+| L10 no-target subnets | Group 4 | HV-45 | closed |
+| L11 ignore/range preserve | Group 5 | HV-51 | closed |
+| L12 routed metric order | Group 5 | HV-52 | closed |
+| L13 status union rows | Group 4 | HV-44 | closed |
+| L14 generated policy needs reapply | Group 5 | HV-53 | closed |
+| L15 `PER_VLAN_MAC` direct migration | Group 2 | HV-25 | closed |
+| T1 direct test evidence | Group 7 | HV-70 on the target OS | closed |
+| Rollback runtime-backup contamination (found in HV-01) | `72d9eea` | HV-01 on 0.4.21 | closed |
+| HV-41 LLDP zero-exit failure (found in batch 2) | `01e9f98` | HV-41 on 0.4.22 | closed |
+| C1 positive refusal (gate-4 carry-over) | earlier release | HV-61 shared guard | accepted; switch-induced `--boot` not exercised |
+
+Open low-severity wording, recorded and not fixed: teardown after a default-route refusal also prints "teardown not completed (the apply was not accepted or ended uncertain)"; HV-23 repeats its restart error 3-4 times.
+
 ## Pending: final-build pass
 
-The console-backed pass on the final build is complete apart from the rows below (HV-01/D2 and batches 2 and 3 are done, see above). Nothing below has passed on
+The console-backed pass on the final build is complete apart from the row below (HV-01/D2 and batches 2 and 3 are done, see above). Nothing below has passed on
 hardware; the unit suite and local lifecycle tests do not close these. Historical results
 above stay tied to the builds they were run on.
 
 | Area | Cases | Relates to |
 |------|-------|--------|
-| C1 positive refusal (not exercised in batch 3: the test VLAN never reached the wire) | Phase 4.1 | C1 |
 | Published package reaches the box | HV-31 | D3 (only an authorized release can prove it) |
 
 Before the pass: confirm the running build with `dynavlan --version` (a `-dirty` suffix or
