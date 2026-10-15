@@ -39,13 +39,16 @@ Remove an owned VLAN when every trusted sample has missed it for `REMOVE_MISSING
 ### 3.1 Missing-since state
 
 - dynavlan records, per owned VLAN token, the time of the first trusted sample that missed it.
-- The state file is `/run/dynavlan/missing-since`, one `TOKEN EPOCH` line per VLAN. It sits next to `pending-delete` and `seen`.
+- The time is the system uptime in whole seconds, read from `/proc/uptime`.
+- The state file is `/run/dynavlan/missing-since`, one `TOKEN UPTIME_SECONDS` line per VLAN. It sits next to `pending-delete` and `seen`.
 - `/run` is cleared at reboot. The clock therefore restarts at boot, and a VLAN missing at boot is removed `REMOVE_MISSING_MINUTES` later, by a rescan.
 - A sample that sees the VLAN deletes its line.
 - A removal that is accepted deletes its line.
 - A VLAN that is no longer owned has its line dropped on the next write.
 
 **Decision (2026-10-15):** keep the state in `/run`, not `/var/lib`. Rejected: `/var/lib/dynavlan`, which survives reboot and would let a box that moved site remove VLANs on an old clock. Rejected: deriving absence from the journal, which is not a state store and can be rotated or set to volatile.
+
+**Decision (2026-10-15, operator-approved):** the clock is uptime, not wall-clock epoch time. The state lives in `/run`, so uptime covers exactly the same span, and it never jumps. Rejected: epoch time, because the wall clock can jump forward when NTP syncs after boot, so a VLAN that just went missing would look overdue and be removed early. A recorded value above the current uptime is treated as malformed and restarted at the current uptime.
 
 ### 3.2 What counts as a miss
 
@@ -84,9 +87,11 @@ Boot keeps its two-pass, detection-diff removal for Case B. Boot also updates th
 
 | Key | Default | Valid values |
 |-----|---------|--------------|
-| `REMOVE_MISSING_MINUTES` | `15` | `0` (off), or an integer from `RESCAN_MINUTES * 2` to `1440` |
+| `REMOVE_MISSING_MINUTES` | `15`, raised to `RESCAN_MINUTES * 2` when that is larger | `0` (off), or an integer from `RESCAN_MINUTES * 2` to `1440` |
 
-The lower bound makes sure that at least two rescan samples confirm a miss.
+The lower bound makes sure that at least two rescan samples confirm a miss. The range check applies only to a value the operator sets. An unset key takes the larger of `15` and `RESCAN_MINUTES * 2`, even above `1440`.
+
+**Decision (2026-10-15, operator-approved):** the unset default follows `RESCAN_MINUTES`. Why: a fixed default of `15` is below the floor on any box with `RESCAN_MINUTES` of 8 or more, so `load_config` would refuse after the upgrade and the box would stop reconciling. An explicit value keeps the strict check, because no existing conffile sets the new key. Rejected: clamping an explicit value with a warning, which hides an operator's mistake.
 
 **Decision (2026-10-15):** on by default, at 15 minutes (3 rescans at the default interval). Rejected: 60 minutes, which leaves stale VLANs for too long. Rejected: off by default, which keeps the defect on every existing box.
 

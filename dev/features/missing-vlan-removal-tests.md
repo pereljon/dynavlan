@@ -23,6 +23,8 @@ Pure helpers, written RED before GREEN.
 | MV-11 | A VLAN no longer owned | Its line is dropped on the next write |
 | MV-12 | A missing or unreadable state file | Treated as empty; the run continues |
 | MV-13 | Config: the default, `0`, the lower bound, `RESCAN_MINUTES * 2 - 1`, `1441`, and a non-integer | `15`; off; accepted; refused; refused; refused |
+| MV-13a | Config: unset key with `RESCAN_MINUTES=10`; explicit `15` with `RESCAN_MINUTES=10`; unset key with `RESCAN_MINUTES=1000` | `20`; refused; `2000` |
+| MV-15 | A recorded time above the current uptime | Restarted at the current uptime; not due |
 | MV-14 | `CONFIG_KEYS` and the `dynavlan.conf` template | Both list the key (existing allowlist and template checks) |
 
 ## Layer 3: hardware tests
