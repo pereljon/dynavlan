@@ -496,11 +496,11 @@ Enforced by: `carrier_removals`, `have_routing`; `tests/unit.sh` §1r, §1s, §1
 
 ### A missing VLAN is removed only after a quiet window (FR-44)
 
-**Rule:** Remove an owned VLAN for being missing only from `--rescan`, only after trusted samples on its carrier-up trunk have missed it for `REMOVE_MISSING_MINUTES`, only when `have_routing` is true, and only when the clock record was written.
+**Rule:** Remove an owned VLAN for being missing only from `--rescan`, only after an unbroken stretch of trusted samples on its carrier-up trunk has missed it for `REMOVE_MISSING_MINUTES`, only when `have_routing` is true, and only when the clock record was written.
 
-Why: One missed sample is not evidence of absence, because a sniff misses a silent VLAN and boot is the least reliable window. A sighting deletes the clock. A failed or carrier-down sample neither starts nor deletes it, so time keeps counting from the first miss (open question I3). A stale record must never make a later miss look overdue.
+Why: One missed sample is not evidence of absence, because a sniff misses a silent VLAN and boot is the least reliable window. A sighting deletes the clock, and so does a run where the trunk had no trusted carrier-up sample (a failed sample, no sample, or carrier lost), because time without evidence must not count toward the window. A stale record must never make a later miss look overdue.
 
-- A miss needs carrier up, a trusted sample (H1), and an absent id. A sighting deletes the record line.
+- A miss needs carrier up, a trusted sample (H1), and an absent id. A sighting, or a run without a trusted carrier-up sample on the trunk, deletes the record line.
 - The clock is uptime from `/proc/uptime`, not wall time. It restarts at reboot, as `/run` does, and NTP steps cannot move it.
 - A run that cannot write the record drops it, so every clock restarts. With the key at 0 the record is deleted.
 - Boot records the clock and logs a warning when a VLAN is due, but never removes.

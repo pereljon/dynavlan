@@ -156,14 +156,14 @@ Value rules:
 - **Boot re-detection.** The settle time before the second detection pass uses the value
   as set.
 
-**`REMOVE_MISSING_MINUTES`.** Version 1.1.0 added this key on by default (decision of 2026-10-15). A
+**`REMOVE_MISSING_MINUTES`.** Version 1.1.1 added this key on by default (decision of 2026-10-15). A
 rescan now removes an owned VLAN that every trusted sample on its carrier-up trunk has
 missed for the configured time, where 1.0.0 kept it until a reboot or a teardown. This
 changes behavior on an existing box, so the addition rule would classify it as a breaking
 change. The operator approved shipping it in `1.x` anyway, as a fix of FR-23 and AC-3: the
 old rule left a VLAN that the switch no longer carried in place indefinitely. Set
 `REMOVE_MISSING_MINUTES=0` to restore the 1.0.0 behavior. An empty or unset value never
-fails the load, so a conffile written before 1.1.0 keeps working at any `RESCAN_MINUTES`.
+fails the load, so a conffile written before 1.1.1 keeps working at any `RESCAN_MINUTES`.
 
 **Unknown keys.** The refusal of an unknown key is part of the contract. The frozen key
 set is exactly the 22 keys in the table. A new key follows the rule in

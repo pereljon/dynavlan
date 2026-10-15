@@ -10,7 +10,8 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
   An explicit value is `0` (off) or an integer from `RESCAN_MINUTES*2` to 1440; any other value
   makes `load_config` refuse.
 - `--rescan` removes an owned VLAN that every trusted sample on its carrier-up trunk has missed
-  for `REMOVE_MISSING_MINUTES`, when routing is healthy. The removal joins the run's one apply.
+  for `REMOVE_MISSING_MINUTES`, when routing is healthy. A run with no trusted carrier-up sample
+  on the trunk restarts the clock. The removal joins the run's one apply.
   The clock is kept in `/run/dynavlan/missing-since` and counts uptime, so it restarts at reboot.
   `--boot` only starts the clock.
 - `--status` and `--dry-run` print the missing VLANs with the minutes left, the ones due now, or

@@ -1,7 +1,7 @@
 ---
 kind: feature
 lifecycle: building
-status: drafted and approved 2026-10-15; amended 2026-10-15 (default, uptime clock); code-complete on feature/missing-vlan-removal (ed23b5f, 1.1.0), code-reviewed, not hardware-validated
+status: drafted and approved 2026-10-15; amended 2026-10-15 (default, uptime clock); code-complete on feature/missing-vlan-removal (1.1.1; I3 applied), code-reviewed, not hardware-validated
 ---
 
 # Missing-VLAN removal: design
@@ -58,7 +58,9 @@ A miss is a run in which all of these are true for the VLAN's trunk:
 - The sample was trusted: no capture method failed (H1, `DETECT_INVALID`).
 - The VLAN ID was absent from the sample.
 
-A run that fails any of these is neither a miss nor a sighting. It leaves the clock alone. A carrier-down trunk stays with FR-41 and its debounce.
+A run that fails either of the first two for a trunk restarts the clocks of every owned VLAN on that trunk, as a sighting does. A removal therefore needs an unbroken stretch of trusted misses. Carrier-down removal stays with FR-41 and its debounce.
+
+**Decision (2026-10-15, operator-approved, review finding I3):** a run with no trusted carrier-up sample restarts the trunk's clocks. Why: as first built, such runs left the clock alone, so time with no evidence counted toward the window, and one sample taken while a port converged after a link outage could remove every VLAN on it. Rejected: (b) also restarting on a change of `/sys/class/net/<if>/carrier_changes`, which adds state for the same protection; (c) leaving the clock alone. Accepted cost: a detector that keeps failing never removes by this rule.
 
 ### 3.3 When a VLAN is removed
 
@@ -114,7 +116,7 @@ The lower bound makes sure that at least two rescan samples confirm a miss. The 
 - `COMPATIBILITY.md`: the new key row.
 - `dev/SKELETON.md`: the removal invariant. `dev/CODEMAP.md`: rows for new functions.
 
-## 5. As built (1.1.0)
+## 5. As built (1.1.1)
 
 - Pure helpers: `missing_since_of`, `missing_since_update`, `missing_due` and `missing_left` (tests/unit.sh §1az).
 - State layer: `uptime_seconds`, `read_missing_since`, `write_missing_since`, `missing_classify`, `missing_track`, `missing_record`, `missing_log_pending`, `missing_prune` and `missing_report`.
@@ -126,14 +128,11 @@ The lower bound makes sure that at least two rescan samples confirm a miss. The 
 - `--status` and `--dry-run` call `missing_report`, which never writes. `--dry-run` also warns when a due missing VLAN is the current default-route interface (C1). Exit codes are unchanged.
 - `load_config` validates the key after `RESCAN_MINUTES`; `CONFIG_KEYS` and the `dynavlan.conf` template list it.
 
-## 6. Open questions
-
-- Q4 (review finding I3, 2026-10-15): should a run where the trunk had no carrier, or where its sample failed, restart that trunk's clocks? As built, such runs leave the clock alone (section 3.2), so the window measures time since the first miss, not a stretch of consecutive trusted misses. Options: (a) restart the trunk's clocks on such a run; (b) also restart on a change of the port's carrier-change counter; (c) keep as built. Tracked in `context/open_questions.md`.
-
-## 7. Resolved questions
+## 6. Resolved questions
 
 All resolved 2026-10-15 by the operator.
 
 - Q1: `RESET_ON_BOOT=false` does not turn off missing-VLAN removal (section 3.7).
 - Q2: No active check before removal in this release. An ARP request to the VLAN's DHCP server could prove a VLAN is live, but it adds a dependency (`arping`) and a code path. Revisit if a false removal is reported.
-- Q3: The release is 1.1.0, because it adds a config key.
+- Q3: The release is 1.1.0, because it adds a config key. Superseded 2026-10-15: the release is 1.1.1, because the I3 change landed after `ed23b5f` had taken `ver=1.1.0` and the version gate needs a higher `ver=`; 1.1.0 is never released.
+- Q4 (review finding I3): a run with no trusted carrier-up sample restarts the trunk's clocks (section 3.2), resolved 2026-10-15 by the operator.

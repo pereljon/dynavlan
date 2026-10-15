@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="1.1.0"
+ver="1.1.1"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -788,7 +788,7 @@ load_config() {
 	}
 	# Empty means the larger of 15 and RESCAN_MINUTES*2, so a box with a long rescan
 	# interval still loads after the upgrade that added this key. An explicit value
-	# gets the strict range: no conffile written before 1.1.0 can contain it.
+	# gets the strict range: no conffile written before 1.1 can contain it.
 	local miss_floor=$((RESCAN_MINUTES * 2))
 	if [ -z "$REMOVE_MISSING_MINUTES" ]; then
 		REMOVE_MISSING_MINUTES=15
@@ -2020,13 +2020,17 @@ write_missing_since() { # STATE - replace the record (empty removes it); rc 1 if
 }
 
 # missing_classify OWNED -> line 1: owned tokens that a trusted sample on a trunk with
-#   carrier missed; line 2: owned tokens that sample saw. A failed sample (H1), no
-#   sample, or carrier lost since the sample counts as neither (FR-41 owns carrier-down).
+#   carrier missed; line 2: owned tokens whose clock restarts. A token restarts when the
+#   sample saw it, or when its trunk had no trusted carrier-up sample this run (a failed
+#   sample, H1; no sample; carrier lost since). So a removal needs an unbroken stretch
+#   of trusted misses (review finding I3); FR-41 still owns carrier-down removal.
 missing_classify() {
 	local owned="$1" iface tok tags missed="" seen=""
 	for iface in $(distinct_ifaces "$owned"); do
-		[ "$(iface_valid "$iface")" = valid ] || continue
-		has_carrier "$iface" || continue
+		if [ "$(iface_valid "$iface")" != valid ] || ! has_carrier "$iface"; then
+			seen="$seen $(tokens_for_iface "$owned" "$iface")"
+			continue
+		fi
 		tags=" $(iface_tags "$iface") "
 		for tok in $(tokens_for_iface "$owned" "$iface"); do
 			case "$tags" in

@@ -4225,7 +4225,7 @@ unset _cm_tmp
 assert_eq "$(codemap_missing "$src" "${here}/../dev/CODEMAP.md" | tr '\n' ' ')" "" "1ay every dynavlan function has a dev/CODEMAP.md row"
 
 # ---------------------------------------------------------------------------
-# 1az. Missing-VLAN removal (1.1.0, dev/features/missing-vlan-removal.md). A VLAN
+# 1az. Missing-VLAN removal (1.1, dev/features/missing-vlan-removal.md). A VLAN
 #      that every trusted sample on its carrier-up trunk has missed for
 #      REMOVE_MISSING_MINUTES is removed by a rescan; boot only records the clock.
 # ---------------------------------------------------------------------------
@@ -4323,11 +4323,11 @@ _mv_is "1az MV-9 Case A: a trusted tagless sample misses every owned VLAN" "m=[e
 	"$(_mv "$_mv_st"'; store_detection enp1s0 "ok na"; cls "enp1s0.10 enp1s0.20"')"
 _mv_is "1az MV-10 Case B: only the gone VLAN is missed" "m=[enp1s0.20] s=[enp1s0.10]" \
 	"$(_mv "$_mv_st"'; store_detection enp1s0 "ok na 10"; cls "enp1s0.10 enp1s0.20"')"
-_mv_is "1az MV-4 an untrusted sample is neither a miss nor a sighting" "m=[] s=[]" \
+_mv_is "1az MV-4 an untrusted sample restarts its trunk's clocks (I3)" "m=[] s=[enp1s0.10 enp1s0.20]" \
 	"$(_mv "$_mv_st"'; store_detection enp1s0 "fail na 10"; cls "enp1s0.10 enp1s0.20"')"
-_mv_is "1az MV-5 a trunk with no sample (carrier-down) is left to FR-41" "m=[] s=[]" \
+_mv_is "1az MV-5 a trunk with no sample (carrier-down) restarts its clocks (I3)" "m=[] s=[enp3s0.10]" \
 	"$(_mv "$_mv_st"'; cls "enp3s0.10"')"
-_mv_is "1az MV-5 carrier lost after a valid sample is not a miss" "m=[] s=[]" \
+_mv_is "1az MV-5 carrier lost after a valid sample restarts the clocks (I3)" "m=[] s=[enp3s0.10]" \
 	"$(_mv "$_mv_st"'; store_detection enp3s0 "ok na"; cls "enp3s0.10"')"
 _mv_is "1az the same id on two trunks classifies per trunk" "m=[enp2s0.10] s=[enp1s0.10]" \
 	"$(_mv "$_mv_st"'; store_detection enp1s0 "ok na 10"; store_detection enp2s0 "ok na"; cls "enp1s0.10 enp2s0.10"')"
@@ -4413,6 +4413,12 @@ _mv_is "1az MV-8 rescan with REMOVE_MISSING_MINUTES=0 removes nothing (1.0.0 beh
 _mv_is "1az rescan: an untrusted sample never removes" \
 	"0" \
 	"$(_mv "$_mv_rs"'; ST=fail TAGS="" NOW=1000; do_rescan >/dev/null; NOW=1900; do_rescan | grep -c APPLY')"
+_mv_is "1az I3 rescan: a carrier-down run between misses restarts the clock" \
+	"0 enp1s0.10 1900;enp1s0.20 1900;" \
+	"$(_mv "$_mv_rs"'; TAGS="" NOW=1000; do_rescan >/dev/null; has_carrier() { return 1; }; NOW=1500; do_rescan >/dev/null; has_carrier() { return 0; }; NOW=1900; o=$(do_rescan); echo "$(grep -c APPLY <<<"$o") $(st)"')"
+_mv_is "1az I3 rescan: an untrusted run between misses restarts the clock" \
+	"0 enp1s0.10 1900;enp1s0.20 1900;" \
+	"$(_mv "$_mv_rs"'; TAGS="" NOW=1000; do_rescan >/dev/null; ST=fail NOW=1500; do_rescan >/dev/null; ST=ok NOW=1900; o=$(do_rescan); echo "$(grep -c APPLY <<<"$o") $(st)"')"
 _mv_is "1az rescan: a reverted removal keeps the clocks" \
 	"enp1s0.10 1000;enp1s0.20 1000;" \
 	"$(_mv "$_mv_rs"'; TAGS="" NOW=1000; do_rescan >/dev/null; APPLY_RC=1 NOW=1900; do_rescan >/dev/null; st')"
