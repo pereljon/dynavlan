@@ -1,7 +1,7 @@
 ---
 kind: feature
-lifecycle: designing
-status: drafted 2026-10-15; awaiting review before any code
+lifecycle: ready
+status: drafted and approved 2026-10-15; no code yet
 ---
 
 # Missing-VLAN removal: design
@@ -90,11 +90,13 @@ The lower bound makes sure that at least two rescan samples confirm a miss.
 
 **Decision (2026-10-15):** on by default, at 15 minutes (3 rescans at the default interval). Rejected: 60 minutes, which leaves stale VLANs for too long. Rejected: off by default, which keeps the defect on every existing box.
 
-**Compatibility.** `COMPATIBILITY.md` says that a new key whose default changes behavior on an existing box is a breaking change. This release treats the change as a fix of FR-23 and AC-3, whose intent was a temporary preserve. The release records the reasoning as a decision in `context/decisions.md` and sets `REMOVE_MISSING_MINUTES=0` as the way to get the 1.0.0 behavior. Review must confirm this reading before release.
+**Compatibility.** `COMPATIBILITY.md` says that a new key whose default changes behavior on an existing box is a breaking change. **Decision (2026-10-15, operator-approved):** treat the change as a fix of FR-23 and AC-3, whose intent was a temporary preserve, so it ships on by default in 1.x without the two-release process. `REMOVE_MISSING_MINUTES=0` restores the 1.0.0 behavior. The release records this reasoning in `context/decisions.md`. Rejected: the deprecate-with-warning process, which would leave the defect on every box for one more release.
 
 ### 3.7 `RESET_ON_BOOT`
 
-`RESET_ON_BOOT=false` disables boot's detection-diff removals today. `REMOVE_MISSING_MINUTES` is independent of it, as `REMOVE_ON_CARRIER_LOSS` is (FR-25). This is open question Q1.
+`RESET_ON_BOOT=false` disables boot's detection-diff removals today. `REMOVE_MISSING_MINUTES` is independent of it, as `REMOVE_ON_CARRIER_LOSS` is (FR-25).
+
+**Decision (2026-10-15):** the new key alone controls missing-VLAN removal. Rejected: letting `RESET_ON_BOOT=false` turn it off, which would tie a rescan-time rule to a boot-only key.
 
 ## 4. Requirement changes
 
@@ -115,8 +117,10 @@ The lower bound makes sure that at least two rescan samples confirm a miss.
 - `load_config` and `CONFIG_KEYS`: the new key, its default and range check.
 - `do_status` (`dynavlan:2769`) and `do_dryrun` (`dynavlan:2400`): the missing VLANs.
 
-## 6. Open questions
+## 6. Resolved questions
 
-- Q1: Should `RESET_ON_BOOT=false` also turn off missing-VLAN removal? Proposed: no; the new key controls it alone.
-- Q2: Should removal first make an active check, such as an ARP request for the VLAN's DHCP server from its interface? An answer would prove the VLAN is live and cancel the removal. This lowers the risk of removing a quiet VLAN but adds a dependency (`arping`) and a code path. Proposed: not in this release; revisit if a false removal is reported.
-- Q3: Version. Proposed: 1.1.0, since it adds a config key.
+All resolved 2026-10-15 by the operator.
+
+- Q1: `RESET_ON_BOOT=false` does not turn off missing-VLAN removal (section 3.7).
+- Q2: No active check before removal in this release. An ARP request to the VLAN's DHCP server could prove a VLAN is live, but it adds a dependency (`arping`) and a code path. Revisit if a false removal is reported.
+- Q3: The release is 1.1.0, because it adds a config key.

@@ -257,7 +257,7 @@ Release: v0.2.1 tagged + pushed + GitHub release created on pereljon/dynavlan.
 
 ## Post-1.0 backlog: features and validation
 
-- [ ] Missing-VLAN removal (1.1.0): status designing. Design `dev/features/missing-vlan-removal.md`, tests `dev/features/missing-vlan-removal-tests.md`, branch `feature/missing-vlan-removal`. Found 2026-10-15 on the test box: an owned VLAN that the switch stops carrying on a trunk with carrier is never removed. Next: operator reviews the design and answers Q1-Q3; no code until the design is approved and the session is cleared.
+- [ ] Missing-VLAN removal (1.1.0): design approved 2026-10-15, not coded. Design `dev/features/missing-vlan-removal.md`, tests `dev/features/missing-vlan-removal-tests.md`, branch `feature/missing-vlan-removal`. Found 2026-10-15 on the test box: an owned VLAN that the switch stops carrying on a trunk with carrier is never removed. Next: in a fresh session, write the implementation plan, then code on the branch (TDD helpers first).
 
 - [x] Test .deb build end-to-end (done 2026-08-03): installed the v0.3.0 release .deb on the Domotz box (Ubuntu 22.04), console-backed. Validated install.sh->.deb migration (old /etc/systemd/system units removed, /lib copies live), FR-38 build id (`814bcd1`, was `unknown`), conffile preserved, reboot + boot `--boot` apply (no-change, no revert), and real `domotzpro-agent-publicstore` snap restart. Box now dpkg-managed. Apply->netplan-try->revert path not exercised (no config diff); already hw-validated for v0.3.0.
 - [x] v1.0 release (done 2026-10-13 UTC: tag `v1.0.0` at `633f35e`, GitHub release, signed APT repository, HV-31 PASS on the reference box). DEFINED 2026-08-03 (spec: local-only
