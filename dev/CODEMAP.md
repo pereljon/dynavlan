@@ -13,6 +13,10 @@ Everything lives in the single `./dynavlan` script, which installs to /usr/local
 | `parse_vlan_ignore` | Expands `VLAN_IGNORE` ids and `low-high` ranges into a set, accepting spaces around commas; a bad token, leading zero, or empty element returns non-zero. | 1a, 1as |
 | `boot_removals` | Returns owned ids absent from both boot passes; if both passes are empty, it removes nothing (zero-detection guard). | 1d |
 | `carrier_removals` | Returns the trunk's full owned set when both carrier samples are `down`, else nothing (FR-41). | 1r |
+| `missing_since_of` | Returns a token's recorded missing-since uptime from the state text, or nothing for no line or a malformed one. | 1az |
+| `missing_since_update` | Returns the next missing-since state for owned tokens: a sighting clears, a miss keeps or starts the clock, others stay. | 1az |
+| `missing_due` | Returns the tokens missed this run whose clock has run `REMOVE_MISSING_MINUTES`; nothing when the key is 0. | 1az |
+| `missing_left` | Returns `token:minutes` left, rounded up, for each token missed this run that is not yet due. | 1az |
 | `health_check_eval` | Returns `PASS` if the snapshot iface still holds a default route at the minimum post-apply metric, in any listing order (P3); an empty snapshot passes. | 1c |
 | `vlan_guard` | Returns the count-gate verdict: `OVER` (above the limit; 0 means unlimited), `WARN` (above the warn level), or `OK`. | 1f |
 | `limit_fill` | Selects the lowest-N additions for `fill` mode, by numeric VLAN id with the iface as tie-break (M7). | 1f |
@@ -147,6 +151,20 @@ The core also calls `netplan`, `ip` and the owned file directly (version and `tr
 | `current_subnets` | Returns sorted `iface:network/prefix` tokens for global IPv4 addresses, skipping peer, link-local and loopback lines (FR-40). |
 | `read_seen` / `write_seen` | Read and write the runtime seen-subnet set at `/run/dynavlan/seen`; an absent file is an empty set (FR-40). |
 | `maybe_restart_on_new_subnet` | Restarts targets once when a subnet is new, then marks it seen unless no target restarted (FR-40, M6, L10); gated by `RESTART_ON_NEW_SUBNET`. |
+
+## Missing-VLAN state (FR-44; tests/unit.sh §1az)
+
+| function | one-line purpose |
+|----------|------------------|
+| `uptime_seconds` | Returns whole seconds since boot from `UPTIME_FILE`; rc 1 if unreadable, which skips missing-VLAN tracking. |
+| `read_missing_since` | Returns the missing-since record at `/run/dynavlan/missing-since`, or nothing if the file is absent or unreadable. |
+| `write_missing_since` | Atomically replaces the record (empty removes it); on failure removes it, so clocks restart rather than run early. |
+| `missing_classify` | Splits owned tokens into those a trusted sample on a carrier-up trunk missed and those it saw. |
+| `missing_track` | Computes this run's uptime, missed set and next state from the detection stash, without writing. |
+| `missing_record` | Runs `missing_track` and persists the state; with the key at 0, drops the record. |
+| `missing_log_pending` | Logs one `warning` per missing VLAN not yet due, with its minutes left. |
+| `missing_prune` | After an accepted apply, drops record lines for tokens no longer owned. |
+| `missing_report` | Prints the missing-VLAN lines for `--status` and `--dry-run`; never writes. |
 
 ## Apply orchestration + gates
 

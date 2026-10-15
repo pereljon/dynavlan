@@ -12,7 +12,7 @@
 
 set -o pipefail
 
-ver="1.0.0"
+ver="1.1.0"
 
 # Build provenance (FR-38). Semver alone cannot identify what is on a box: every
 # build of an unreleased version self-reports the same string, so "which code is
@@ -163,6 +163,72 @@ boot_removals() {
 carrier_removals() { # OWNED_ON_TRUNK C1 C2
 	[ "$2" = down ] && [ "$3" = down ] && emit_set $1
 	return 0
+}
+
+# missing_since_of STATE TOKEN
+#   The recorded uptime for TOKEN in a missing-since STATE ("TOKEN SECONDS" lines), or
+#   nothing when it has no line or its line is malformed.
+missing_since_of() {
+	local tok t rest
+	while read -r tok t rest; do
+		[ "$tok" = "$2" ] || continue
+		# 12 digits bound the value well inside Bash arithmetic; a longer one is malformed.
+		[ -z "$rest" ] && is_uint "$t" && [ "${#t}" -le 12 ] && printf '%s' "$t"
+		return 0
+	done <<<"$1"
+	return 0
+}
+
+# missing_since_update STATE OWNED MISSED SEEN NOW
+#   The next missing-since state, for owned tokens only. A SEEN token loses its line.
+#   A MISSED token keeps its recorded time, or starts at NOW when it has none or the
+#   recorded time is above NOW. Any other owned token keeps its line unchanged.
+missing_since_update() {
+	local state="$1" owned="$2" missed="$3" seen="$4" now="$5" tok t
+	for tok in $(emit_tokens $owned); do
+		in_list "$tok" "$seen" && continue
+		t=$(missing_since_of "$state" "$tok")
+		if in_list "$tok" "$missed"; then
+			if [ -z "$t" ] || [ "$t" -gt "$now" ]; then
+				t="$now"
+			fi
+		fi
+		[ -n "$t" ] && printf '%s %s\n' "$tok" "$t"
+	done
+	return 0
+}
+
+# missing_due STATE MISSED NOW MINUTES
+#   The MISSED tokens whose clock has run at least MINUTES. Nothing when MINUTES is 0.
+missing_due() {
+	local state="$1" missed="$2" now="$3" minutes="$4" tok t out=""
+	[ "$minutes" = 0 ] && return 0
+	for tok in $missed; do
+		t=$(missing_since_of "$state" "$tok")
+		[ -n "$t" ] || continue
+		[ "$t" -le "$now" ] || continue
+		if [ $((now - t)) -ge $((minutes * 60)) ]; then
+			out="$out $tok"
+		fi
+	done
+	emit_tokens $out
+}
+
+# missing_left STATE MISSED NOW MINUTES
+#   "TOKEN:MINUTES_LEFT" for each MISSED token not yet due, minutes rounded up.
+missing_left() {
+	local state="$1" missed="$2" now="$3" minutes="$4" tok t left out=""
+	[ "$minutes" = 0 ] && return 0
+	for tok in $missed; do
+		t=$(missing_since_of "$state" "$tok")
+		[ -n "$t" ] || continue
+		[ "$t" -le "$now" ] || continue
+		left=$((minutes * 60 - (now - t)))
+		if [ "$left" -gt 0 ]; then
+			out="$out $tok:$(((left + 59) / 60))"
+		fi
+	done
+	printf '%s' "${out# }"
 }
 
 # health_check_eval SNAP_IFACE POST_ROUTES
@@ -552,8 +618,8 @@ version_string() { # VER BUILD -> identity string
 CONFIG_KEYS="DETECT_METHOD VLAN_MIN VLAN_MAX VLAN_IGNORE VLAN_WARN VLAN_LIMIT \
 VLAN_LIMIT_MODE SNIFF_SECONDS BOOT_SETTLE_SECONDS CARRIER_WAIT_SECONDS \
 LEASE_SETTLE_SECONDS RESCAN_MINUTES RESET_ON_BOOT REMOVE_ON_CARRIER_LOSS \
-VLAN_ROUTES VLAN_ROUTE_METRIC_START RESTART_SNAPS RESTART_SERVICES LOG_LEVEL \
-BACKUP_KEEP RESTART_ON_NEW_SUBNET"
+REMOVE_MISSING_MINUTES VLAN_ROUTES VLAN_ROUTE_METRIC_START RESTART_SNAPS \
+RESTART_SERVICES LOG_LEVEL BACKUP_KEEP RESTART_ON_NEW_SUBNET"
 
 config_allowed_key() { # KEY -> 0 if it is a documented config key
 	in_list "$1" "$CONFIG_KEYS"
@@ -632,6 +698,7 @@ config_defaults() { # the complete built-in default state (also the clean fallba
 	RESCAN_MINUTES=5
 	RESET_ON_BOOT=true
 	REMOVE_ON_CARRIER_LOSS=true
+	REMOVE_MISSING_MINUTES="" # load_config resolves empty to max(15, RESCAN_MINUTES * 2)
 	VLAN_ROUTES=false
 	VLAN_ROUTE_METRIC_START=100
 	RESTART_SNAPS=""
@@ -719,6 +786,21 @@ load_config() {
 		log err "invalid RESCAN_MINUTES=$RESCAN_MINUTES"
 		return 1
 	}
+	# Empty means the larger of 15 and RESCAN_MINUTES*2, so a box with a long rescan
+	# interval still loads after the upgrade that added this key. An explicit value
+	# gets the strict range: no conffile written before 1.1.0 can contain it.
+	local miss_floor=$((RESCAN_MINUTES * 2))
+	if [ -z "$REMOVE_MISSING_MINUTES" ]; then
+		REMOVE_MISSING_MINUTES=15
+		[ "$miss_floor" -gt 15 ] && REMOVE_MISSING_MINUTES="$miss_floor"
+	elif ! is_uint "$REMOVE_MISSING_MINUTES" || {
+		[ "$REMOVE_MISSING_MINUTES" != 0 ] && {
+			[ "$REMOVE_MISSING_MINUTES" -lt "$miss_floor" ] || [ "$REMOVE_MISSING_MINUTES" -gt 1440 ]
+		}
+	}; then
+		log err "invalid REMOVE_MISSING_MINUTES=$REMOVE_MISSING_MINUTES (0 = off, or an integer from RESCAN_MINUTES*2=$miss_floor to 1440)"
+		return 1
+	fi
 	in_list "$RESET_ON_BOOT" "true false" || {
 		log err "invalid RESET_ON_BOOT=$RESET_ON_BOOT"
 		return 1
@@ -1900,6 +1982,128 @@ maybe_restart_on_new_subnet() {
 }
 
 # ---------------------------------------------------------------------------
+# Missing-VLAN state (dev/features/missing-vlan-removal.md)
+# ---------------------------------------------------------------------------
+
+# Per owned token, the uptime of the first trusted sample that missed it. Uptime,
+# not wall-clock time: /run and uptime both reset at boot, and uptime never jumps
+# when NTP syncs after boot. Runtime scratch, NOT config.
+MISSING_SINCE_FILE="${MISSING_SINCE_FILE:-/run/dynavlan/missing-since}"
+UPTIME_FILE="${UPTIME_FILE:-/proc/uptime}"
+
+uptime_seconds() { # -> whole seconds since boot; rc 1 if unreadable
+	local u rest
+	{ read -r u rest <"$UPTIME_FILE"; } 2>/dev/null || return 1
+	u="${u%%.*}"
+	is_uint "$u" || return 1
+	printf '%s' "$u"
+}
+
+read_missing_since() { # -> the state, empty if the file is absent or unreadable
+	cat "$MISSING_SINCE_FILE" 2>/dev/null || true
+}
+
+write_missing_since() { # STATE - replace the record (empty removes it); rc 1 if the record on disk may be stale
+	local tmp="$MISSING_SINCE_FILE.tmp"
+	if [ -z "$1" ]; then
+		rm -f "$MISSING_SINCE_FILE" 2>/dev/null
+		[ -e "$MISSING_SINCE_FILE" ] || return 0
+	elif { mkdir -p "$(dirname "$MISSING_SINCE_FILE")" && printf '%s\n' "$1" >"$tmp" && mv -f "$tmp" "$MISSING_SINCE_FILE"; } 2>/dev/null; then
+		return 0
+	fi
+	# A stale record can hold an old time for a VLAN seen since then, which would make
+	# its next miss look overdue. Drop it (or empty it) so every clock restarts.
+	rm -f "$tmp" "$MISSING_SINCE_FILE" 2>/dev/null
+	[ -e "$MISSING_SINCE_FILE" ] && { : >"$MISSING_SINCE_FILE"; } 2>/dev/null
+	log warning "could not write $MISSING_SINCE_FILE; no missing-VLAN removal this run, and clocks restart from the next run"
+	return 1
+}
+
+# missing_classify OWNED -> line 1: owned tokens that a trusted sample on a trunk with
+#   carrier missed; line 2: owned tokens that sample saw. A failed sample (H1), no
+#   sample, or carrier lost since the sample counts as neither (FR-41 owns carrier-down).
+missing_classify() {
+	local owned="$1" iface tok tags missed="" seen=""
+	for iface in $(distinct_ifaces "$owned"); do
+		[ "$(iface_valid "$iface")" = valid ] || continue
+		has_carrier "$iface" || continue
+		tags=" $(iface_tags "$iface") "
+		for tok in $(tokens_for_iface "$owned" "$iface"); do
+			case "$tags" in
+			*" $(tok_id "$tok") "*) seen="$seen $tok" ;;
+			*) missed="$missed $tok" ;;
+			esac
+		done
+	done
+	printf '%s\n%s\n' "$(emit_tokens $missed)" "$(emit_tokens $seen)"
+}
+
+# missing_track OWNED - compute this run's MISSING_NOW, MISSING_MISSED and MISSING_STATE
+# from the detection stash. Writes nothing. rc 1 when the key is 0 or empty (empty only
+# before load_config, as in the unit harness) or the clock is unreadable.
+missing_track() {
+	local cls
+	MISSING_NOW="" MISSING_MISSED="" MISSING_STATE=""
+	case "${REMOVE_MISSING_MINUTES:-}" in
+	'' | 0) return 1 ;;
+	esac
+	if ! MISSING_NOW=$(uptime_seconds); then
+		log warning "cannot read $UPTIME_FILE; skipping missing-VLAN tracking this run (nothing is removed by it)"
+		return 1
+	fi
+	cls=$(missing_classify "$1")
+	MISSING_MISSED=$(sed -n 1p <<<"$cls")
+	MISSING_STATE=$(missing_since_update "$(read_missing_since)" "$1" "$MISSING_MISSED" "$(sed -n 2p <<<"$cls")" "$MISSING_NOW")
+	return 0
+}
+
+# missing_record OWNED - missing_track, then persist. With the key at 0 the record is
+# dropped, so re-enabling later starts every clock fresh.
+missing_record() {
+	case "${REMOVE_MISSING_MINUTES:-}" in
+	'') return 1 ;;
+	0)
+		write_missing_since ""
+		return 1
+		;;
+	esac
+	missing_track "$1" || return 1
+	# A run that cannot persist its state removes nothing by this rule: later, never early.
+	write_missing_since "$MISSING_STATE" || return 1
+	return 0
+}
+
+missing_log_pending() { # one warning per missing VLAN that is not yet due (MISSING_* from missing_track)
+	local e
+	for e in $(missing_left "$MISSING_STATE" "$MISSING_MISSED" "$MISSING_NOW" "$REMOVE_MISSING_MINUTES"); do
+		log warning "VLAN ${e%:*} is missing from its trunk's samples; removed in ${e##*:} min unless it reappears (REMOVE_MISSING_MINUTES=$REMOVE_MISSING_MINUTES)"
+	done
+}
+
+missing_prune() { # after an accepted apply: drop the lines of tokens no longer owned
+	[ -f "$MISSING_SINCE_FILE" ] || return 0
+	write_missing_since "$(missing_since_update "$(read_missing_since)" "$(backend_owned_vlans)" "" "" 0)"
+}
+
+missing_report() { # OWNED - the --status/--dry-run lines; writes nothing; rc 1 if the clock is unreadable
+	local left due
+	if [ "${REMOVE_MISSING_MINUTES:-0}" = 0 ]; then
+		printf '  missing-VLAN removal: off (REMOVE_MISSING_MINUTES=0)\n'
+		return 0
+	fi
+	if ! missing_track "$1"; then
+		printf '  missing VLANs: unavailable (cannot read the uptime clock)\n'
+		return 1
+	fi
+	left=$(missing_left "$MISSING_STATE" "$MISSING_MISSED" "$MISSING_NOW" "$REMOVE_MISSING_MINUTES")
+	due=$(missing_due "$MISSING_STATE" "$MISSING_MISSED" "$MISSING_NOW" "$REMOVE_MISSING_MINUTES")
+	printf '  missing VLANs (minutes left before a rescan removes them): [%s]\n' "${left:-none}"
+	printf '  missing VLANs due now (the next rescan removes them if routing is healthy): [%s]\n' "${due:-none}"
+	[ -n "${DETECT_INVALID:-}" ] && printf '  missing VLANs: incomplete (detector failed on [%s]; those trunks are not tracked this run)\n' "$DETECT_INVALID"
+	return 0
+}
+
+# ---------------------------------------------------------------------------
 # Apply/rollback state machine (design §7) - the safety-critical chain
 # ---------------------------------------------------------------------------
 
@@ -2091,7 +2295,7 @@ gate_vlan_count() { # KEPT ADDITIONS - echoes the (possibly reduced) additions; 
 # ---------------------------------------------------------------------------
 
 do_boot() {
-	log info "run start: dynavlan $(version_string "$ver" "$build") mode=boot detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}] reset_on_boot=$RESET_ON_BOOT remove_on_carrier_loss=$REMOVE_ON_CARRIER_LOSS"
+	log info "run start: dynavlan $(version_string "$ver" "$build") mode=boot detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}] reset_on_boot=$RESET_ON_BOOT remove_on_carrier_loss=$REMOVE_ON_CARRIER_LOSS remove_missing_minutes=$REMOVE_MISSING_MINUTES"
 	# M5: retry any delete a prior run recorded as failed. A failed drain (the
 	# ownership query itself failed, or the surviving record could not be
 	# rewritten) must not be silently outrun by this run's own detection/apply -
@@ -2118,7 +2322,9 @@ do_boot() {
 	local owned owned_ifaces trunk pruned_ifaces=""
 	local all_additions="" all_removals="" target any_owned_down=false
 	owned=$(backend_owned_vlans)
-	if [ -z "$DETECTED_TRUNKS" ] && [ "$REMOVE_ON_CARRIER_LOSS" != true ]; then
+	if [ -z "$DETECTED_TRUNKS" ] && [ "$REMOVE_ON_CARRIER_LOSS" != true ] && [ "${REMOVE_MISSING_MINUTES:-0}" = 0 ]; then
+		# Key at 0: drop any old record, so re-enabling later cannot start on a stale clock.
+		[ "${REMOVE_MISSING_MINUTES:-}" = 0 ] && write_missing_since ""
 		# Intended no-op (exit 0): zero detection with carrier-down removal disabled,
 		# so nothing can be added and the detection-diff removal path is off. Severity
 		# tracks the owned set - warning when owned VLANs are being preserved behind a
@@ -2132,7 +2338,13 @@ do_boot() {
 		fi
 		return 0
 	fi
-	[ -z "$DETECTED_TRUNKS" ] && log info "boot: zero VLANs detected; owned carrier-down trunks remain eligible for removal"
+	if [ -z "$DETECTED_TRUNKS" ]; then
+		if [ "$REMOVE_ON_CARRIER_LOSS" = true ]; then
+			log info "boot: zero VLANs detected; owned carrier-down trunks remain eligible for removal"
+		else
+			log info "boot: zero VLANs detected; missing-VLAN clocks start for owned VLANs on trunks with carrier"
+		fi
+	fi
 
 	owned_ifaces=$(distinct_ifaces "$owned")
 
@@ -2164,6 +2376,11 @@ do_boot() {
 		fi
 	done
 
+	# Boot records its samples but never removes by the missing-VLAN rule: the boot
+	# window is the least reliable sample, so a rescan removes the VLAN later.
+	local missing_tracked=false
+	missing_record "$owned" && missing_tracked=true
+
 	# A second settle+resample is needed when RESET_ON_BOOT drives a detection
 	# diff, OR when carrier-down removal is armed and some owned trunk is already
 	# down at pass 1 (that pass-1 sample is one half of the debounce). When
@@ -2188,6 +2405,9 @@ do_boot() {
 		# the carrier-down branch reads /sys + the owned set and never consults
 		# detection, so a full ~SNIFF_SECONDS sniff here would be pure boot latency.
 		[ "$RESET_ON_BOOT" = true ] && run_detection 2>/dev/null
+		if [ "$RESET_ON_BOOT" = true ] && [ "$missing_tracked" = true ]; then
+			missing_record "$owned" || missing_tracked=false
+		fi
 
 		local routing_ok=unknown   # have_routing evaluated at most once, lazily
 		for trunk in $all_trunks; do
@@ -2247,6 +2467,13 @@ do_boot() {
 		done
 	fi
 
+	if [ "$missing_tracked" = true ]; then
+		missing_log_pending
+		local due
+		due=$(missing_due "$MISSING_STATE" "$MISSING_MISSED" "$MISSING_NOW" "$REMOVE_MISSING_MINUTES")
+		[ -n "$due" ] && log warning "boot: VLAN(s) [$due] have been missing for at least ${REMOVE_MISSING_MINUTES} min; boot does not remove by this rule, the next rescan does"
+	fi
+
 	all_additions=$(emit_tokens $all_additions)
 	all_removals=$(emit_tokens $all_removals)
 	# Additions were computed from pass-1 tags, before the carrier verdict. A trunk
@@ -2279,17 +2506,21 @@ do_boot() {
 	fi
 
 	target=$(set_union "$(set_minus "$owned" "$all_removals")" "$all_additions")
-	apply_change "$target" "$all_additions" "$all_removals"
+	apply_change "$target" "$all_additions" "$all_removals" || return 1
+	missing_prune
+	return 0
 }
 
 do_rescan() {
-	log info "run start: dynavlan $(version_string "$ver" "$build") mode=rescan detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}] remove_on_carrier_loss=$REMOVE_ON_CARRIER_LOSS"
+	log info "run start: dynavlan $(version_string "$ver" "$build") mode=rescan detect=$DETECT_METHOD range=$VLAN_MIN-$VLAN_MAX ignore=[${IGNORE_SET:-none}] remove_on_carrier_loss=$REMOVE_ON_CARRIER_LOSS remove_missing_minutes=$REMOVE_MISSING_MINUTES"
 	if ! drain_pending_deletes; then
 		log err "rescan: pending-delete drain failed (see prior error); aborting this run, changing nothing further"
 		return 1
 	fi
 	run_detection || : # rc is "saw nothing", not "failed" - see do_boot
-	if [ -z "$DETECTED_TRUNKS" ] && [ "$REMOVE_ON_CARRIER_LOSS" != true ]; then
+	if [ -z "$DETECTED_TRUNKS" ] && [ "$REMOVE_ON_CARRIER_LOSS" != true ] && [ "${REMOVE_MISSING_MINUTES:-0}" = 0 ]; then
+		# Key at 0: drop any old record, so re-enabling later cannot start on a stale clock.
+		[ "${REMOVE_MISSING_MINUTES:-}" = 0 ] && write_missing_since ""
 		log info "rescan: no trunks detected; nothing to add"
 		return 0
 	fi
@@ -2357,6 +2588,24 @@ do_rescan() {
 		fi
 	fi
 
+	# Missing-VLAN removal: an owned VLAN that every trusted sample on its carrier-up
+	# trunk has missed for REMOVE_MISSING_MINUTES. Covers a tagless trunk (Case A) and
+	# one VLAN gone from a tagged trunk (Case B). Checked AFTER the FR-41 settle, so the
+	# routing gate reflects the box as it is now, not before a sleep (see the FR-41 note).
+	if missing_record "$owned"; then
+		missing_log_pending
+		local due
+		due=$(missing_due "$MISSING_STATE" "$MISSING_MISSED" "$MISSING_NOW" "$REMOVE_MISSING_MINUTES")
+		if [ -n "$due" ]; then
+			if have_routing; then
+				all_removals="$all_removals $due"
+				log notice "rescan: removing VLAN(s) missing for at least ${REMOVE_MISSING_MINUTES} min on trunks with carrier: [$due]"
+			else
+				log warning "rescan: VLAN(s) [$due] are due for missing-VLAN removal but the box has no healthy routing; preserving (fail toward no change)"
+			fi
+		fi
+	fi
+
 	all_additions=$(emit_tokens $all_additions)
 	all_removals=$(emit_tokens $all_removals)
 	# Additions came from the sniff, which filtered carrier once at its start and
@@ -2390,7 +2639,9 @@ do_rescan() {
 
 	local target
 	target=$(set_union "$(set_minus "$owned" "$all_removals")" "$all_additions")
-	apply_change "$target" "$all_additions" "$all_removals"
+	apply_change "$target" "$all_additions" "$all_removals" || return 1
+	missing_prune
+	return 0
 }
 
 # ---------------------------------------------------------------------------
@@ -2513,6 +2764,13 @@ do_dryrun() {
 
 	if [ "$REMOVE_ON_CARRIER_LOSS" = true ] && [ "$routing_ok" = no ]; then
 		printf '  carrier-down: preserving (no healthy default route; --boot would preserve)\n'
+	fi
+	if missing_report "$owned"; then
+		local miss_due
+		miss_due=$(missing_due "$MISSING_STATE" "$MISSING_MISSED" "$MISSING_NOW" "$REMOVE_MISSING_MINUTES")
+		if default_iface_in_removals "$dry_snap" "$miss_due"; then
+			printf '  default-route guard: current default iface (%s) is a due missing VLAN; --rescan would REFUSE its whole change every run (C1) until the default moves\n' "$dry_snap"
+		fi
 	fi
 
 	# M5 preview: a prior run may have failed to delete an already-removed interface
@@ -2828,6 +3086,11 @@ do_status() { # FR-35 - report all trunks
 			printf '    %s: carrier=%s configured=[%s] detected=[%s] ignored=[%s] out-of-range=[%s] managed-elsewhere=[%s] owned-ignored=[%s] owned-out-of-range=[%s]\n' \
 				"$t" "$cstate" "${configured:-none}" "${detected_ids:-none}" "${ignored:-none}" "${oor:-none}" "${managed:-none}" "${own_ign:-none}" "${own_oor:-none}"
 		done
+	fi
+	if [ "$det_state" = unavailable ]; then
+		printf '  missing VLANs: unavailable (detection did not run)\n'
+	else
+		missing_report "$owned"
 	fi
 	printf '  run history: journalctl -t dynavlan\n'
 	if [ "$RESTART_ON_NEW_SUBNET" = true ]; then

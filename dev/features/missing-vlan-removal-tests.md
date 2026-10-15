@@ -41,4 +41,16 @@ Pure helpers, written RED before GREEN.
 
 ## Review findings
 
-None yet.
+Code review 2026-10-15 (Opus subagent, high effort) on the uncommitted 1.1.0 diff. Evidence was verified by reading the code and by probe scripts outside the repo.
+
+- **I1 (Important, fixed).** `do_rescan` checked `have_routing` for missing removals before the FR-41 settle, so a due VLAN was applied after the post-settle check found routing gone. Fix: the missing-VLAN block runs after the FR-41 block. Test: `1az rescan: routing lost during the FR-41 settle also preserves a due missing VLAN`.
+- **I2 (Important, fixed).** A failed write or unlink could leave a stale record, so a VLAN seen since could come due early. Fix: `write_missing_since` checks that the record is gone and empties it as a fallback; `missing_record` returns 1 when it cannot persist, so that run removes nothing by this rule. Tests: `1az a failed write drops the prior record and warns`, `1az a failed persist makes missing_record fail`, `1az an undeletable record is emptied and reported, never kept`, `1az rescan: a run that cannot persist its clocks removes nothing by this rule`.
+- **I3 (design, open).** The clock measures time since the first miss, not consecutive trusted misses, so carrier-down or untrusted runs count toward the window. Awaiting the operator's decision.
+- **M1 (fixed).** `--status` no longer exits 1 for an unreadable uptime clock; the exit codes are unchanged.
+- **M2 (accepted, documented in the design doc).** With the key on, a zero-detection boot with `REMOVE_ON_CARRIER_LOSS=false` no longer returns early: it runs the managed-elsewhere query and pass 2 to record its clocks.
+- **M3 (fixed).** A recorded time over 12 digits is malformed and restarts. Test: `1az an oversized recorded time is malformed and restarts at now`.
+- **M4 (fixed).** `--status` and `--dry-run` print an `incomplete` line when a detector failed. Test: `1az missing_report marks itself incomplete when a detector failed`.
+- **M5 (fixed).** `--dry-run` warns when a due missing VLAN is the default-route interface (C1).
+- **M6 (open, pre-existing).** `backend_remove_vlan` deletes a link without the L7 check that another netplan file defines the token; this applies to every removal path. Recorded in `context/open_questions.md`.
+- **M7 (fixed).** In-shell tests point `MISSING_SINCE_FILE` and `UPTIME_FILE` at a temp dir, and the §1ar status environment pins the key to 0.
+- **M8 (fixed).** The MV-8 rescan test seeds a record and asserts the 1.0.0 log line. The fix also found a gap: the key-0 early returns kept an old record, which a later re-enable could read as a stale clock. Both early returns now drop it.

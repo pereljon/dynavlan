@@ -10,6 +10,11 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${here}/../dynavlan"
 
+# In-shell runs of do_boot/do_rescan must never touch the host's real missing-VLAN record.
+_ms_dir=$(mktemp -d)
+# shellcheck disable=SC2034 # read by the sourced dynavlan functions
+MISSING_SINCE_FILE="$_ms_dir/missing-since" UPTIME_FILE="$_ms_dir/no-uptime"
+
 tests=0
 fails=0
 OUT=""
@@ -3226,6 +3231,10 @@ _g4_lacks "1ar pending preview query failure deletes no link" "remove" "$(printf
 
 # D5: status aggregates detector validity across ALL sampled interfaces.
 _g4_status_env() {
+	# Missing-VLAN reporting has its own cases (1az); pin it off so a key leaked from an
+	# earlier in-shell load_config cannot read the host's uptime here.
+	# shellcheck disable=SC2034 # read by the sourced do_status
+	REMOVE_MISSING_MINUTES=0
 	RESTART_ON_NEW_SUBNET=false DETECT_METHOD=both VLAN_MIN=2 VLAN_MAX=4094 IGNORE_SET=""
 	SEEN_FILE="$_g4_dir/seen"
 	G4_OWNED="" G4_TAGS="" DETECTED_TRUNKS="" DETECT_INVALID=""
@@ -4214,6 +4223,251 @@ assert_eq "$(codemap_missing "$_cm_tmp/script" "$_cm_tmp/map.md")" "gamma" "1ay 
 rm -rf "$_cm_tmp"
 unset _cm_tmp
 assert_eq "$(codemap_missing "$src" "${here}/../dev/CODEMAP.md" | tr '\n' ' ')" "" "1ay every dynavlan function has a dev/CODEMAP.md row"
+
+# ---------------------------------------------------------------------------
+# 1az. Missing-VLAN removal (1.1.0, dev/features/missing-vlan-removal.md). A VLAN
+#      that every trusted sample on its carrier-up trunk has missed for
+#      REMOVE_MISSING_MINUTES is removed by a rescan; boot only records the clock.
+# ---------------------------------------------------------------------------
+
+_mv_dir=$(mktemp -d)
+_mv() { # SCRIPT -> its stdout; real dynavlan functions, state files in a scratch dir
+	MV_DIR="$_mv_dir" bash -c 'source "$1"; set +e +u
+MISSING_SINCE_FILE="$MV_DIR/missing-since"; PENDING_DELETE_FILE="$MV_DIR/pending-delete"; SEEN_FILE="$MV_DIR/seen"
+eval "$2"' _ "${here}/../dynavlan" "$1" 2>/dev/null
+}
+_mv_is() { # DESC EXPECTED ACTUAL
+	tests=$((tests + 1))
+	if [ "$2" = "$3" ]; then
+		printf 'ok   - %s\n' "$1"
+	else
+		fails=$((fails + 1))
+		printf 'FAIL - %s\n       expected [%s]\n       got      [%s]\n' "$1" "$2" "$3"
+	fi
+}
+
+# MV-13/13a: the real load_config against a conffile; prints the value or "refused".
+_mv_cfg() { # LINES...
+	printf '%s\n' "$@" >"$_mv_dir/conf"
+	# shellcheck disable=SC2016 # expanded inside the child bash
+	_mv 'CONF_FILE="$MV_DIR/conf"; if load_config >/dev/null 2>&1; then echo "$REMOVE_MISSING_MINUTES"; else echo refused; fi'
+}
+_mv_is "1az config: unset defaults to 15" "15" "$(_mv_cfg '# empty')"
+_mv_is "1az config: an explicit empty value is the default" "15" "$(_mv_cfg 'REMOVE_MISSING_MINUTES=')"
+_mv_is "1az config: 0 turns it off" "0" "$(_mv_cfg 'REMOVE_MISSING_MINUTES=0')"
+_mv_is "1az config: the lower bound RESCAN_MINUTES*2 is accepted" "10" "$(_mv_cfg 'REMOVE_MISSING_MINUTES=10')"
+_mv_is "1az config: below RESCAN_MINUTES*2 is refused" "refused" "$(_mv_cfg 'REMOVE_MISSING_MINUTES=9')"
+_mv_is "1az config: 1440 is accepted" "1440" "$(_mv_cfg 'REMOVE_MISSING_MINUTES=1440')"
+_mv_is "1az config: 1441 is refused" "refused" "$(_mv_cfg 'REMOVE_MISSING_MINUTES=1441')"
+_mv_is "1az config: a non-integer is refused" "refused" "$(_mv_cfg 'REMOVE_MISSING_MINUTES=abc')"
+_mv_is "1az config: a leading zero is refused" "refused" "$(_mv_cfg 'REMOVE_MISSING_MINUTES=015')"
+_mv_is "1az config: unset follows RESCAN_MINUTES*2 when larger" "20" "$(_mv_cfg 'RESCAN_MINUTES=10')"
+_mv_is "1az config: explicit 15 under RESCAN_MINUTES=10 is refused" "refused" "$(_mv_cfg 'RESCAN_MINUTES=10' 'REMOVE_MISSING_MINUTES=15')"
+_mv_is "1az config: the computed default is not capped at 1440" "2000" "$(_mv_cfg 'RESCAN_MINUTES=1000')"
+
+# Pure clock helpers (in-process; no state files).
+call missing_since_update "" "enp1s0.10 enp1s0.20" "enp1s0.10" "enp1s0.20" 500
+ok "1az MV-1 first trusted miss records the run's uptime" "enp1s0.10 500"
+call missing_since_update "enp1s0.10 100" "enp1s0.10" "enp1s0.10" "" 500
+ok "1az MV-2 a later miss keeps the original time" "enp1s0.10 100"
+call missing_since_update "enp1s0.10 100" "enp1s0.10" "" "enp1s0.10" 500
+ok "1az MV-3 a sighting deletes the line" ""
+call missing_since_update "enp1s0.10 100" "enp1s0.10" "" "" 500
+ok "1az MV-4 neither miss nor sighting leaves the line alone" "enp1s0.10 100"
+call missing_since_update $'enp1s0.10 100\nenp1s0.20 200' "enp1s0.20" "" "" 500
+ok "1az MV-11 a line for a token no longer owned is dropped" "enp1s0.20 200"
+call missing_since_update $'garbage\nenp1s0.10 abc\nenp1s0.20 100 extra' "enp1s0.10 enp1s0.20" "enp1s0.10 enp1s0.20" "" 500
+ok "1az MV-12 malformed lines are ignored and restart at now" $'enp1s0.10 500\nenp1s0.20 500'
+call missing_since_update "enp1s0.10 900" "enp1s0.10" "enp1s0.10" "" 500
+ok "1az MV-15 a time above the current uptime restarts at now" "enp1s0.10 500"
+call missing_since_update "enp1s0.10 99999999999999999999" "enp1s0.10" "enp1s0.10" "" 500
+ok "1az an oversized recorded time is malformed and restarts at now" "enp1s0.10 500"
+call missing_since_update "enp1s0.10 100" "enp1s0.10 enp2s0.10" "enp2s0.10" "" 500
+ok "1az same id on another trunk is a distinct clock" $'enp1s0.10 100\nenp2s0.10 500'
+
+call missing_due "enp1s0.10 100" "enp1s0.10" 999 15
+ok "1az MV-6 missing for less than the window is not due" ""
+call missing_due "enp1s0.10 100" "enp1s0.10" 1000 15
+ok "1az MV-7 missing for exactly the window is due" "enp1s0.10"
+call missing_due "enp1s0.10 0" "enp1s0.10" 99999 0
+ok "1az MV-8 REMOVE_MISSING_MINUTES=0 makes nothing due" ""
+call missing_due "enp1s0.10 100" "" 5000 15
+ok "1az a token not missed in this run is never due" ""
+call missing_due "enp1s0.10 900" "enp1s0.10" 500 15
+ok "1az a time above now is never due" ""
+call missing_due $'enp1s0.10 100\nenp1s0.20 600' "enp1s0.10 enp1s0.20" 1000 15
+ok "1az only the token whose window has run is due" "enp1s0.10"
+
+call missing_left "enp1s0.10 100" "enp1s0.10" 101 15
+ok "1az minutes left round up" "enp1s0.10:15"
+call missing_left "enp1s0.10 100" "enp1s0.10" 941 15
+ok "1az the last partial minute reads 1" "enp1s0.10:1"
+call missing_left "enp1s0.10 100" "enp1s0.10" 1000 15
+ok "1az a due token has no minutes-left entry" ""
+call missing_left $'enp1s0.10 100\nenp1s0.20 400' "enp1s0.10 enp1s0.20" 400 15
+ok "1az minutes left per token" "enp1s0.10:10 enp1s0.20:15"
+call missing_left "enp1s0.10 100" "enp1s0.10" 400 0
+ok "1az nothing is pending when the feature is off" ""
+
+# State layer: the real functions in a fresh bash; carrier and uptime are stubbed and
+# the detection stash is set through the real store_detection.
+# shellcheck disable=SC2016 # expanded inside the child bash
+_mv_st='log() { l="$1"; shift; printf "%s|%s\n" "$l" "$*"; }; DETECT_METHOD=sniff
+has_carrier() { case "$1" in enp1s0 | enp2s0) return 0 ;; *) return 1 ;; esac; }
+uptime_seconds() { printf "%s" "${NOW:-1000}"; }; rm -f "$MV_DIR/missing-since"
+cls() { c=$(missing_classify "$1"); echo "m=[$(sed -n 1p <<<"$c")] s=[$(sed -n 2p <<<"$c")]"; }'
+
+# shellcheck disable=SC2016
+{
+_mv_is "1az MV-9 Case A: a trusted tagless sample misses every owned VLAN" "m=[enp1s0.10 enp1s0.20] s=[]" \
+	"$(_mv "$_mv_st"'; store_detection enp1s0 "ok na"; cls "enp1s0.10 enp1s0.20"')"
+_mv_is "1az MV-10 Case B: only the gone VLAN is missed" "m=[enp1s0.20] s=[enp1s0.10]" \
+	"$(_mv "$_mv_st"'; store_detection enp1s0 "ok na 10"; cls "enp1s0.10 enp1s0.20"')"
+_mv_is "1az MV-4 an untrusted sample is neither a miss nor a sighting" "m=[] s=[]" \
+	"$(_mv "$_mv_st"'; store_detection enp1s0 "fail na 10"; cls "enp1s0.10 enp1s0.20"')"
+_mv_is "1az MV-5 a trunk with no sample (carrier-down) is left to FR-41" "m=[] s=[]" \
+	"$(_mv "$_mv_st"'; cls "enp3s0.10"')"
+_mv_is "1az MV-5 carrier lost after a valid sample is not a miss" "m=[] s=[]" \
+	"$(_mv "$_mv_st"'; store_detection enp3s0 "ok na"; cls "enp3s0.10"')"
+_mv_is "1az the same id on two trunks classifies per trunk" "m=[enp2s0.10] s=[enp1s0.10]" \
+	"$(_mv "$_mv_st"'; store_detection enp1s0 "ok na 10"; store_detection enp2s0 "ok na"; cls "enp1s0.10 enp2s0.10"')"
+
+_mv_is "1az MV-1 missing_record writes the first miss" "rc=0 enp1s0.10 1000" \
+	"$(_mv "$_mv_st"'; REMOVE_MISSING_MINUTES=15; store_detection enp1s0 "ok na"; missing_record "enp1s0.10" >/dev/null; echo "rc=$? $(cat "$MV_DIR/missing-since")"')"
+_mv_is "1az MV-8 REMOVE_MISSING_MINUTES=0 removes the record and tracks nothing" "rc=1 absent" \
+	"$(_mv "$_mv_st"'; REMOVE_MISSING_MINUTES=0; echo "enp1s0.10 5" >"$MV_DIR/missing-since"; store_detection enp1s0 "ok na"; missing_record "enp1s0.10"; r=$?; [ -e "$MV_DIR/missing-since" ] && f=present || f=absent; echo "rc=$r $f"')"
+_mv_is "1az an unset key (no load_config) is off and touches nothing" "rc=1 present" \
+	"$(_mv "$_mv_st"'; unset REMOVE_MISSING_MINUTES; echo "enp1s0.10 5" >"$MV_DIR/missing-since"; missing_record "enp1s0.10"; r=$?; [ -e "$MV_DIR/missing-since" ] && f=present || f=absent; echo "rc=$r $f"')"
+_mv_is "1az MV-12 a missing state file reads as empty" "[]" \
+	"$(_mv "$_mv_st"'; echo "[$(read_missing_since)]"')"
+_mv_is "1az an unreadable uptime skips tracking with a warning" "warning rc=1 absent" \
+	"$(_mv 'log() { printf "%s" "$1"; }; REMOVE_MISSING_MINUTES=15; UPTIME_FILE="$MV_DIR/nope"; rm -f "$MV_DIR/missing-since"; o=$(missing_record "enp1s0.10"); r=$?; [ -e "$MV_DIR/missing-since" ] && f=present || f=absent; echo "$o rc=$r $f"')"
+printf '12345.67 999.10\n' >"$_mv_dir/uptime"
+_mv_is "1az uptime_seconds reads whole seconds" "12345" \
+	"$(_mv 'UPTIME_FILE="$MV_DIR/uptime"; uptime_seconds')"
+_mv_is "1az a failed write drops the prior record and warns" "warning rc=1 absent" \
+	"$(_mv "$_mv_st"'; echo "enp1s0.10 100" >"$MV_DIR/missing-since"; mkdir "$MV_DIR/missing-since.tmp"; o=$(write_missing_since "enp1s0.10 1"); r=$?; rmdir "$MV_DIR/missing-since.tmp"; [ -e "$MV_DIR/missing-since" ] && f=present || f=absent; echo "${o%%|*} rc=$r $f"')"
+_mv_is "1az a failed persist makes missing_record fail" "rc=1" \
+	"$(_mv "$_mv_st"'; REMOVE_MISSING_MINUTES=15; echo "enp1s0.10 100" >"$MV_DIR/missing-since"; mkdir "$MV_DIR/missing-since.tmp"; store_detection enp1s0 "ok na"; missing_record "enp1s0.10" >/dev/null; echo "rc=$?"; rmdir "$MV_DIR/missing-since.tmp"')"
+if [ "$(id -u)" -ne 0 ]; then
+	_mv_is "1az an undeletable record is emptied and reported, never kept" "rc=1 []" \
+		"$(_mv "$_mv_st"'; mkdir "$MV_DIR/ro"; echo "enp1s0.10 100" >"$MV_DIR/ro/ms"; chmod 555 "$MV_DIR/ro"; MISSING_SINCE_FILE="$MV_DIR/ro/ms"; write_missing_since "" >/dev/null; r=$?; echo "rc=$r [$(cat "$MV_DIR/ro/ms")]"; chmod 755 "$MV_DIR/ro"')"
+fi
+_mv_is "1az missing_prune drops tokens no longer owned" "enp1s0.20 6" \
+	"$(_mv "$_mv_st"'; printf "enp1s0.10 5\nenp1s0.20 6\n" >"$MV_DIR/missing-since"; backend_owned_vlans() { printf "enp1s0.20"; }; missing_prune; cat "$MV_DIR/missing-since"')"
+_mv_is "1az missing_log_pending warns per VLAN with minutes left" "warning|VLAN enp1s0.10 is missing from its trunk's samples; removed in 10 min unless it reappears (REMOVE_MISSING_MINUTES=15)" \
+	"$(_mv "$_mv_st"'; REMOVE_MISSING_MINUTES=15; MISSING_STATE="enp1s0.10 1000"; MISSING_MISSED="enp1s0.10"; MISSING_NOW=1300; missing_log_pending')"
+_mv_is "1az missing_report prints minutes left and due, and writes nothing" "  missing VLANs (minutes left before a rescan removes them): [enp1s0.20:15]
+  missing VLANs due now (the next rescan removes them if routing is healthy): [enp1s0.10]
+enp1s0.10 100" \
+	"$(_mv "$_mv_st"'; REMOVE_MISSING_MINUTES=15; NOW=1000; echo "enp1s0.10 100" >"$MV_DIR/missing-since"; store_detection enp1s0 "ok na"; missing_report "enp1s0.10 enp1s0.20"; cat "$MV_DIR/missing-since"')"
+_mv_is "1az missing_report marks itself incomplete when a detector failed" "  missing VLANs: incomplete (detector failed on [enp2s0]; those trunks are not tracked this run)" \
+	"$(_mv "$_mv_st"'; REMOVE_MISSING_MINUTES=15; DETECT_INVALID=enp2s0; store_detection enp1s0 "ok na"; missing_report "enp1s0.10" | grep incomplete')"
+_mv_is "1az missing_report says off when the key is 0" "  missing-VLAN removal: off (REMOVE_MISSING_MINUTES=0)" \
+	"$(_mv "$_mv_st"'; REMOVE_MISSING_MINUTES=0; missing_report "enp1s0.10"')"
+}
+
+# do_rescan with the real decision code; detection, routing and apply are stubbed.
+# OWNED tracks what the apply stub accepted, as the owned file would.
+# shellcheck disable=SC2016 # expanded inside the child bash
+_mv_rs='log() { l="$1"; shift; printf "%s|%s\n" "$l" "$*"; }; drain_pending_deletes() { return 0; }; warn_overlap() { :; }
+has_carrier() { return 0; }; have_routing() { return 0; }; backend_list_managed_vlans() { return 0; }
+OWNED="enp1s0.10 enp1s0.20"; backend_owned_vlans() { printf "%s" "$OWNED"; }
+uptime_seconds() { printf "%s" "$NOW"; }
+run_detection() { unset "$(tags_var enp1s0)" "$(valid_var enp1s0)"; DETECTED_TRUNKS=""; DETECT_INVALID=""
+	store_detection enp1s0 "${ST:-ok} na $TAGS"; [ -n "$TAGS" ] && DETECTED_TRUNKS=enp1s0; [ -n "$DETECTED_TRUNKS" ]; }
+apply_change() { echo "APPLY target=[$1] add=[$2] rem=[$3]"; [ "${APPLY_RC:-0}" = 0 ] && OWNED="$1"; return "${APPLY_RC:-0}"; }
+REMOVE_ON_CARRIER_LOSS=false REMOVE_MISSING_MINUTES=15 DETECT_METHOD=sniff VLAN_MIN=1 VLAN_MAX=1000 IGNORE_SET=""
+VLAN_WARN=32 VLAN_LIMIT=64 VLAN_LIMIT_MODE=refuse; rm -f "$MV_DIR/missing-since"
+st() { if [ -e "$MV_DIR/missing-since" ]; then tr "\n" ";" <"$MV_DIR/missing-since"; else echo absent; fi; }'
+
+# shellcheck disable=SC2016
+{
+_mv_is "1az MV-9 rescan Case A: missing VLANs are removed once the window has run" \
+	"APPLY target=[] add=[] rem=[enp1s0.10 enp1s0.20]
+absent" \
+	"$(_mv "$_mv_rs"'; TAGS="" NOW=1000; do_rescan >/dev/null; NOW=1900; do_rescan | grep APPLY; st')"
+_mv_is "1az rescan Case A before the window: warnings, no apply, clocks kept" \
+	"2 0 enp1s0.10 1000;enp1s0.20 1000;" \
+	"$(_mv "$_mv_rs"'; TAGS="" NOW=1000; do_rescan >/dev/null; NOW=1899; o=$(do_rescan); echo "$(grep -c "^warning|VLAN .* is missing" <<<"$o") $(grep -c APPLY <<<"$o") $(st)"')"
+_mv_is "1az MV-10 rescan Case B: only the gone VLAN is removed" \
+	"APPLY target=[enp1s0.10] add=[] rem=[enp1s0.20]" \
+	"$(_mv "$_mv_rs"'; TAGS="10" NOW=1000; do_rescan >/dev/null; NOW=1900; do_rescan | grep APPLY')"
+_mv_is "1az MV-3 rescan: a VLAN that reappears restarts its clock" \
+	"0 enp1s0.10 1900;enp1s0.20 1900;" \
+	"$(_mv "$_mv_rs"'; TAGS="" NOW=1000; do_rescan >/dev/null; TAGS="10 20" NOW=1500; do_rescan >/dev/null; TAGS="" NOW=1900; o=$(do_rescan); echo "$(grep -c APPLY <<<"$o") $(st)"')"
+_mv_is "1az rescan: no healthy routing preserves a due VLAN" \
+	"0 1" \
+	"$(_mv "$_mv_rs"'; TAGS="" NOW=1000; do_rescan >/dev/null; have_routing() { return 1; }; NOW=1900; o=$(do_rescan); echo "$(grep -c APPLY <<<"$o") $(grep -c "^warning|rescan: VLAN(s) .* no healthy routing" <<<"$o")"')"
+_mv_is "1az rescan: routing lost during the FR-41 settle also preserves a due missing VLAN" \
+	"0 1" \
+	"$(_mv "$_mv_rs"'; REMOVE_ON_CARRIER_LOSS=true CARRIER_DEBOUNCE_SECONDS=5; sleep() { :; }; OWNED="enp1s0.10 enp2s0.10"
+has_carrier() { [ "$1" = enp1s0 ]; }; h=0; have_routing() { h=$((h + 1)); [ "$h" -le 1 ]; }
+echo "enp1s0.10 100" >"$MV_DIR/missing-since"; TAGS="" NOW=1000; o=$(do_rescan); echo "$(grep -c APPLY <<<"$o") $(grep -c "^warning|rescan: VLAN(s) \[enp1s0.10\] .* no healthy routing" <<<"$o")"')"
+_mv_is "1az rescan: a run that cannot persist its clocks removes nothing by this rule" \
+	"0" \
+	"$(_mv "$_mv_rs"'; echo "enp1s0.10 100" >"$MV_DIR/missing-since"; mkdir "$MV_DIR/missing-since.tmp"; TAGS="" NOW=1000; do_rescan | grep -c APPLY; rmdir "$MV_DIR/missing-since.tmp"')"
+_mv_is "1az MV-8 rescan with REMOVE_MISSING_MINUTES=0 removes nothing (1.0.0 behavior)" \
+	"0 1 absent" \
+	"$(_mv "$_mv_rs"'; REMOVE_MISSING_MINUTES=0; echo "enp1s0.10 0" >"$MV_DIR/missing-since"; TAGS="" NOW=99999; o=$(do_rescan); echo "$(grep -c APPLY <<<"$o") $(grep -c "^info|rescan: no trunks detected; nothing to add" <<<"$o") $(st)"')"
+_mv_is "1az rescan: an untrusted sample never removes" \
+	"0" \
+	"$(_mv "$_mv_rs"'; ST=fail TAGS="" NOW=1000; do_rescan >/dev/null; NOW=1900; do_rescan | grep -c APPLY')"
+_mv_is "1az rescan: a reverted removal keeps the clocks" \
+	"enp1s0.10 1000;enp1s0.20 1000;" \
+	"$(_mv "$_mv_rs"'; TAGS="" NOW=1000; do_rescan >/dev/null; APPLY_RC=1 NOW=1900; do_rescan >/dev/null; st')"
+_mv_is "1az rescan: the removal is logged at notice" \
+	"1" \
+	"$(_mv "$_mv_rs"'; TAGS="" NOW=1000; do_rescan >/dev/null; NOW=1900; do_rescan | grep -c "^notice|rescan: removing VLAN(s) missing for at least 15 min"')"
+}
+
+# do_boot: records the clock from its passes, never removes by this rule.
+# shellcheck disable=SC2016 # expanded inside the child bash
+_mv_bt="$_mv_rs"'; sleep() { :; }; RESET_ON_BOOT=true; BOOT_SETTLE_SECONDS=0 CARRIER_DEBOUNCE_SECONDS=5'
+
+# shellcheck disable=SC2016
+{
+_mv_is "1az MV-H4 boot Case A records the clock and removes nothing" \
+	"0 enp1s0.10 1000;enp1s0.20 1000;" \
+	"$(_mv "$_mv_bt"'; TAGS="" NOW=1000; o=$(do_boot); echo "$(grep -c APPLY <<<"$o") $(st)"')"
+_mv_is "1az boot never removes a due VLAN by this rule" \
+	"0 1" \
+	"$(_mv "$_mv_bt"'; printf "enp1s0.10 0\nenp1s0.20 0\n" >"$MV_DIR/missing-since"; TAGS="" NOW=5000; o=$(do_boot); echo "$(grep -c APPLY <<<"$o") $(grep -c "^warning|boot: VLAN(s) .* the next rescan does" <<<"$o")"')"
+_mv_is "1az boot: a pass-2 sighting clears the pass-1 miss" \
+	"absent" \
+	"$(_mv "$_mv_bt"'; n=0; run_detection() { n=$((n + 1)); unset "$(tags_var enp1s0)" "$(valid_var enp1s0)"; T=""; [ "$n" -gt 1 ] && T="10 20"; store_detection enp1s0 "ok na $T"; DETECTED_TRUNKS=""; [ -n "$T" ] && DETECTED_TRUNKS=enp1s0; [ -n "$DETECTED_TRUNKS" ]; }; NOW=1000; do_boot >/dev/null; st')"
+_mv_is "1az boot Case B: the accepted detection-diff removal clears its line" \
+	"APPLY target=[enp1s0.10] add=[] rem=[enp1s0.20]
+absent" \
+	"$(_mv "$_mv_bt"'; TAGS="10" NOW=1000; do_boot | grep APPLY; st')"
+_mv_is "1az boot: a zero-detection boot with carrier-loss removal off still records" \
+	"enp1s0.10 1000;enp1s0.20 1000;" \
+	"$(_mv "$_mv_bt"'; TAGS="" NOW=1000; REMOVE_ON_CARRIER_LOSS=false; do_boot >/dev/null; st')"
+_mv_is "1az boot with RESET_ON_BOOT=false records from its single pass" \
+	"enp1s0.10 1000;enp1s0.20 1000;" \
+	"$(_mv "$_mv_bt"'; RESET_ON_BOOT=false; TAGS="" NOW=1000; do_boot >/dev/null; st')"
+}
+
+# shellcheck disable=SC2016
+{
+_mv_is "1az --status reports missing VLANs and does not advance the clock" \
+	"  missing VLANs (minutes left before a rescan removes them): [enp1s0.10:10 enp1s0.20:15]
+enp1s0.10 1000;" \
+	"$(_mv "$_mv_rs"'; check_detect_deps() { return 0; }; current_subnets() { :; }; RESTART_ON_NEW_SUBNET=false; echo "enp1s0.10 1000" >"$MV_DIR/missing-since"; TAGS="" NOW=1300; do_status | grep "minutes left"; st')"
+_mv_is "1az --status with detection unavailable does not claim no missing VLANs" \
+	"  missing VLANs: unavailable (detection did not run)" \
+	"$(_mv "$_mv_rs"'; check_detect_deps() { return 1; }; current_subnets() { :; }; RESTART_ON_NEW_SUBNET=false; NOW=1300; do_status | grep "missing VLANs"')"
+_mv_is "1az --dry-run reports due VLANs and does not advance the clock" \
+	"  missing VLANs due now (the next rescan removes them if routing is healthy): [enp1s0.10]
+enp1s0.10 100;" \
+	"$(_mv "$_mv_rs"'; snapshot_default_route() { :; }; pending_deletes() { :; }; current_subnets() { :; }; backend_stage_netplan_tree() { return 1; }
+RESTART_ON_NEW_SUBNET=false VLAN_ROUTES=false RESET_ON_BOOT=true; echo "enp1s0.10 100" >"$MV_DIR/missing-since"; TAGS="" NOW=1000; do_dryrun | grep "due now"; st')"
+}
+
+rm -rf "$_mv_dir"
+unset -f _mv _mv_is _mv_cfg
+unset _mv_dir _mv_st _mv_rs _mv_bt
+rm -rf "$_ms_dir"
 
 # ---------------------------------------------------------------------------
 
