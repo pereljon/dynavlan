@@ -138,6 +138,7 @@ The script is one file, divided into sections. dev/CODEMAP.md gives one row per 
 - **`restart_targets`** restarts `RESTART_SNAPS` with snap, then `RESTART_SERVICES` with systemctl. It skips a missing or failed target. It sets `RESTART_NONE_SUCCEEDED_THIS_RUN` only on a total failure (M6).
 - **`prune_backups`** keeps the newest `BACKUP_KEEP` backups.
 - **`do_status` and `do_dryrun`** report carrier state per owned trunk (FR-41). `do_dryrun` also previews a carrier-down removal.
+- **Missing-VLAN clocks** live in `/run/dynavlan/missing-since`, one `TOKEN UPTIME_SECONDS` line per owned VLAN that a trusted sample missed. The rule, the record and the review findings are in dev/features/missing-vlan-removal.md (tests/unit.sh §1az).
 - **Pending deletes** live in `/run/dynavlan/pending-delete`. The record and the drain rules are in dev/SKELETON.md, "A failed delete is retried, not forgotten (M5)" (tests/unit.sh §1ae, §1aj).
 
 ## 6. Control flow per mode

@@ -1,7 +1,7 @@
 ---
 kind: feature
-lifecycle: ready
-status: drafted and approved 2026-10-15; no code yet
+lifecycle: building
+status: drafted and approved 2026-10-15; amended 2026-10-15 (default, uptime clock); code-complete on feature/missing-vlan-removal (ed23b5f, 1.1.0), code-reviewed, not hardware-validated
 ---
 
 # Missing-VLAN removal: design
@@ -114,15 +114,23 @@ The lower bound makes sure that at least two rescan samples confirm a miss. The 
 - `COMPATIBILITY.md`: the new key row.
 - `dev/SKELETON.md`: the removal invariant. `dev/CODEMAP.md`: rows for new functions.
 
-## 5. Code touch points
+## 5. As built (1.1.0)
 
-- `do_rescan` (`dynavlan:2285`): a missing-VLAN removal path beside the FR-41 path, before the combine at `dynavlan:2360`.
-- `do_boot` (`dynavlan:2093`): update the missing-since state after pass 2.
-- New pure helpers, unit-tested first: one that updates the state from a sample, and one that returns the VLANs due for removal.
-- `load_config` and `CONFIG_KEYS`: the new key, its default and range check.
-- `do_status` (`dynavlan:2769`) and `do_dryrun` (`dynavlan:2400`): the missing VLANs.
+- Pure helpers: `missing_since_of`, `missing_since_update`, `missing_due` and `missing_left` (tests/unit.sh §1az).
+- State layer: `uptime_seconds`, `read_missing_since`, `write_missing_since`, `missing_classify`, `missing_track`, `missing_record`, `missing_log_pending`, `missing_prune` and `missing_report`.
+- `do_rescan` runs the missing-VLAN path after the FR-41 block, so its `have_routing` check follows any FR-41 settle. Due tokens join the run's one apply. An accepted apply calls `missing_prune`.
+- `do_boot` records after pass 1 and again after the pass-2 re-detect. It logs due VLANs but never removes them by this rule.
+- A run that cannot write the record removes nothing by this rule, and the record is dropped or emptied, so clocks restart rather than run early.
+- With the key at 0, every run deletes the record, including on the zero-detection early returns, so a later re-enable starts every clock fresh.
+- With the key on, a zero-detection boot with `REMOVE_ON_CARRIER_LOSS=false` no longer returns early. It runs the managed-elsewhere query and pass 2 so that it can record its clocks. This adds boot latency and the existing exit-1 path of that query (review finding M2, accepted).
+- `--status` and `--dry-run` call `missing_report`, which never writes. `--dry-run` also warns when a due missing VLAN is the current default-route interface (C1). Exit codes are unchanged.
+- `load_config` validates the key after `RESCAN_MINUTES`; `CONFIG_KEYS` and the `dynavlan.conf` template list it.
 
-## 6. Resolved questions
+## 6. Open questions
+
+- Q4 (review finding I3, 2026-10-15): should a run where the trunk had no carrier, or where its sample failed, restart that trunk's clocks? As built, such runs leave the clock alone (section 3.2), so the window measures time since the first miss, not a stretch of consecutive trusted misses. Options: (a) restart the trunk's clocks on such a run; (b) also restart on a change of the port's carrier-change counter; (c) keep as built. Tracked in `context/open_questions.md`.
+
+## 7. Resolved questions
 
 All resolved 2026-10-15 by the operator.
 

@@ -125,6 +125,7 @@ The keys that most deployments change:
 # RESTART_ON_NEW_SUBNET=true       # also restart on a new IPv4 subnet
 # RESCAN_MINUTES=5                 # rescan timer interval
 # REMOVE_ON_CARRIER_LOSS=true      # prune a trunk's VLANs when its link stays down
+# REMOVE_MISSING_MINUTES=15        # remove a VLAN that a trunk with link has stopped carrying; 0 = off
 # VLAN_ROUTES=false                # opt in to routed mode
 ```
 
@@ -132,6 +133,7 @@ The keys that most deployments change:
 - **Restart targets.** Set `RESTART_SNAPS` and `RESTART_SERVICES` to the agent that must read its interfaces again after a VLAN change. With `RESTART_ON_NEW_SUBNET` (default on), dynavlan also restarts them when a new IPv4 subnet appears on any interface. Two examples: an access port plugged in after boot, or an agent that starts before the base interface gets its DHCP address. See README, "Service-restart integration".
 - **Rescan interval.** After you change `RESCAN_MINUTES`, run `sudo dynavlan --reconfigure`.
 - **Carrier loss.** `REMOVE_ON_CARRIER_LOSS` is described under "Ongoing operation".
+- **Missing VLANs.** `REMOVE_MISSING_MINUTES` is described under "Ongoing operation".
 - **Routed mode.** Leave `VLAN_ROUTES` off unless the box must route through the discovered VLANs. The default is full route and DNS isolation.
 
 ### Number and quote rules
@@ -288,17 +290,17 @@ Use a console for the first `--boot` if you can. dynavlan does not require one.
 Steady state needs no action from you:
 
 - **Boot.** dynavlan reconciles the VLAN set against every trunk on the box. It makes two passes per trunk. Guards stop it from removing anything when detection is faulty.
-- **Timer.** dynavlan adds newly appearing VLANs on any trunk between boots.
+- **Timer.** dynavlan adds newly appearing VLANs on any trunk between boots. It also removes VLANs that a trunk with link has stopped carrying (see "Ongoing operation").
 
 Removals depend on why a VLAN went away:
 
-- **One VLAN is absent from a trunk that is still live.** The switch stopped trunking the VLAN, but the port is up. dynavlan removes the VLAN at the next boot reconcile. The timer never removes it.
+- **A VLAN is absent from a trunk that still has link.** The switch stopped trunking the VLAN, or the trunk now shows no tags at all, but the port is up. dynavlan records the uptime of the first trusted sample that missed the VLAN. A failed capture does not count as a miss, and a sighting resets the clock. The rescan timer removes the VLAN once `REMOVE_MISSING_MINUTES` have passed and the box has a healthy default route. The default is 15 minutes, or twice `RESCAN_MINUTES` if that is larger. A boot only starts the clock and never removes by this rule, and the clock restarts at reboot. Set `REMOVE_MISSING_MINUTES=0` to turn the rule off. `dynavlan --status` and `--dry-run` print the minutes left for each missing VLAN.
 - **The whole trunk lost carrier.** The cause can be an unplugged cable, a disabled switch port, or a pulled cable. dynavlan prunes the trunk's entire owned set, at boot or on the timer, when both of these are true:
   - The link stayed down across a two-sample debounce.
   - The box still has a healthy default route.
 
   `REMOVE_ON_CARRIER_LOSS` (default `true`) controls this. Set it to `false` to keep those VLANs indefinitely. A brief flap does not trigger removal. A box with no working uplink of its own does not trigger it either: if the dead trunk was the only route out, dynavlan keeps everything.
-- **Carrier is up but nothing is detected.** This can be a quiet trunk or a slow-to-converge trunk. dynavlan keeps everything. Uncertain detection never removes anything.
+- **Carrier is up but nothing is detected.** This can be a quiet trunk or a slow-to-converge trunk. A single run keeps everything: uncertain detection never removes anything by itself. The missing-VLAN clock above still runs, so a VLAN that stays unseen for `REMOVE_MISSING_MINUTES` is removed.
 
 ### After a stopped or reverted apply
 
@@ -323,6 +325,7 @@ To recover, work at the console:
 | `/etc/systemd/system/dynavlan.{service,timer}`, `dynavlan-rescan.service` | Units from an `install.sh` install. A package install puts them in `/lib/systemd/system` instead. |
 | `/etc/systemd/system/dynavlan.timer.d/interval.conf` | Timer interval drop-in that `dynavlan --reconfigure` writes (both install paths) |
 | `/run/dynavlan.lock` | Run lock (held by file descriptor; safe to ignore) |
+| `/run/dynavlan/missing-since` | Runtime scratch, one `TOKEN UPTIME_SECONDS` line per owned VLAN that the last trusted sample missed. It is deleted at reboot, which restarts every clock. Safe to delete. |
 
 ## 7. Removal
 

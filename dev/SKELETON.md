@@ -159,22 +159,29 @@ An empty detection blocks additions. An owned carrier-down trunk stays eligible 
 3. **Pass 2** (only when `need_pass2`). Sleep `BOOT_SETTLE_SECONDS`. Re-detect only when `RESET_ON_BOOT=true`, because a carrier-only resample needs no new sniff. Then decide per trunk:
    - **Carrier up at pass 2:** detection-diff removal, only with `RESET_ON_BOOT=true`. `boot_removals` removes owned ids that are absent from both passes. An empty detection in either pass preserves. An `invalid` sample in either pass (H1) preserves with a warning.
    - **Carrier down at pass 2 (FR-41):** `carrier_removals` returns the trunk's full owned set for removal. Boot preserves instead when the knob is off, when pass-1 carrier was up (a flap), or when `have_routing` is false.
-4. **Combine** all trunks' additions and removals into one token set. Run the count gate, then make one `apply_change` call.
+4. **Record the missing-VLAN clock.** After pass 1, and again after a pass 2 that re-detected, `missing_record` stores each owned VLAN that a trusted sample on a carrier-up trunk missed. Boot never removes by this rule. It logs a warning when a VLAN is already due, and the next rescan removes it. With `REMOVE_MISSING_MINUTES` above 0, a boot that detects nothing and has `REMOVE_ON_CARRIER_LOSS=false` continues instead of returning early, so the clocks start.
+5. **Combine** all trunks' additions and removals into one token set. Run the count gate, then make one `apply_change` call. After an accepted apply, `missing_prune` drops the records of VLANs that are no longer owned.
 
 For a carrier-down trunk, `have_routing` is the only safety gate. Why: the dead trunk may be the box's own uplink. The post-apply health check does not cover this case, because an empty route snapshot always passes.
 
-Boot has no relocation branch. A trunk with carrier up and no tags is preserved, because that is detection uncertainty. A trunk moved to another NIC is two separate events. The old NIC goes carrier-down and is pruned. The new NIC is provisioned on its own evidence.
+Boot has no relocation branch. A trunk with carrier up and no tags is preserved for this boot, because that is detection uncertainty. The missing-VLAN clock then decides whether a later rescan removes the VLAN. A trunk moved to another NIC is two separate events. The old NIC goes carrier-down and is pruned. The new NIC is provisioned on its own evidence.
 
 ### --rescan (timer)
 
 Additions are the per-trunk candidate VLANs over every iface in `DETECTED_TRUNKS`, tagged and combined.
 
-Removals come from FR-41 only, and only when `REMOVE_ON_CARRIER_LOSS=true`. Rescan checks carrier on every owned iface, not only on detected ones. Why: a carrier-down owned trunk may report zero tags and be absent from `DETECTED_TRUNKS`.
+Removals come from two rules. FR-41 removes the VLANs of a carrier-down trunk, only when `REMOVE_ON_CARRIER_LOSS=true`. The missing-VLAN rule (FR-44) removes an owned VLAN that trusted samples on a carrier-up trunk have missed for `REMOVE_MISSING_MINUTES`. Rescan is the only mode that removes by the second rule. Rescan checks carrier on every owned iface, not only on detected ones. Why: a carrier-down owned trunk may report zero tags and be absent from `DETECTED_TRUNKS`.
 
 - **Fast path:** the settle sleep runs only when an owned trunk is carrier-down and `have_routing` is true. An all-up box, or a down trunk with no healthy routing, adds no latency.
 - **Settle:** sleep `BOOT_SETTLE_SECONDS` once for all down trunks.
 - **Re-check routing:** check `have_routing` again before building any removal. If the uplink was lost during the settle, preserve everything. The health check cannot catch this case, because an empty route snapshot always passes.
 - **Prune:** re-sample carrier on the down trunks. `carrier_removals` prunes each trunk that is still down. A trunk that recovered during the settle is preserved.
+
+The missing-VLAN check runs after the FR-41 block, so its routing gate reflects the box after any settle:
+
+- **Record:** `missing_record` updates `/run/dynavlan/missing-since` from this run's samples. A run that cannot write it removes nothing by this rule.
+- **Report:** `missing_log_pending` warns once per missing VLAN with the minutes left.
+- **Remove:** `missing_due` returns the missing VLANs whose clock has run `REMOVE_MISSING_MINUTES`. They join `all_removals` only when `have_routing` is true. Otherwise rescan logs a warning and preserves them.
 
 Additions and removals then combine into one token set. Rescan runs the count gate and makes one `apply_change` call.
 
@@ -217,7 +224,8 @@ A non-accepted apply gives no delete advice. After teardown, the owned file defi
 - The pending-delete preview uses the route snapshot taken before detection, as the real drain does. The later snapshot feeds only the default-route guard preview (C1).
 - It stages the netplan tree with `backend_stage_netplan_tree`: `/etc/netplan`, plus `/lib` and `/run` netplan YAML when present. It generates the candidate config there and validates. A failed copy returns 1 (L8).
 - It prints the per-trunk diff with carrier state, a combined total, and the count gate. In routed mode it also prints the metric map and any conflict.
-- It never applies, deletes, restarts, or writes the pending or seen records.
+- It prints the missing-VLAN lines from `missing_report`: minutes left, due now, an `incomplete` line when a detector failed, or `missing-VLAN removal: off`. It warns when a due missing VLAN is the default-route interface (C1).
+- It never applies, deletes, restarts, or writes the pending, seen, or missing-since records.
 - Detection still brings NICs administratively up and leaves promiscuous mode on. This is disclosed, not restored.
 - It returns non-zero on a validation fail (M3), a count-gate refusal, a base-tree copy failure, or a failed pending or managed query. Otherwise it returns 0, so `$?` works as a scripted preflight.
 
@@ -228,6 +236,7 @@ A non-accepted apply gives no delete advice. After teardown, the owned file defi
 - It gates its detection on `check_detect_deps` and returns non-zero if a tool is missing (M8).
 - If `DETECT_INVALID` is non-empty, it marks detection unavailable or incomplete and returns non-zero (D5). Partial results still print.
 - A failed managed-elsewhere query reads `unavailable` and returns 1. A quiet, valid wire returns 0.
+- It also prints the `missing_report` lines, or `missing VLANs: unavailable` when detection did not run. It never writes the missing-since record.
 - Each row also shows `owned-ignored` and `owned-out-of-range`: owned ids outside the current ignore or range policy. These print even when detection is unavailable (Group 5).
 
 ### Count gate (FR-12, FR-36)
@@ -430,7 +439,7 @@ Enforced by: `apply_change`, `backend_remove_vlan`; `tests/unit.sh` §1ak, §1ao
 
 Why: After an accept the stanza is already gone from the owned file. A failed delete would leave the live interface and its subnet until reboot. The next run could not tell that orphan from an external VLAN.
 
-- **Record:** `apply_change` writes the token to `/run/dynavlan/pending-delete`. The file is on tmpfs, so it lasts until reboot, as the interface does.
+- **Record:** `apply_change` writes the token to `/run/dynavlan/pending-delete`. The file is on tmpfs, so it lasts until reboot, as the interface does. The FR-44 clocks in `/run/dynavlan/missing-since` are separate runtime scratch.
 - **Drain:** `drain_pending_deletes` runs at the start of every `do_boot` and `do_rescan`, and retries each record.
 - **Current state first:** the record proves past ownership only. Each drain therefore checks current state before it deletes a token.
 - **Default route:** if the token is now the box's default-route interface, the drain preserves it with a warning (D1).
@@ -475,7 +484,7 @@ Enforced by: `boot_removals`, `have_routing`, `do_boot`; `tests/unit.sh` §1d, �
 
 Why: A dead port cannot pass frames, so carrier-down is authoritative kernel evidence. A carrier-up trunk with no tags may only be a detection miss, such as STP or LLDP not yet converged, or a silent VLAN.
 
-- A trunk with carrier up and no tags across both passes is preserved, never removed on that basis alone.
+- A trunk with carrier up and no tags across both passes is preserved, never removed on that basis alone. Only the FR-44 clock removes it later.
 - A trunk that stays carrier-down across the two-sample debounce loses its entire owned set on that trunk.
 - The prune needs `REMOVE_ON_CARRIER_LOSS=true` (the default) and `have_routing`.
 - If the dead trunk is the box's only uplink, `have_routing` fails and the trunk is preserved. A removal there would be doomed.
@@ -484,6 +493,21 @@ Why: A dead port cannot pass frames, so carrier-down is authoritative kernel evi
 - Why the physical clause: a tun or WireGuard default reports carrier whenever it is up. It would make a dark box look routable.
 
 Enforced by: `carrier_removals`, `have_routing`; `tests/unit.sh` §1r, §1s, §1t, §1u. Hardware check: L3-30 (revised) in `dev/features/dynavlan-tests.md`.
+
+### A missing VLAN is removed only after a quiet window (FR-44)
+
+**Rule:** Remove an owned VLAN for being missing only from `--rescan`, only after trusted samples on its carrier-up trunk have missed it for `REMOVE_MISSING_MINUTES`, only when `have_routing` is true, and only when the clock record was written.
+
+Why: One missed sample is not evidence of absence, because a sniff misses a silent VLAN and boot is the least reliable window. A sighting deletes the clock. A failed or carrier-down sample neither starts nor deletes it, so time keeps counting from the first miss (open question I3). A stale record must never make a later miss look overdue.
+
+- A miss needs carrier up, a trusted sample (H1), and an absent id. A sighting deletes the record line.
+- The clock is uptime from `/proc/uptime`, not wall time. It restarts at reboot, as `/run` does, and NTP steps cannot move it.
+- A run that cannot write the record drops it, so every clock restarts. With the key at 0 the record is deleted.
+- Boot records the clock and logs a warning when a VLAN is due, but never removes.
+- The rule is independent of `RESET_ON_BOOT` and `REMOVE_ON_CARRIER_LOSS`.
+- The removal joins the run's one `apply_change`, so it gets validation, `netplan try`, the health gate, and the delete after ACCEPT (C1 and M5 still apply).
+
+Enforced by: `missing_record`, `missing_due`, `missing_since_update`, `do_rescan`, `do_boot`; `tests/unit.sh` §1az. Design: `dev/features/missing-vlan-removal.md`.
 
 ### Side effects are change-gated
 
@@ -536,6 +560,7 @@ Why: With no sidecar state file, nothing can drift out of step with the owned fi
 - Routed-mode metrics, keyed by token, are read back from the same file.
 - There are no sidecar config or state files and no persisted "selected trunk".
 - The FR-40 seen-subnet set is an exception in kind only. It is runtime scratch in `/run/dynavlan/seen`, on tmpfs and wiped on reboot. It never touches the owned file.
+- The FR-44 missing-VLAN clocks are the same kind of exception. They live in `/run/dynavlan/missing-since`, on tmpfs and wiped on reboot, and never touch the owned file.
 
 Enforced by: `backend_owned_vlans`, `backend_owned_metrics`; `tests/unit.sh` §1o.
 

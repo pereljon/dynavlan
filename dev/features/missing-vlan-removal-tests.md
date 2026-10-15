@@ -6,7 +6,7 @@ Layer 1 cases run in `tests/unit.sh`. Layer 3 cases run on the test box, with th
 
 ## Layer 1: unit tests
 
-Pure helpers, written RED before GREEN.
+Pure helpers, written RED before GREEN. Every case lives in `tests/unit.sh` §1az, and each test name carries its MV id (for example `1az MV-7 missing for exactly the window is due`). MV-14 is covered by the existing §1au allowlist, template and defaults checks. §1az also covers the boot, rescan, `--status` and `--dry-run` wiring and the review fixes listed below.
 
 | ID | Case | Expected |
 |----|------|----------|

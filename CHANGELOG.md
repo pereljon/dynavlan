@@ -4,8 +4,23 @@ Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle
 
 ## Unreleased
 
+### Added
+
+- Config key `REMOVE_MISSING_MINUTES`. Unset or empty means the larger of 15 and `RESCAN_MINUTES*2`.
+  An explicit value is `0` (off) or an integer from `RESCAN_MINUTES*2` to 1440; any other value
+  makes `load_config` refuse.
+- `--rescan` removes an owned VLAN that every trusted sample on its carrier-up trunk has missed
+  for `REMOVE_MISSING_MINUTES`, when routing is healthy. The removal joins the run's one apply.
+  The clock is kept in `/run/dynavlan/missing-since` and counts uptime, so it restarts at reboot.
+  `--boot` only starts the clock.
+- `--status` and `--dry-run` print the missing VLANs with the minutes left, the ones due now, or
+  `missing-VLAN removal: off`. `--dry-run` also warns when a due VLAN carries the default route.
+
 ### Changed
 
+- An owned VLAN that a trunk with link stops carrying is now removed after `REMOVE_MISSING_MINUTES`
+  (FR-23 and AC-3 kept it indefinitely). `REMOVE_MISSING_MINUTES=0` restores the 1.0.0 behavior.
+  Operator-approved fix; see `COMPATIBILITY.md`.
 - The package description (`debian/control`) is rewritten in plain language. No behavior change.
 
 ## [1.0.0] - 2026-10-12

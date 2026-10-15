@@ -22,12 +22,12 @@ dynavlan does this work for you. It reads the VLANs from the wire and configures
 dynavlan runs at two times:
 
 - **At boot** (`--boot`): a full reconcile. It adds VLANs that appear and removes VLANs that are gone, on every trunk.
-- **On a timer** (`--rescan`, every 5 minutes by default): it adds VLANs as they appear.
+- **On a timer** (`--rescan`, every 5 minutes by default): it adds VLANs as they appear. It removes the VLANs of a trunk that lost link, and it removes a VLAN that a trunk with link has stopped carrying.
 
-Two rules control removal, on both runs:
+Three rules control removal:
 
-- **A trunk that has link but shows no tags:** dynavlan keeps its VLANs. A sniff can miss a VLAN that is silent, so "no tags seen" does not prove that the VLANs are gone.
-- **A trunk that loses link:** dynavlan removes its VLANs. A trunk with no link cannot carry a VLAN. dynavlan removes them only when two samples confirm the link loss and the box still has a working default route. A short flap between the two samples does not remove anything. `REMOVE_ON_CARRIER_LOSS` (default `true`) controls this rule.
+- **A trunk that has link but does not show a VLAN:** a sniff can miss a VLAN that is silent, so one missed sample does not remove it. dynavlan records when the first trusted sample missed the VLAN, and a rescan removes the VLAN once every sample has missed it for `REMOVE_MISSING_MINUTES`. The default is 15 minutes, or twice `RESCAN_MINUTES` if that is larger. This applies when the trunk shows no tags at all and when it shows other tags but not this one. A sighting resets the clock. A failed capture does not count as a miss. The clock counts time since boot, so it restarts at reboot. `--boot` only starts the clock; the next rescan removes the VLAN, and only when the box has a working default route. Set `REMOVE_MISSING_MINUTES=0` to turn the rule off.
+- **A trunk that loses link:** dynavlan removes its VLANs. A trunk with no link cannot carry a VLAN. dynavlan removes them only when two samples confirm the link loss and the box still has a working default route. A short flap between the two samples does not remove anything. `REMOVE_ON_CARRIER_LOSS` (default `true`) controls this rule, on both runs.
 
 ## Isolated by default
 
@@ -133,7 +133,8 @@ If you only remove the software, the units stop, but the VLANs and `/etc/netplan
 ```
 dynavlan --boot         # full reconcile at boot: add and remove VLANs to match every trunk
 dynavlan --rescan       # what the timer runs: add new VLANs, and remove the VLANs of a
-                        #   trunk that has lost link (confirmed by two samples)
+                        #   trunk that has lost link (confirmed by two samples) or that has been
+                        #   missing from a trunk with link for REMOVE_MISSING_MINUTES
 dynavlan --reapply      # regenerate and apply the current VLAN set with this build and config,
                         #   only if the result differs from the file on disk. Use it after an
                         #   upgrade or after a config change such as VLAN_ROUTES.
