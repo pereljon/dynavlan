@@ -4,7 +4,7 @@ dynavlan finds the tagged VLANs on each trunk port of a headless Linux box and c
 
 dynavlan was built for monitoring and discovery platforms, but it is a general tool for dynamic VLANs.
 
-> **1.0.0.** Validated on one reference Protectli/igb appliance with Meraki and UniFi switches. Compatibility promise for 1.x: [COMPATIBILITY.md](COMPATIBILITY.md). Full matrix: [Hardware validation](docs/hardware-validation.md).
+> **1.1.1.** Validated on one reference Protectli/igb appliance with Meraki and UniFi switches. Compatibility promise for 1.x: [COMPATIBILITY.md](COMPATIBILITY.md). Full matrix: [Hardware validation](docs/hardware-validation.md).
 
 ## The problem
 
@@ -95,11 +95,11 @@ sudo apt update && sudo apt install dynavlan
 
 - **Install a specific version.** This always installs from the tarball and does not use apt:
   ```sh
-  curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v1.0.0
+  curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v1.1.1
   ```
 - **Install from a `.deb` file.** Use this if you do not want to pipe `curl` into `sudo bash`, or if the box is offline. Download the `.deb` from a [GitHub release](https://github.com/pereljon/dynavlan/releases), then install it:
   ```sh
-  sudo dpkg -i dynavlan_1.0.0_all.deb
+  sudo dpkg -i dynavlan_1.1.1_all.deb
   sudo apt-get install -f   # if dependencies are missing
   ```
 - **Install without apt or dpkg** (other netplan/systemd-networkd distributions). Clone the repository and run the installer:

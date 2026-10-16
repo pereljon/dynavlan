@@ -2,7 +2,7 @@
 
 Format: Keep a Changelog. Add bullets under `## Unreleased`; on release, retitle that section to `## [x.y.z] - YYYY-MM-DD`.
 
-## Unreleased
+## [1.1.1] - 2026-10-16
 
 ### Added
 

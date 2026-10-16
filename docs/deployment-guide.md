@@ -90,7 +90,7 @@ Two cases cannot restore the exact running state. The upgrade output says so in 
 
 - **Pin a specific version.** This bypasses apt and always installs from the tarball:
   ```
-  curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v1.0.0
+  curl -fsSL https://raw.githubusercontent.com/pereljon/dynavlan/main/get.sh | sudo bash -s -- v1.1.1
   ```
 - **No apt or dpkg** (any other netplan/systemd-networkd distribution), or you want full manual control over what you transfer. Clone, SCP, or download a ZIP of the repository, then run the installer:
   ```
