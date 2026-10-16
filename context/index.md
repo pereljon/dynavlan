@@ -19,7 +19,7 @@ and the user docs rewritten for readability, and stale 1.0 status text corrected
 2026-10-15: the operator removed every VLAN from switch ports 5 and 6. The box still owns all 14 VLANs,
 which exposed a design gap: a VLAN that the switch stops carrying on a trunk with carrier is never
 removed. NEXT: missing-VLAN removal (1.1.1), design approved, on branch `feature/missing-vlan-removal`;
-see context/todo.md. Code-complete and code-reviewed on the branch (`ver=1.1.1`, I3 resolved), docs committed; not merged or hardware-validated. Next: hardware validation MV-H1..H7.
+see context/todo.md. Code-complete, code-reviewed and hardware-validated on the branch (`1.1.1 (build 1df3567)`, MV-H1..H7 PASS 2026-10-16 UTC); the box runs that build. Next: merge, push and release 1.1.1 (each needs approval).
 
 STATE (2026-08-03): dynavlan v0.3.0 released and hardware-validated (restart-on-new-subnet, FR-40:
 restart the nominated agent when a new IPv4 subnet appears on any interface, not only on a tagged-VLAN

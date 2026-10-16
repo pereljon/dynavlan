@@ -7,6 +7,27 @@ console-backed validation passes.
 - The latest pass is first. The oldest pass (v0.4.11) is last, under "History".
 - Older versions of this file are in git tags (`git show v0.4.2:docs/hardware-validation.md`).
 
+## Missing-VLAN removal pass (2026-10-16 UTC, `1.1.1 (build 1df3567)`)
+
+Console-backed on the reference appliance. Commands ran over SSH to the `enp2s0` base address, and the serial console stayed open as the fallback. The package was built from a clean `1df3567` (sha256 `5cd6f3e7...9cadca91`) and installed with `dpkg --force-confold -i` over the 1.0.0 package, with the timer stopped first. `--version` reported `1.1.1 (build 1df3567)`. Config was at defaults, except for the MV-H6 step.
+
+Starting state: on 2026-10-15 the operator set switch ports 5 and 6 to access mode (`forward: native`, tagged VLANs blocked). The box still owned all 14 VLANs on both trunks, with no addresses. That is the 1.0.0 defect this release fixes. Port 6 changes below were made through the UniFi controller API: a full `port_overrides` backup, one change per write, then a re-read diff. No other port changed.
+
+| Case | What ran | Result |
+|------|----------|--------|
+| MV-H6 | `REMOVE_MISSING_MINUTES=0`, then `--status` and `--rescan` | PASS. Status said `off`; the rescan changed nothing; no record file; owned file unchanged. |
+| (record) | Key back at the default, `--rescan`, then `--status` | PASS. 14 warnings with 15 minutes left; 14 record lines; `--status` showed 14 minutes left and did not write. |
+| MV-H4 | Reboot | PASS. The boot run recorded 14 clocks (uptime 204), logged 14 warnings and removed nothing. |
+| MV-H1, MV-H5 (as found) | Wait after boot, both ports in access mode | PASS. The 00:29 rescan removed all 14 VLANs about 15.5 minutes after the boot sample. `netplan try` was accepted in 21 s, links were deleted after ACCEPT, both base addresses and default routes stayed, and the record was cleared. |
+| MV-H7 | Port 6 set to trunk (native 100, 996 to 999 excluded) | PASS. The next rescan added `enp2s0.1`, `.21`, `.22` and `.101`. VLANs 18, 20 and 200 sent no frames in the 60 s sniff and were not added (passive detection, PRD R-1). |
+| MV-H2 and MV-H3 | Exclude VLANs 21 and 22 on port 6; re-include 21 after two missed rescans | PASS. Both clocks started at 00:40:25. 21 was seen at 00:50:31, its clock cleared and it was kept. Only `enp2s0.22` was removed, at 00:55:56. |
+| MV-H5 (trunk to access) | Port 6 set from trunk to access mode | PASS. 15 minutes after the first miss, at 01:16, the rescan removed `enp2s0.1`, `.101` and `.21`; `enp2s0` kept its address and default route. |
+| Port 6 restored (MV-H7 again) | Port 6 set back to trunk | PASS. At 01:21 the rescan re-added `enp2s0.1`, `.21`, `.22` and `.101`. |
+
+End state: the box runs `1.1.1 (build 1df3567)` with the timer active and config at defaults. Port 6 is a trunk with 996 to 999 excluded, and the box owns `enp2s0.1`, `.21`, `.22` and `.101`. Port 5 stays in the access mode the operator set, so `enp1s0` owns no VLANs.
+
+Not exercised on hardware: a routing loss during the FR-41 settle with a due missing VLAN (I1), and a failed record write (I2). Both are unit-tested in `tests/unit.sh` §1az.
+
 ## Status for 1.0.0
 
 dynavlan 1.0.0 is validated on the reference appliance below. Every pass was console-backed. In batch 3, some steps ran over SSH to the base address because the console had no logged-in shell after reboots (see "Final-build pass, batch 3").

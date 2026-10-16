@@ -1,7 +1,7 @@
 ---
 kind: feature
 lifecycle: building
-status: drafted and approved 2026-10-15; amended 2026-10-15 (default, uptime clock); code-complete on feature/missing-vlan-removal (1.1.1; I3 applied), code-reviewed, not hardware-validated
+status: drafted and approved 2026-10-15; amended 2026-10-15 (default, uptime clock); code-complete on feature/missing-vlan-removal (1.1.1; I3 applied); hardware-validated 2026-10-16 UTC (MV-H1..H7 PASS, docs/hardware-validation.md); not merged or released, code-reviewed, not hardware-validated
 ---
 
 # Missing-VLAN removal: design

@@ -39,6 +39,8 @@ Pure helpers, written RED before GREEN. Every case lives in `tests/unit.sh` §1a
 | MV-H6 | `REMOVE_MISSING_MINUTES=0` | 1.0.0 behavior: nothing is removed on a trunk with carrier |
 | MV-H7 | A removed VLAN returns on the switch | The next rescan adds it back |
 
+All seven Layer 3 cases passed on 2026-10-16 UTC on `1.1.1 (build 1df3567)`. MV-H1 and MV-H5 also ran on `enp1s0`, and MV-H2 used VLAN 22 because VLAN 200 sent no frames. Record: `docs/hardware-validation.md`, "Missing-VLAN removal pass".
+
 ## Review findings
 
 Code review 2026-10-15 (Opus subagent, high effort) on the uncommitted 1.1.0 diff. Evidence was verified by reading the code and by probe scripts outside the repo.
