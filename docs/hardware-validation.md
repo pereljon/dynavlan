@@ -7,6 +7,29 @@ console-backed validation passes.
 - The latest pass is first. The oldest pass (v0.4.11) is last, under "History".
 - Older versions of this file are in git tags (`git show v0.4.2:docs/hardware-validation.md`).
 
+## VLAN lifecycle pass (2026-10-17 UTC, `1.1.1 (build 4b97db1)`)
+
+Console-backed on the reference appliance, on the released 1.1.1 package. The box was moved onto it with `apt-get install --reinstall` (conffile kept), and `--version` reported `1.1.1 (build 4b97db1)`. Config was at defaults: `RESCAN_MINUTES=5`, `REMOVE_MISSING_MINUTES` unset (15 min). Only port 6 (`enp2s0`) changed, through the UniFi controller API with a full `port_overrides` backup, one change per write and a re-read diff. Port 5 stayed in access mode. Starting state: port 6 a trunk with 996 to 999 excluded, and the box owning VLANs 1, 18, 20, 21, 22, 101 and 200 on `enp2s0`.
+
+| Case | Switch change on port 6 | Result |
+|------|------------------------|--------|
+| L1 Remove some | Exclude 21 and 22 | PASS. Both clocks started at 02:25:59. One apply removed `enp2s0.21` and `.22` at 02:41:38; the other five stayed. |
+| L2 Add back | Re-include 21 and 22 | PASS. The next rescan re-added both at 02:46:49. |
+| L3 Remove all | Exclude every tagged network (18, 20, 21, 22, 101, 200) | PASS. One apply removed all six at 03:07:43. VLAN 1 frames still arrived, so `enp2s0.1` stayed. |
+| L4 Trunk to access | Access mode | PASS. VLAN 1 went missing at 03:12:34 and `enp2s0.1` was removed at 03:28:25, leaving no VLANs. |
+| L5 Access to trunk | Trunk, every tagged network still excluded | PASS. Only `enp2s0.1` was re-added, at 03:33:33. |
+| L6 Add VLANs back | Trunk, 996 to 999 excluded | PASS. `enp2s0.21`, `.22` and `.101` were added at 03:38:45, each with a DHCP address and no default route. |
+
+Every apply was a `netplan try` ACCEPT. Throughout, `enp2s0` kept `192.168.100.118/24`, both default routes stayed (`enp1s0` metric 10, `enp2s0` metric 20), and every run ended `rc=0` with no error lines. The missing-since record was cleared after each removal.
+
+Findings:
+
+- The controller refuses to exclude a port's native network (`api.err.NativeVlanCannotBeExcluded`). "Every tagged network" therefore leaves the native network (100) untagged on the port.
+- VLAN 1 is not a network on the controller, but its tagged frames reach `enp2s0` on a trunk port with every network excluded. Only access mode stops them.
+- VLANs 18, 20 and 200 were not re-added by the end of the pass; they carried no frames during the sniff (passive detection, PRD R-1).
+
+End state: the switch's `port_overrides` match the pre-pass backup. The box runs `1.1.1 (build 4b97db1)` with the timer active and owns `enp2s0.1`, `.21`, `.22` and `.101`.
+
 ## Missing-VLAN removal pass (2026-10-16 UTC, `1.1.1 (build 1df3567)`)
 
 Console-backed on the reference appliance. Commands ran over SSH to the `enp2s0` base address, and the serial console stayed open as the fallback. The package was built from a clean `1df3567` (sha256 `5cd6f3e7...9cadca91`) and installed with `dpkg --force-confold -i` over the 1.0.0 package, with the timer stopped first. `--version` reported `1.1.1 (build 1df3567)`. Config was at defaults, except for the MV-H6 step.
