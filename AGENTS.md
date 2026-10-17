@@ -30,7 +30,7 @@ sudo ./dynavlan --status    # report owned vs detected-now trunks
 
 ShellCheck is run by hand, not by the unit suite; compare against `git show HEAD:<file>` to find what the diff introduced. Known false positives: SC2329 (test stubs invoked indirectly), SC2034 (variables used across a `source` boundary), SC2016 (deliberately literal `${...}` text), and SC2086 on the deliberate token-list word splitting.
 
-Install/first-run/removal live in `docs/deployment-guide.md`. Hardware testing is console-backed on the real appliance, never SSH-only (a bad apply drops the link).
+Install/first-run/removal live in `docs/deployment-guide.md`. Hardware testing rules: **Hardware Validation** below.
 
 ## Design Principles
 
@@ -60,9 +60,21 @@ Public repo; the shared PII rule applies. Specifics: the only personal identifie
 
 ## Testing
 
-Never claim a feature works until it has run on the box. There is no hot-reload and no VM: dynavlan installs as a systemd service + timer, and hardware testing happens on the real appliance on the real trunk with console access.
+Unit tests prove the code, not the feature; hardware validation (below) proves the feature.
 
 New logic: TDD pure helpers in `tests/unit.sh` first (RED before GREEN); wire integration code cohesively - the apply/rollback state machine is too coupled for subagent fan-out.
+
+## Hardware Validation
+
+dynavlan has no VM and no hot-reload. It installs as a systemd service and timer, so only the real appliance on a real trunk proves a change. The pass records live in `docs/hardware-validation.md`.
+
+- Do not claim a feature works until it has run on the box.
+- Hold the serial console open for every run that can apply a change. A bad apply drops the link, so SSH alone is no fallback.
+- Run read-only checks (`--version`, `--dry-run`, `--status`) over SSH as needed.
+- Before you draw any conclusion from the box, run `dynavlan --version` and confirm the intended build (see Version and build identity).
+- Before any package upgrade or reinstall on a box, copy `/etc/dynavlan.conf` to a dated backup. dpkg keeps a modified conffile, but the backup lets you diff or restore it.
+- Before you change a switch port, back up the port configuration. Make one change per write, then re-read and diff it.
+- Record each pass as a new dated section at the top of `docs/hardware-validation.md`.
 
 ## Workflow Pipeline
 
